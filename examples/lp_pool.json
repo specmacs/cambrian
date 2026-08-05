@@ -1,0 +1,20 @@
+{
+  "_comment": "An LP candidate pool. now_utc is fixed to a Wednesday 11:00 ET so the market-hours gates are deterministic; drop it to use the real clock. stock_tokens/quote_tokens/earnings are inlined so this runs offline. Try days_to_earnings via earnings, or set minutes_to_close low, to watch a gate fire.",
+  "pool": {
+    "pool": "0xP00l000000000000000000000000000000000c3",
+    "stock_token": "0xSt0ck00000000000000000000000000000000a1",
+    "quote_token": "0xQu0te00000000000000000000000000000000b2",
+    "tvl_usd": 2000000.0,
+    "fee_apr": 0.25,
+    "position_usd": 300.0
+  },
+  "state": {
+    "total_deployed_usd": 500.0,
+    "open_positions": 1
+  },
+  "ticker": "NVDA",
+  "now_utc": "2026-08-05T15:00:00+00:00",
+  "earnings": { "NVDA": "2026-08-27" },
+  "stock_tokens": { "0xSt0ck00000000000000000000000000000000a1": "NVDA" },
+  "quote_tokens": { "0xQu0te00000000000000000000000000000000b2": "USDG" }
+}

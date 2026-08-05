@@ -1,0 +1,18 @@
+# Secrets and keys — never commit
+.env
+*.key
+*.pem
+
+# The order journal is local operational state
+journal.jsonl
+*.jsonl
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+*.egg-info/
+build/
+dist/

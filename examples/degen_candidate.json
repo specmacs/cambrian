@@ -1,0 +1,20 @@
+{
+  "_comment": "A degen snipe candidate. trusted_factories/reviewed_hooks are here so this runs offline before you've filled config.py; in production the desk reads those from config. Try flipping notional_usd to 30 or top_holder_pct to 0.25 to watch a gate fire.",
+  "candidate": {
+    "token": "0xToKeN00000000000000000000000000000000003",
+    "factory": "0xFacToRy00000000000000000000000000000001",
+    "hook": null,
+    "pool_liquidity_usd": 80000.0,
+    "top_holder_pct": 0.12,
+    "expected_slippage_bps": 150.0,
+    "notional_usd": 20.0,
+    "symbol": "TESTTOK"
+  },
+  "state": {
+    "open_positions": 1,
+    "trades_last_hour": 0,
+    "daily_notional_usd": 0.0
+  },
+  "trusted_factories": { "0xFacToRy00000000000000000000000000000001": "test launchpad" },
+  "reviewed_hooks": []
+}

@@ -1,0 +1,5 @@
+-r requirements.txt
+pytest>=8.0.0
+# tzdata is only needed where the OS ships no zoneinfo database (e.g. some
+# slim containers / Windows). Harmless to install everywhere.
+tzdata>=2024.1
