@@ -21,6 +21,8 @@ import json
 import sys
 from datetime import datetime, timezone
 
+import requests
+
 from . import config
 from .decision import Decision
 from .desks import degen as degen_desk
@@ -167,6 +169,21 @@ def cmd_tail(args: argparse.Namespace) -> int:
 
 # --- review-hook ------------------------------------------------------------
 
+def cmd_probe_cambrian(args: argparse.Namespace) -> int:
+    from .feeds.cambrian_api import CambrianClient, CambrianError
+    try:
+        client = CambrianClient()
+        print(f"{_GREEN}auth OK{_RST}")
+        print(json.dumps(client.probe(), indent=2)[:2000])
+        if args.stock and args.quote:
+            print(f"\n{_DIM}raw pool payload:{_RST}")
+            print(json.dumps(client.raw_pool(args.stock, args.quote), indent=2)[:2000])
+    except (CambrianError, requests.RequestException) as exc:
+        print(f"{_RED}{exc}{_RST}")
+        return 1
+    return 0
+
+
 def cmd_review_hook(args: argparse.Namespace) -> int:
     from .tools.hook_review import review_hook
     try:
@@ -203,6 +220,12 @@ def build_parser() -> argparse.ArgumentParser:
                              "(a .sol file or an on-chain address)")
     rp.add_argument("target", help="path to a .sol file, or a hook contract address")
     rp.set_defaults(func=cmd_review_hook)
+
+    pc = sub.add_parser("probe-cambrian",
+                        help="auth-check the Cambrian API and dump a raw pool payload")
+    pc.add_argument("--stock", help="stock token address (optional, for a pool probe)")
+    pc.add_argument("--quote", help="quote token address (optional, for a pool probe)")
+    pc.set_defaults(func=cmd_probe_cambrian)
 
     sub.choices["status"].set_defaults(func=cmd_status)
     return p
