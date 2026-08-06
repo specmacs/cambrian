@@ -488,10 +488,9 @@ def cmd_runners(args: argparse.Namespace) -> int:
         fx = _load(args.fixture)
         candidates = [RunnerCandidate(**c) for c in fx["candidates"]]
     else:
-        print(f"{_YEL}Give --fixture for scoring, or --discover to list fresh "
-              f"WETH pools live from the V3 factory. Full live scoring also needs "
-              f"holders/price wiring (see runners/feed.py enrich).{_RST}")
-        return 1
+        candidates = _scan_live_candidates(args)
+        if candidates is None:
+            return 1
 
     ranked = rank_runners(candidates, include_cold=args.all)
     journal = Journal(config.ORDER_JOURNAL)
@@ -507,6 +506,26 @@ def cmd_runners(args: argparse.Namespace) -> int:
                                       "subject": s.candidate.token, "tier": s.tier,
                                       "score": s.score, "signals": list(s.signals)})
     return 0
+
+
+def _scan_live_candidates(args: argparse.Namespace):
+    """Full live pipeline: discover fresh pools + enrich each. None on error."""
+    from .chain import ChainClient, RpcError
+    from .runners.feed import scan_live
+    from .runners.blockscout import Blockscout
+    from .runners import config as rcfg
+    c = rcfg.CONTRACTS
+    if not c.get("v3_factory") or not c.get("weth"):
+        print(f"{_RED}Set v3_factory + weth in runners/config.py CONTRACTS{_RST}")
+        return None
+    try:
+        client = ChainClient()
+        bs = Blockscout()
+        return scan_live(client, blocks=args.blocks, weth_usd=rcfg.WETH_USD,
+                         window_blocks=rcfg.WINDOW_BLOCKS, bs_client=bs)
+    except (RpcError, requests.RequestException) as exc:
+        print(f"{_RED}{exc}{_RST}")
+        return None
 
 
 def _discover_fresh_pools(args: argparse.Namespace) -> int:

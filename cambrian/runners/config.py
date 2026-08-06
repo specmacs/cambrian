@@ -10,7 +10,16 @@ FACTORIES` is the stricter subset the degen desk will actually clear.
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
+
+# Rough ETH/USD used to value volume + liquidity in dollars. Set RH_WETH_USD to
+# roughly the current ETH price (or wire weth_usd_pool to read it on-chain). The
+# scorer's thresholds are coarse enough that an approximate price is fine.
+WETH_USD = float(os.getenv("RH_WETH_USD", "3000"))
+
+# ~5 minutes of RH blocks (100ms block time -> ~3000 blocks). Tune per real cadence.
+WINDOW_BLOCKS = int(os.getenv("RH_WINDOW_BLOCKS", "3000"))
 
 # name -> {address, created_topic0, start_block, amm}
 # `created_topic0` is left blank on purpose: discover_fresh SKIPS a pad without

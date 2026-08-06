@@ -170,18 +170,27 @@ factory events, DEX swaps, holder counts, and a smart-money wallet watchlist,
 via raw RPC + the Blockscout explorer.
 
 ```bash
-python -m cambrian runners --fixture examples/runners_candidates.json
+python -m cambrian runners --discover                 # list fresh WETH pools live (any pad)
+python -m cambrian runners                            # discover + score live (hot/watch/cold)
+python -m cambrian runners --fixture examples/runners_candidates.json  # score offline
 ```
 
-It scores each fresh token on **smart-money buying** (the strongest signal),
-**volume acceleration**, **holder growth**, and **buy/sell skew**, after hard
-rug filters (liquidity floor, top-holder cap, LP-locked, freshness — fail
-closed on anything unknown). Output is a tier (hot / watch / cold) with the
-reasons. `cambrian/runners/config.py` holds the launchpad watchlist and the
-smart-money wallet list; fill each pad's factory address + created-event topic0
-(from its verified contract) and set `RH_RPC_URL` to switch from fixture to live.
-The scoring brain is pure and tested; the live event/metric feed
-(`runners/feed.py`) is the wiring seam.
+**Discovery is pad-agnostic:** it watches the Uniswap **V3 factory's
+`PoolCreated`** event, catching every fresh WETH-paired pool from *any*
+launchpad (Pons, Noxa, Pools.trade, …) with one standard ABI — no per-pad event
+needed. Each fresh token is then scored on **smart-money buying** (the strongest
+signal), **volume acceleration**, **holder growth**, and **buy/sell skew**,
+after hard rug filters (liquidity floor, top-holder cap, freshness — fail closed
+on anything unknown). Output is a tier (hot / watch / cold) with the reasons.
+
+Data comes straight from the chain: V3 `PoolCreated`/`Swap` events (RPC) +
+Blockscout token holders — no Cambrian. The pipeline (`runners/feed.py`
+`scan_live`) is fully wired; the sub-parts (decode, aggregate, discover, holder
+math) are unit-tested. **To go live:** set `RH_RPC_URL`, confirm the addresses in
+`runners/config.py` `CONTRACTS` on `explorer.rhchain.com` (they're search-derived,
+flagged UNVERIFIED), optionally set `RH_WETH_USD` and curate `WATCHED_WALLETS`.
+Note: newest Pons (v2) launches use Uniswap **v4** — v3 discovery catches the
+rest today; v4 is a clean follow-on.
 
 ## Honest limitations
 

@@ -37,11 +37,13 @@ def discover_new_pools(client: ChainClient, *, v3_factory: str, weth: str,
         t0, t1 = d["token0"].lower(), d["token1"].lower()
         if weth_l not in (t0, t1):
             continue
+        blk = log.get("blockNumber")
         out.append({
             "token": d["token1"] if t0 == weth_l else d["token0"],
             "pool": d["pool"],
             "fee": d["fee"],
             "weth_is_token0": t0 == weth_l,
+            "block": int(blk, 16) if isinstance(blk, str) else blk,
         })
     return out
 
@@ -81,22 +83,98 @@ def pool_swap_metrics(client: ChainClient, pool: str, *, from_block: str,
                            weth_price_usd=weth_price_usd)
 
 
-def enrich(client: ChainClient, hit: dict[str, Any]) -> RunnerCandidate:  # pragma: no cover
-    """Turn a raw creation log into a full candidate.
+def enrich(client: ChainClient, hit: dict[str, Any], *, weth_usd: float,
+           latest_block: int, now_ts: int | None, window_blocks: int,
+           bs_client: Any = None) -> RunnerCandidate:
+    """Assemble a full RunnerCandidate for a discovered pool.
 
-    Wired already: volume + buys/sells via `pool_swap_metrics` (standard V3
-    Swap ABI). Remaining seams, per launchpad:
-      * decode the created event -> token + V3 pool address (needs the pad's
-        created-event layout; that's why `created_topic0` must be filled)
-      * liquidity_usd (pool WETH balance x price), weth_price_usd
-      * holders, holders_5m_ago, top_holder_pct (Blockscout token-holders API)
-      * smart_money_buyers (WATCHED_WALLETS among recent buy `recipient`s)
-      * lp_locked (LP-token holder is a known locker / burn address)
-    Until those are wired, this raises so nothing silently scores on empty data.
+    Defensive: every metric is best-effort, and anything that fails stays None —
+    the scorer already fails closed on unknown rug facts, so a partial fetch
+    can't accidentally flag a token as safe.
+
+    Not populated live (degrade gracefully): holders_5m_ago (no cheap point-in-
+    time holder count) and lp_locked (V3 liquidity is an NFT position; Pons
+    auto-locks — verify per pad). hook is v4-only.
     """
-    raise NotImplementedError(
-        "enrich() still needs the pad's created-event layout + the explorer's "
-        "token/holder endpoints + WETH price. Swap volume/flow is wired "
-        "(pool_swap_metrics). Fill created_topic0 and wire those, or feed the "
-        "scorer from a fixture (see `runners --fixture`)."
+    token, pool = hit["token"], hit["pool"]
+    weth_is_token0 = hit["weth_is_token0"]
+    recent_from = hex(max(latest_block - window_blocks, 0))
+    prior_from = hex(max(latest_block - 2 * window_blocks, 0))
+    prior_to = hex(max(latest_block - window_blocks - 1, 0))
+
+    def _swaps(fb, tb):
+        try:
+            return pool_swap_metrics(client, pool, from_block=fb, to_block=tb,
+                                     weth_is_token0=weth_is_token0,
+                                     weth_price_usd=weth_usd)
+        except Exception:
+            return {"volume_usd": None, "buys": None, "sells": None}
+
+    m5 = _swaps(recent_from, "latest")
+    mp = _swaps(prior_from, prior_to)
+
+    liquidity_usd = None
+    try:
+        weth = rcfg.CONTRACTS["weth"]
+        bal = client.erc20_balance_of(weth, pool) / 1e18
+        liquidity_usd = bal * weth_usd * 2  # WETH side x2 as a total-depth proxy
+    except Exception:
+        pass
+
+    symbol = holders = top_holder = None
+    if bs_client is not None:
+        try:
+            tj, hj = bs_client.token(token), bs_client.holders(token)
+            from .blockscout import holder_count, top_holder_pct
+            symbol = tj.get("symbol")
+            holders = holder_count(tj)
+            top_holder = top_holder_pct(tj, hj)
+        except Exception:
+            pass
+
+    age_minutes = None
+    if hit.get("block") and now_ts:
+        try:
+            ts = client.block_timestamp(hex(hit["block"]))
+            if ts:
+                age_minutes = (now_ts - ts) / 60.0
+        except Exception:
+            pass
+
+    smart = 0
+    if rcfg.WATCHED_WALLETS:
+        try:
+            logs = client.get_logs(address=pool, topics=[SWAP_TOPIC0],
+                                   from_block=recent_from, to_block="latest")
+            watched = {w.lower() for w in rcfg.WATCHED_WALLETS}
+            recipients = {("0x" + lg["topics"][2][-40:]).lower()
+                          for lg in logs if len(lg.get("topics", [])) > 2}
+            smart = len(recipients & watched)
+        except Exception:
+            smart = 0
+
+    return RunnerCandidate(
+        token=token, pool=pool, launchpad=None, symbol=symbol,
+        age_minutes=age_minutes, liquidity_usd=liquidity_usd,
+        top_holder_pct=top_holder, holders=holders, holders_5m_ago=None,
+        volume_5m_usd=m5["volume_usd"], volume_prior_5m_usd=mp["volume_usd"],
+        buys_5m=m5["buys"], sells_5m=m5["sells"], smart_money_buyers=smart,
+        lp_locked=None, hook=None,
     )
+
+
+def scan_live(client: ChainClient, *, blocks: int, weth_usd: float,
+              window_blocks: int, bs_client: Any = None,
+              v3_factory: str | None = None, weth: str | None = None
+              ) -> list[RunnerCandidate]:
+    """Discover fresh WETH pools over the last `blocks`, enrich each to a
+    scored-ready candidate. The full live pipeline."""
+    v3_factory = v3_factory or rcfg.CONTRACTS["v3_factory"]
+    weth = weth or rcfg.CONTRACTS["weth"]
+    latest = client.block_number()
+    now_ts = client.block_timestamp("latest")
+    hits = discover_new_pools(client, v3_factory=v3_factory, weth=weth,
+                              from_block=hex(max(latest - blocks, 0)))
+    return [enrich(client, h, weth_usd=weth_usd, latest_block=latest,
+                   now_ts=now_ts, window_blocks=window_blocks, bs_client=bs_client)
+            for h in hits]

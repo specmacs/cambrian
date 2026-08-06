@@ -75,6 +75,13 @@ class ChainClient:
     def block_number(self) -> int:
         return int(self._call("eth_blockNumber", []), 16)
 
+    def get_block(self, block: str = "latest") -> dict | None:
+        return self._call("eth_getBlockByNumber", [block, False])
+
+    def block_timestamp(self, block: str = "latest") -> int | None:
+        b = self.get_block(block)
+        return int(b["timestamp"], 16) if b and b.get("timestamp") else None
+
     def get_code(self, address: str) -> str:
         return self._call("eth_getCode", [address, "latest"])
 
