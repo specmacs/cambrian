@@ -208,18 +208,86 @@ def enrich(client: ChainClient, hit: dict[str, Any], *, weth_usd: float,
     )
 
 
+def _holders_age(client, token, hit, now_ts, bs_client):
+    """Shared: (symbol, holders, top_holder_pct, age_minutes) — best-effort."""
+    symbol = holders = top = None
+    if bs_client is not None:
+        try:
+            tj, hj = bs_client.token(token), bs_client.holders(token)
+            from .blockscout import holder_count, top_holder_pct
+            symbol, holders, top = tj.get("symbol"), holder_count(tj), top_holder_pct(tj, hj)
+        except Exception:
+            pass
+    age = None
+    if hit.get("block") and now_ts:
+        try:
+            ts = client.block_timestamp(hex(hit["block"]))
+            if ts:
+                age = (now_ts - ts) / 60.0
+        except Exception:
+            pass
+    return symbol, holders, top, age
+
+
+def enrich_v4(client: ChainClient, hit: dict[str, Any], *, weth_usd: float,
+              latest_block: int, now_ts: int | None, window_blocks: int,
+              pool_manager: str, bs_client: Any = None) -> RunnerCandidate:
+    """Full candidate for a discovered v4 pool. Liquidity via extsload on the
+    singleton; volume via PoolId-filtered Swap logs. `pool` carries the PoolId."""
+    from .uniswap_v4 import liquidity_usd_from, read_pool_liquidity_sqrt
+    token, pid = hit["token"], hit["pool_id"]
+    q_is0 = hit["quote_is_token0"]
+    recent_from = hex(max(latest_block - window_blocks, 0))
+    prior_from = hex(max(latest_block - 2 * window_blocks, 0))
+    prior_to = hex(max(latest_block - window_blocks - 1, 0))
+
+    def _sw(fb, tb):
+        try:
+            return v4_pool_swap_metrics(client, pool_manager=pool_manager, pool_id=pid,
+                                        from_block=fb, to_block=tb, quote_is_token0=q_is0,
+                                        quote_price_usd=weth_usd)
+        except Exception:
+            return {"volume_usd": None, "buys": None, "sells": None}
+
+    m5, mp = _sw(recent_from, "latest"), _sw(prior_from, prior_to)
+    liquidity = None
+    try:
+        liq, sqrtp = read_pool_liquidity_sqrt(client, pool_manager, pid)
+        liquidity = liquidity_usd_from(liq, sqrtp, q_is0, weth_usd)
+    except Exception:
+        pass
+    symbol, holders, top, age = _holders_age(client, token, hit, now_ts, bs_client)
+    return RunnerCandidate(
+        token=token, pool=pid, launchpad=None, symbol=symbol, age_minutes=age,
+        liquidity_usd=liquidity, top_holder_pct=top, holders=holders,
+        holders_5m_ago=None, volume_5m_usd=m5["volume_usd"],
+        volume_prior_5m_usd=mp["volume_usd"], buys_5m=m5["buys"], sells_5m=m5["sells"],
+        smart_money_buyers=0, lp_locked=None, hook=hit["hooks"],
+    )
+
+
 def scan_live(client: ChainClient, *, blocks: int, weth_usd: float,
               window_blocks: int, bs_client: Any = None,
-              v3_factory: str | None = None, weth: str | None = None
+              v3_factory: str | None = None, weth: str | None = None,
+              pool_manager: str | None = None, native_eth: str | None = None
               ) -> list[RunnerCandidate]:
-    """Discover fresh WETH pools over the last `blocks`, enrich each to a
-    scored-ready candidate. The full live pipeline."""
+    """Discover fresh WETH/ETH pools (v3 + v4) over the last `blocks`, enrich each
+    to a scored-ready candidate. The full live pipeline."""
     v3_factory = v3_factory or rcfg.CONTRACTS["v3_factory"]
     weth = weth or rcfg.CONTRACTS["weth"]
     latest = client.block_number()
     now_ts = client.block_timestamp("latest")
+    from_block = hex(max(latest - blocks, 0))
+
     hits = discover_new_pools(client, v3_factory=v3_factory, weth=weth,
-                              from_block=hex(max(latest - blocks, 0)))
-    return [enrich(client, h, weth_usd=weth_usd, latest_block=latest,
-                   now_ts=now_ts, window_blocks=window_blocks, bs_client=bs_client)
-            for h in hits]
+                              from_block=from_block)
+    out = [enrich(client, h, weth_usd=weth_usd, latest_block=latest, now_ts=now_ts,
+                  window_blocks=window_blocks, bs_client=bs_client) for h in hits]
+
+    if pool_manager:
+        v4 = discover_new_pools_v4(client, pool_manager=pool_manager, weth=weth,
+                                   native_eth=native_eth, from_block=from_block)
+        out += [enrich_v4(client, h, weth_usd=weth_usd, latest_block=latest,
+                          now_ts=now_ts, window_blocks=window_blocks,
+                          pool_manager=pool_manager, bs_client=bs_client) for h in v4]
+    return out

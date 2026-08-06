@@ -18,7 +18,14 @@ from the v4 ABI — verify against a real log if unsure.
 
 from __future__ import annotations
 
+from ..evm import mapping_slot, selector
 from .uniswap_v3 import _addr, _signed, aggregate_swaps  # noqa: F401 (re-export)
+
+# v4 stores each pool's state in `mapping(PoolId => Pool.State) _pools` at storage
+# slot 6 (v4-core StateLibrary POOLS_SLOT). Within Pool.State: slot0 at offset +0
+# (packed: sqrtPriceX96 | tick | ...), liquidity at +3. Read via extsload.
+POOLS_SLOT = 6
+EXTSLOAD = selector("extsload(bytes32)")   # 0x1e2eaeaf, keccak-derived
 
 INITIALIZE_TOPIC0 = "0xdd466e674ea557f56295e2d0218a125ea4b4f0f6f3307b95f85e6110838d6438"
 SWAP_TOPIC0 = "0x40e9cecb9f5f1f1c5b9c97dec2917b7ee92e57ba5563708daca94dd84ad7112f"
@@ -56,3 +63,39 @@ def decode_v4_swap(log: dict) -> dict:
         "tick": _signed(w[4]),
         "fee": int(w[5], 16),
     }
+
+
+def _state_base_slot(pool_id_hex: str) -> int:
+    pid = bytes.fromhex(pool_id_hex[2:] if pool_id_hex.startswith("0x") else pool_id_hex)
+    return mapping_slot(pid.rjust(32, b"\x00"), POOLS_SLOT)
+
+
+def read_pool_liquidity_sqrt(client, pool_manager: str, pool_id_hex: str):
+    """(liquidity, sqrtPriceX96) for a v4 pool via extsload on the singleton.
+
+    slot0 (packed) holds sqrtPriceX96 in its low 160 bits; liquidity is a uint128
+    three slots later.
+    """
+    base = _state_base_slot(pool_id_hex)
+    slot0 = int(client.eth_call(pool_manager, EXTSLOAD + base.to_bytes(32, "big").hex()), 16)
+    liq_word = int(client.eth_call(pool_manager, EXTSLOAD + (base + 3).to_bytes(32, "big").hex()), 16)
+    sqrt_price = slot0 & ((1 << 160) - 1)
+    liquidity = liq_word & ((1 << 128) - 1)
+    return liquidity, sqrt_price
+
+
+def liquidity_usd_from(liquidity: int, sqrt_price_x96: int, quote_is_token0: bool,
+                       quote_price_usd: float) -> float | None:
+    """Estimate a v4 pool's USD depth from active liquidity L and price.
+
+    Uses the constant-product virtual reserve on the quote side
+    (token1: L*sqrt/2^96 ; token0: L*2^96/sqrt), x2 for both sides. It's an
+    upper-bound proxy — concentrated liquidity has less real depth — but good
+    enough for the rug/thin-pool filter.
+    """
+    if not liquidity or not sqrt_price_x96:
+        return None
+    q = (1 << 96)
+    reserve = (liquidity * q / sqrt_price_x96) if quote_is_token0 \
+        else (liquidity * sqrt_price_x96 / q)
+    return reserve / 1e18 * quote_price_usd * 2

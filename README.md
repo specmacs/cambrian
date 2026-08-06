@@ -190,13 +190,17 @@ math) are unit-tested. **To go live:** set `RH_RPC_URL`, confirm the addresses i
 `runners/config.py` `CONTRACTS` on `explorer.rhchain.com` (they're search-derived,
 flagged UNVERIFIED), optionally set `RH_WETH_USD` and curate `WATCHED_WALLETS`.
 
-**Both Uniswap versions covered:** v3 discovery (factory `PoolCreated`) and **v4**
-discovery (PoolManager `Initialize`, which also captures each pool's **hook** —
-what the degen desk reviews). Pons v2 launches into v4, so `--discover` catches
-those too once you set `pool_manager` in `CONTRACTS`. v4 swap flow decodes with
-the same aggregator (v4 amounts share v3's pool-perspective sign). The remaining
-v4 gap is per-pool liquidity (it lives in the singleton, not a pool address) —
-until wired, v4 candidates fail closed on the liquidity filter.
+**Both Uniswap versions fully covered:** v3 (factory `PoolCreated`) and **v4**
+(PoolManager `Initialize`, capturing each pool's **hook** — what the degen desk
+reviews). Pons v2 launches into v4; set `pool_manager` in `CONTRACTS` and
+`scan_live` covers both. v4 swap flow decodes with the same aggregator, and **v4
+liquidity is read straight from the singleton via `extsload`** (the pool's state
+slot is computed with an in-repo keccak256 in `cambrian/evm.py`, so v4 candidates
+score fully — no gap).
+
+Every event topic0 and function selector in the codebase is **derived and
+verified** by that keccak (see `tests/test_evm.py`, which asserts each constant
+equals `keccak256` of its signature) — nothing is trusted from a search alone.
 
 ## Honest limitations
 

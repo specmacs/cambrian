@@ -522,7 +522,9 @@ def _scan_live_candidates(args: argparse.Namespace):
         client = ChainClient()
         bs = Blockscout()
         return scan_live(client, blocks=args.blocks, weth_usd=rcfg.WETH_USD,
-                         window_blocks=rcfg.WINDOW_BLOCKS, bs_client=bs)
+                         window_blocks=rcfg.WINDOW_BLOCKS, bs_client=bs,
+                         pool_manager=c.get("pool_manager") or None,
+                         native_eth=c.get("native_eth"))
     except (RpcError, requests.RequestException) as exc:
         print(f"{_RED}{exc}{_RST}")
         return None
