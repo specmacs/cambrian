@@ -159,6 +159,30 @@ picks before a cent is at risk.
 > column names and add them to `ALIASES` in `cambrian/base/pools.py` (and
 > `base/lending.py`) — a one-line fix, not a rewrite.
 
+## Runner tracker — watch the RH-Chain pads from above
+
+Robinhood Chain launched as an RWA chain and got taken over by memecoins — a
+permissionless L2 with a full launchpad economy (Pons, Noxa, Pools.trade,
+flap.sh, bankr, ArrowPad, …) and real runners (CASHCAT +2,100%). This is the
+discovery front-end that catches them early and feeds the degen desk. **Zero
+Cambrian** (which doesn't index RH) — it reads the chain directly: launchpad
+factory events, DEX swaps, holder counts, and a smart-money wallet watchlist,
+via raw RPC + the Blockscout explorer.
+
+```bash
+python -m cambrian runners --fixture examples/runners_candidates.json
+```
+
+It scores each fresh token on **smart-money buying** (the strongest signal),
+**volume acceleration**, **holder growth**, and **buy/sell skew**, after hard
+rug filters (liquidity floor, top-holder cap, LP-locked, freshness — fail
+closed on anything unknown). Output is a tier (hot / watch / cold) with the
+reasons. `cambrian/runners/config.py` holds the launchpad watchlist and the
+smart-money wallet list; fill each pad's factory address + created-event topic0
+(from its verified contract) and set `RH_RPC_URL` to switch from fixture to live.
+The scoring brain is pure and tested; the live event/metric feed
+(`runners/feed.py`) is the wiring seam.
+
 ## Honest limitations
 
 - **Live execution is not built.** The read client and decision logic are real;

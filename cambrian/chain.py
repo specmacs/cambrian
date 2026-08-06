@@ -85,6 +85,17 @@ class ChainClient:
     def eth_call(self, to: str, data: str) -> str:
         return self._call("eth_call", [{"to": to, "data": data}, "latest"])
 
+    def get_logs(self, *, address: str | None = None, topics: list | None = None,
+                 from_block: str = "latest", to_block: str = "latest") -> list:
+        """Raw eth_getLogs — the launchpad watcher's eyes. Pass a factory address
+        and the topic0 of its creation event to catch fresh launches."""
+        flt: dict = {"fromBlock": from_block, "toBlock": to_block}
+        if address is not None:
+            flt["address"] = address
+        if topics:
+            flt["topics"] = topics
+        return self._call("eth_getLogs", [flt])
+
     # --- ERC-20 view helpers -----------------------------------------------
 
     def erc20_decimals(self, token: str) -> int:

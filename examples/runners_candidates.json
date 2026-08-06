@@ -1,0 +1,59 @@
+{
+  "_comment": "Fresh RH-Chain launch candidates for the runner tracker. In production these come from watching the launchpad factories + explorer/DEX metrics; this fixture lets you exercise the scorer offline. Try flipping top_holder_pct to 0.4 or lp_locked to false to watch a rug get rejected.",
+  "candidates": [
+    {
+      "token": "0xCA5HCAT00000000000000000000000000000001",
+      "pool": "0xP00l0000000000000000000000000000000000a1",
+      "launchpad": "0xPons000000000000000000000000000000000001",
+      "symbol": "CASHCAT",
+      "age_minutes": 25,
+      "liquidity_usd": 42000,
+      "top_holder_pct": 0.11,
+      "holders": 180,
+      "holders_5m_ago": 120,
+      "volume_5m_usd": 90000,
+      "volume_prior_5m_usd": 20000,
+      "buys_5m": 210,
+      "sells_5m": 60,
+      "smart_money_buyers": 3,
+      "lp_locked": true,
+      "hook": null
+    },
+    {
+      "token": "0xM1D000000000000000000000000000000000002",
+      "pool": "0xP00l0000000000000000000000000000000000b2",
+      "launchpad": "0xNoxa000000000000000000000000000000000002",
+      "symbol": "HOODRAT",
+      "age_minutes": 80,
+      "liquidity_usd": 12000,
+      "top_holder_pct": 0.18,
+      "holders": 45,
+      "holders_5m_ago": 40,
+      "volume_5m_usd": 8000,
+      "volume_prior_5m_usd": 7000,
+      "buys_5m": 30,
+      "sells_5m": 28,
+      "smart_money_buyers": 0,
+      "lp_locked": true,
+      "hook": null
+    },
+    {
+      "token": "0xRUG000000000000000000000000000000000003",
+      "pool": "0xP00l0000000000000000000000000000000000c3",
+      "launchpad": "0xNoxa000000000000000000000000000000000002",
+      "symbol": "SAFEMOON2",
+      "age_minutes": 10,
+      "liquidity_usd": 60000,
+      "top_holder_pct": 0.44,
+      "holders": 90,
+      "holders_5m_ago": 20,
+      "volume_5m_usd": 150000,
+      "volume_prior_5m_usd": 5000,
+      "buys_5m": 300,
+      "sells_5m": 20,
+      "smart_money_buyers": 1,
+      "lp_locked": false,
+      "hook": null
+    }
+  ]
+}

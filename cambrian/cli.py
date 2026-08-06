@@ -474,6 +474,43 @@ def cmd_run(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_runners(args: argparse.Namespace) -> int:
+    """Rank fresh RH-Chain launches by runner signal. --fixture for now; live
+    discovery watches the launchpad factories once LAUNCHPADS is filled."""
+    from .runners.snapshots import RunnerCandidate
+    from .runners.score import rank_runners
+    from .runners import config as rcfg
+
+    if args.fixture:
+        fx = _load(args.fixture)
+        candidates = [RunnerCandidate(**c) for c in fx["candidates"]]
+    else:
+        if not rcfg.LAUNCHPADS:
+            print(f"{_YEL}No launchpads configured. Fill LAUNCHPADS in "
+                  f"cambrian/runners/config.py (factory address + created event "
+                  f"topic0), and set RH_RPC_URL — then live discovery works. "
+                  f"For now: `runners --fixture examples/runners_candidates.json`{_RST}")
+            return 1
+        print(f"{_YEL}Live discovery seam: LAUNCHPADS set but enrich() is unwired "
+              f"(needs each pad's event ABI + explorer metrics). Use --fixture.{_RST}")
+        return 1
+
+    ranked = rank_runners(candidates, include_cold=args.all)
+    journal = Journal(config.ORDER_JOURNAL)
+    print(f"Fresh runners — {len(candidates)} candidates, {len(ranked)} flagged\n")
+    print(f"  {'TIER':<7}{'TOKEN':<14}{'SCORE':>6}  SIGNALS / REASONS")
+    for s in ranked:
+        color = _RED if s.tier == "hot" else _YEL if s.tier == "watch" else _DIM
+        detail = "; ".join(s.signals) if s.signals else "; ".join(s.reasons)
+        label = s.candidate.symbol or s.candidate.token[:12]
+        print(f"  {color}{s.tier.upper():<7}{_RST}{label:<14}{s.score:>6.2f}  {detail}")
+        if s.tier in ("hot", "watch"):
+            journal.record("signal", {"desk": "runners", "signal": "runner",
+                                      "subject": s.candidate.token, "tier": s.tier,
+                                      "score": s.score, "signals": list(s.signals)})
+    return 0
+
+
 def _is_stable_label(label: str) -> bool:
     from . import base_config
     if "/" not in label:
@@ -639,6 +676,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     ps = sub.add_parser("positions", help="show current paper positions")
     ps.set_defaults(func=cmd_positions)
+
+    ru = sub.add_parser("runners",
+                        help="rank fresh RH-Chain launches by runner signal "
+                             "(watch the pads from above)")
+    ru.add_argument("--fixture", help="JSON of candidates (until live feed is wired)")
+    ru.add_argument("--all", action="store_true", help="include cold candidates")
+    ru.set_defaults(func=cmd_runners)
 
     mo = sub.add_parser("monitor",
                         help="watch positions; fire rotations + flight-to-stables")
