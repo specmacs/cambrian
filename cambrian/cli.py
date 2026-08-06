@@ -173,15 +173,140 @@ def cmd_probe_cambrian(args: argparse.Namespace) -> int:
     from .feeds.cambrian_api import CambrianClient, CambrianError
     try:
         client = CambrianClient()
-        print(f"{_GREEN}auth OK{_RST}")
-        print(json.dumps(client.probe(), indent=2)[:2000])
-        if args.stock and args.quote:
-            print(f"\n{_DIM}raw pool payload:{_RST}")
-            print(json.dumps(client.raw_pool(args.stock, args.quote), indent=2)[:2000])
+        chains = client.chains()
+        print(f"{_GREEN}auth OK{_RST} — chains indexed: "
+              + ", ".join(f"{c.get('name')}({c.get('id')})" for c in chains))
+        if args.path:
+            print(f"\n{_DIM}raw {args.path}:{_RST}")
+            print(json.dumps(client.get(args.path), indent=2)[:3000])
     except (CambrianError, requests.RequestException) as exc:
         print(f"{_RED}{exc}{_RST}")
         return 1
     return 0
+
+
+# --- Base pivot: scan / evaluate / allocate ---------------------------------
+
+def _load_base_pools(client, dexes=None):
+    """Fetch + normalize pools across Base DEXes. Returns (pools, errors)."""
+    from . import base_config
+    from .base.pools import normalize_pool
+    endpoints = base_config.BASE_POOL_ENDPOINTS
+    if dexes:
+        endpoints = {k: v for k, v in endpoints.items() if k in dexes}
+    pools, errors = [], []
+    for dex, endpoint in endpoints.items():
+        try:
+            rows = client.pools(endpoint)
+            pools.extend(normalize_pool(r, dex) for r in rows)
+        except Exception as exc:  # one DEX failing shouldn't kill the scan
+            errors.append(f"{dex}: {exc}")
+    return pools, errors
+
+
+def cmd_scan_base(args: argparse.Namespace) -> int:
+    from .feeds.cambrian_api import CambrianClient, CambrianError
+    from . import base_config
+    from .base.pools import scan
+    try:
+        client = CambrianClient()
+        if args.raw:
+            # Show the true column names for one DEX so aliases can be confirmed.
+            endpoint = next(iter(base_config.BASE_POOL_ENDPOINTS.values()))
+            rows = client.pools(endpoint)
+            print(f"{_DIM}columns from {endpoint}:{_RST}")
+            print(", ".join((rows[0].keys() if rows else [])) or "(no rows)")
+            if rows:
+                print(json.dumps(rows[0], indent=2)[:2000])
+            return 0
+        pools, errors = _load_base_pools(client)
+    except (CambrianError, requests.RequestException) as exc:
+        print(f"{_RED}{exc}{_RST}")
+        return 1
+
+    ranked = scan(pools, min_tvl_usd=args.min_tvl, max_results=args.n)
+    print(f"Base LP yield — {len(pools)} pools scanned, "
+          f"{len(ranked)} clear TVL>={_usd(args.min_tvl)}\n")
+    print(f"  {'DEX':<14} {'PAIR':<18} {'TVL':>14} {'FEE APR':>9}")
+    for p in ranked:
+        print(f"  {p.dex:<14} {p.label[:18]:<18} {_usd(p.tvl_usd):>14} "
+              f"{_pct(p.fee_apr):>9}")
+    for e in errors:
+        print(f"  {_YEL}· {e}{_RST}")
+    if pools and not ranked:
+        print(f"\n{_YEL}Pools loaded but none ranked — likely a column-name "
+              f"mismatch. Run `scan-base --raw` and check base/pools.py ALIASES.{_RST}")
+    return 0
+
+
+def cmd_evaluate_base_lp(args: argparse.Namespace) -> int:
+    """Scan Base pools, then run each through the Base LP desk (dry-run)."""
+    from .feeds.cambrian_api import CambrianClient, CambrianError
+    from .base.pools import scan
+    from .desks import base_lp
+    from .desks.base_lp import BaseLPState
+    try:
+        client = CambrianClient()
+        pools, _ = _load_base_pools(client)
+    except (CambrianError, requests.RequestException) as exc:
+        print(f"{_RED}{exc}{_RST}")
+        return 1
+    ranked = scan(pools, min_tvl_usd=config_base_min_tvl(), max_results=args.n)
+    state = BaseLPState(total_deployed_usd=0.0, open_positions=0)
+    journal = Journal(config.ORDER_JOURNAL)
+    approved = 0
+    for p in ranked:
+        d = base_lp.evaluate(p, args.position, state)
+        journal.record("decision", d.as_dict())
+        _print_decision(d)
+        approved += d.approved
+    print(f"\n{approved}/{len(ranked)} approved at {_usd(args.position)}/position")
+    return 0
+
+
+def cmd_allocate(args: argparse.Namespace) -> int:
+    from .feeds.cambrian_api import CambrianClient, CambrianError
+    from .base.pools import pools_holding
+    from .base.lending import normalize_market, best_supply
+    from .base.allocate import recommend
+    from . import base_config
+    try:
+        client = CambrianClient()
+        pools, _ = _load_base_pools(client)
+        markets = [normalize_market(r) for r in client.lending_overview()]
+    except (CambrianError, requests.RequestException) as exc:
+        print(f"{_RED}{exc}{_RST}")
+        return 1
+
+    holding = pools_holding(pools, args.token)
+    lp_apr = max((p.fee_apr for p in holding if p.fee_apr is not None), default=None)
+    lend = best_supply(markets, address=args.token)
+    lend_apr = lend.supply_apr if lend else None
+
+    alloc = recommend(args.token, lp_apr, lend_apr,
+                      stress_price_ratio=base_config.BASE_LP.stress_price_ratio)
+    color = _GREEN if alloc.choice == "LP" else _YEL
+    print(f"{color}{alloc.choice}{_RST}  {args.token}")
+    print(f"  LP fee APR:   {_pct(alloc.lp_apr)}  (net {_pct(alloc.lp_net_apr)} "
+          f"after {_pct(alloc.il_haircut)} stress-IL)")
+    print(f"  Lending APR:  {_pct(alloc.lend_apr)}")
+    print(f"  {alloc.reason}")
+    return 0
+
+
+def _usd(v):
+    from .units import usd
+    return usd(v) if v is not None else "?"
+
+
+def _pct(v):
+    from .units import pct
+    return pct(v) if v is not None else "?"
+
+
+def config_base_min_tvl():
+    from . import base_config
+    return base_config.BASE_LP.min_pool_tvl_usd
 
 
 def cmd_review_hook(args: argparse.Namespace) -> int:
@@ -222,10 +347,31 @@ def build_parser() -> argparse.ArgumentParser:
     rp.set_defaults(func=cmd_review_hook)
 
     pc = sub.add_parser("probe-cambrian",
-                        help="auth-check the Cambrian API and dump a raw pool payload")
-    pc.add_argument("--stock", help="stock token address (optional, for a pool probe)")
-    pc.add_argument("--quote", help="quote token address (optional, for a pool probe)")
+                        help="auth-check the Cambrian API and list indexed chains")
+    pc.add_argument("--path", help="also dump the raw JSON from this endpoint path "
+                                   "(e.g. /evm/dexes)")
     pc.set_defaults(func=cmd_probe_cambrian)
+
+    sb = sub.add_parser("scan-base",
+                        help="rank Base DEX pools by fee APR (read-only, live data)")
+    sb.add_argument("--min-tvl", type=float, default=250_000.0,
+                    help="TVL floor in USD (default 250k)")
+    sb.add_argument("-n", type=int, default=25, help="max rows to show")
+    sb.add_argument("--raw", action="store_true",
+                    help="print the real column names from one DEX (to confirm ALIASES)")
+    sb.set_defaults(func=cmd_scan_base)
+
+    eb = sub.add_parser("evaluate-base-lp",
+                        help="scan Base pools and run each through the Base LP desk")
+    eb.add_argument("--position", type=float, default=250.0,
+                    help="intended position size in USD")
+    eb.add_argument("-n", type=int, default=25)
+    eb.set_defaults(func=cmd_evaluate_base_lp)
+
+    al = sub.add_parser("allocate",
+                        help="LP vs lending for a token address (which yields more)")
+    al.add_argument("token", help="token contract address (on Base)")
+    al.set_defaults(func=cmd_allocate)
 
     sub.choices["status"].set_defaults(func=cmd_status)
     return p

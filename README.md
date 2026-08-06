@@ -83,6 +83,36 @@ decision through the dry-run executor so you can watch the whole path end to end
    none. Until then, and until `DRY_RUN=false`, the executor refuses to broadcast.
 4. Watch the journal for weeks before you flip `DRY_RUN`.
 
+## Base pivot (live on Cambrian today)
+
+The RH/tokenized-equity strategy above is parked: Cambrian only indexes **Base
+(8453) + Uniswap v3** today — not Robinhood Chain, not Uniswap v4. So the *same*
+LP engine is pointed at Base DEX pools, which Cambrian does cover. Config lives
+in `base_config.py`; the RH `config.py` stays untouched for when coverage lands.
+
+```bash
+python -m cambrian probe-cambrian                 # auth-check, list indexed chains
+python -m cambrian scan-base --min-tvl 250000     # rank Base pools by fee APR (read-only)
+python -m cambrian scan-base --raw                # dump real column names (see note below)
+python -m cambrian evaluate-base-lp --position 250   # scan + run each pool through the desk
+python -m cambrian allocate 0x<token>             # LP vs lending: which yields more
+```
+
+- **`scan-base`** — pulls pools across Aerodrome / Uniswap-v3 / Pancake / Sushi /
+  AlienBase / Clones, computes fee APR, filters by TVL, ranks. Read-only.
+- **`evaluate-base-lp`** — same LP guardrails (venue allowlist, TVL floor,
+  fee-APR-vs-IL stress test, exposure caps), minus the equity gates (crypto is
+  24/7). Journals every decision, dry-run.
+- **`allocate`** — compares a token's best LP fee APR (IL-haircut) against its
+  best lending supply APR (Aave/Euler/Morpho) and recommends one.
+
+> **One thing to confirm on first run:** the client is built against Cambrian's
+> confirmed auth (`x-api-key`) and columnar response format, but the exact
+> *column names* per pools endpoint were written without live API access. If
+> `scan-base` loads pools but ranks none, run `scan-base --raw` to see the real
+> column names and add them to `ALIASES` in `cambrian/base/pools.py` (and
+> `base/lending.py`) — a one-line fix, not a rewrite.
+
 ## Honest limitations
 
 - **Live execution is not built.** The read client and decision logic are real;
