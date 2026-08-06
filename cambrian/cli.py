@@ -294,6 +294,96 @@ def cmd_allocate(args: argparse.Namespace) -> int:
     return 0
 
 
+def _print_portfolio(pf):
+    print(f"Deposit {_usd(pf.capital_usd)} → "
+          f"deploy {_usd(pf.deployed_usd)}, reserve {_usd(pf.reserve_usd)}, "
+          f"blended risk-adj APR {_pct(pf.blended_apr)}\n")
+    print(f"  {'SLEEVE':<10}{'DEX':<14}{'PAIR':<16}{'USD':>10}{'WT':>7}{'APR*':>8}")
+    for p in pf.positions:
+        print(f"  {p.sleeve:<10}{p.dex:<14}{p.label[:16]:<16}"
+              f"{_usd(p.usd):>10}{p.weight:>7.1%}{_pct(p.expected_apr):>8}")
+    print(f"\n  {_DIM}*APR = risk-adjusted net (emissions discounted, IL "
+          f"subtracted){_RST}")
+    for p in pf.positions:
+        print(f"  {_DIM}· {p.label}: {p.reason}{_RST}")
+
+
+def cmd_plan(args: argparse.Namespace) -> int:
+    from .feeds.cambrian_api import CambrianClient, CambrianError
+    from .base.score import score_all
+    from .base.portfolio import build_portfolio
+    try:
+        client = CambrianClient()
+        pools, errors = _load_base_pools(client)
+    except (CambrianError, requests.RequestException) as exc:
+        print(f"{_RED}{exc}{_RST}")
+        return 1
+    pf = build_portfolio(args.capital, score_all(pools))
+    _print_portfolio(pf)
+    for e in errors:
+        print(f"  {_YEL}· {e}{_RST}")
+    if not pf.positions:
+        print(f"\n{_YEL}Nothing cleared the risk filters — likely a column "
+              f"mismatch; run `scan-base --raw`.{_RST}")
+    return 0
+
+
+def cmd_rebalance(args: argparse.Namespace) -> int:
+    from .feeds.cambrian_api import CambrianClient, CambrianError
+    from .base.score import score_all
+    from .base.portfolio import build_portfolio
+    from .base.rebalance import plan_rebalance
+    from .base import state
+    from . import base_config
+    try:
+        client = CambrianClient()
+        pools, _ = _load_base_pools(client)
+    except (CambrianError, requests.RequestException) as exc:
+        print(f"{_RED}{exc}{_RST}")
+        return 1
+
+    target = build_portfolio(args.capital, score_all(pools))
+    current = state.current_usd(base_config.POSITIONS_FILE)
+    actions = plan_rebalance(current, target)
+
+    _print_portfolio(target)
+    print(f"\nrebalance plan ({len(actions)} actions):")
+    if not actions:
+        print(f"  {_GREEN}already on target — nothing to do{_RST}")
+    journal = Journal(config.ORDER_JOURNAL)
+    for a in actions:
+        color = _GREEN if a.kind == "ENTER" else _RED if a.kind == "EXIT" else _YEL
+        print(f"  {color}{a.kind:<7}{_RST} {a.label:<18} "
+              f"{_usd(a.from_usd)} → {_usd(a.to_usd)}  ({_usd(a.delta_usd)})")
+        journal.record("order", {"dry_run": True, "desk": "base-lp",
+                                 "order_kind": a.kind.lower(), "subject": a.pool,
+                                 "label": a.label, "notional_usd": a.to_usd})
+
+    if args.apply:
+        new_state = {p.pool: {"usd": p.usd, "label": p.label}
+                     for p in target.positions}
+        state.save_positions(base_config.POSITIONS_FILE, new_state)
+        print(f"\n  {_DIM}paper positions updated (dry-run){_RST}")
+    else:
+        print(f"\n  {_DIM}dry plan only — add --apply to record it as the new "
+              f"paper portfolio{_RST}")
+    return 0
+
+
+def cmd_positions(args: argparse.Namespace) -> int:
+    from .base import state
+    from . import base_config
+    pos = state.load_positions(base_config.POSITIONS_FILE)
+    if not pos:
+        print("no open paper positions")
+        return 0
+    total = sum(float(r.get("usd", 0)) for r in pos.values())
+    print(f"paper portfolio — {len(pos)} positions, {_usd(total)} deployed\n")
+    for pool, rec in sorted(pos.items(), key=lambda kv: -float(kv[1].get("usd", 0))):
+        print(f"  {rec.get('label', pool):<18} {_usd(float(rec.get('usd', 0)))}")
+    return 0
+
+
 def _usd(v):
     from .units import usd
     return usd(v) if v is not None else "?"
@@ -372,6 +462,22 @@ def build_parser() -> argparse.ArgumentParser:
                         help="LP vs lending for a token address (which yields more)")
     al.add_argument("token", help="token contract address (on Base)")
     al.set_defaults(func=cmd_allocate)
+
+    pl = sub.add_parser("plan",
+                        help="turn a deposit into a target LP portfolio (the brain)")
+    pl.add_argument("capital", type=float, help="deposit size in USD, e.g. 10000")
+    pl.set_defaults(func=cmd_plan)
+
+    rb = sub.add_parser("rebalance",
+                        help="plan the moves from current paper positions to a "
+                             "fresh target (the babysitter)")
+    rb.add_argument("capital", type=float, help="deposit size in USD")
+    rb.add_argument("--apply", action="store_true",
+                    help="record the target as the new paper portfolio")
+    rb.set_defaults(func=cmd_rebalance)
+
+    ps = sub.add_parser("positions", help="show current paper positions")
+    ps.set_defaults(func=cmd_positions)
 
     sub.choices["status"].set_defaults(func=cmd_status)
     return p

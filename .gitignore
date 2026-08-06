@@ -16,3 +16,6 @@ venv/
 *.egg-info/
 build/
 dist/
+
+# paper portfolio state
+positions.json

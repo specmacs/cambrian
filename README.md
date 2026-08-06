@@ -96,7 +96,26 @@ python -m cambrian scan-base --min-tvl 250000     # rank Base pools by fee APR (
 python -m cambrian scan-base --raw                # dump real column names (see note below)
 python -m cambrian evaluate-base-lp --position 250   # scan + run each pool through the desk
 python -m cambrian allocate 0x<token>             # LP vs lending: which yields more
+python -m cambrian plan 10000                     # turn a deposit into a target portfolio (the brain)
+python -m cambrian rebalance 10000 --apply        # plan moves current -> target, record it (the babysitter)
+python -m cambrian positions                      # show current paper positions
 ```
+
+### The manager (deposit → portfolio → rebalance, all dry-run)
+
+`plan <capital>` is the brain: it scores every pool (discounting emissions,
+subtracting an IL cost sized to the pair's volatility, rejecting thin/yieldless
+traps), sorts survivors into a **barbell** — a low-risk `core` sleeve and a
+capped high-yield `satellite` sleeve — sizes them under per-pool and per-token
+concentration caps, and holds the rest as a stable reserve. Any deposit scales
+the weights. `rebalance` diffs your current paper positions against a fresh
+target and emits the minimal ENTER/EXIT/RESIZE moves, journaling each. Policy
+(sleeve budgets, caps, emission discount, IL costs) lives in `base_config.py`.
+
+**Everything above is simulation.** It decides and sizes real positions and logs
+every move, but moves no funds — placing/pulling actual liquidity (signing) is
+the one deliberate seam left unbuilt in `execution.py`, so you can trust the
+brain's picks before a cent is at risk.
 
 - **`scan-base`** — pulls pools across Aerodrome / Uniswap-v3 / Pancake / Sushi /
   AlienBase / Clones, computes fee APR, filters by TVL, ranks. Read-only.

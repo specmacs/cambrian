@@ -8,9 +8,17 @@ the live one don't get tangled.
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 
 BASE_CHAIN_ID = 8453
+
+# Token symbols used to classify a pair's impermanent-loss risk. A stable/stable
+# pool barely drifts; a pool with an unknown token is where you get rugged.
+STABLES = {"USDC", "USDT", "DAI", "USDBC", "USDS", "GHO", "SDAI", "USD+",
+           "EURC", "CRVUSD", "LUSD", "USDE", "USDA"}
+BLUECHIPS = {"WETH", "ETH", "CBETH", "WSTETH", "CBBTC", "WBTC", "RETH",
+             "EZETH", "WEETH", "AERO"}
 
 # DEX -> the Cambrian "list pools" endpoint for it (confirmed present in the API
 # path list). Aerodrome v3 only exposed /pool (single), so it's omitted here.
@@ -44,3 +52,38 @@ class BaseLPLimits:
 
 
 BASE_LP = BaseLPLimits()
+
+
+@dataclass
+class BaseLPPolicy:
+    """How the allocator turns a deposit into a portfolio.
+
+    The barbell: most capital in low-risk 'core' pools (known tokens, low IL),
+    a capped slice in high-yield 'satellite' pools (exotic tokens), the rest held
+    as a stable reserve. Aggressive on yield, bounded on how much can blow up.
+    """
+    # Sleeve budgets as fractions of capital (remainder -> stable reserve).
+    core_target: float = 0.60
+    satellite_target: float = 0.25
+    # Concentration caps.
+    max_per_pool: float = 0.20
+    max_per_token: float = 0.35
+    max_core_positions: int = 4
+    max_satellite_positions: int = 3
+    # Only count this fraction of emission/incentive APR as durable yield —
+    # emissions decay and their tokens dump, so we don't take them at face value.
+    emission_credit: float = 0.40
+    # Reject anything below these after discounting.
+    min_effective_apr: float = 0.03
+    min_score: float = 0.0
+    min_tvl_usd: float = 250_000.0
+    # Rough annualized impermanent-loss cost by pair risk class (tune with data).
+    il_stable: float = 0.005
+    il_volatile: float = 0.08
+    il_exotic: float = 0.20
+
+
+BASE_POLICY = BaseLPPolicy()
+
+# Where the paper portfolio's current positions are persisted between runs.
+POSITIONS_FILE = os.getenv("BASE_POSITIONS", "positions.json")
