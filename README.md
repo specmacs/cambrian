@@ -172,6 +172,7 @@ via raw RPC + the Blockscout explorer.
 ```bash
 python -m cambrian runners --discover                 # list fresh WETH pools live (any pad)
 python -m cambrian runners                            # discover + score live (hot/watch/cold)
+python -m cambrian runners --watch --interval 60      # always-on: alert only on NEW runners
 python -m cambrian runners --fixture examples/runners_candidates.json  # score offline
 ```
 

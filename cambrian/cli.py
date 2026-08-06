@@ -481,6 +481,9 @@ def cmd_runners(args: argparse.Namespace) -> int:
     from .runners.score import rank_runners
     from .runners import config as rcfg
 
+    if args.watch:
+        return cmd_runners_watch(args)
+
     if args.discover:
         return _discover_fresh_pools(args)
 
@@ -493,9 +496,13 @@ def cmd_runners(args: argparse.Namespace) -> int:
             return 1
 
     ranked = rank_runners(candidates, include_cold=args.all)
-    journal = Journal(config.ORDER_JOURNAL)
     print(f"Fresh runners — {len(candidates)} candidates, {len(ranked)} flagged\n")
     print(f"  {'TIER':<7}{'TOKEN':<14}{'SCORE':>6}  SIGNALS / REASONS")
+    _emit_runners(ranked, Journal(config.ORDER_JOURNAL))
+    return 0
+
+
+def _emit_runners(ranked, journal) -> None:
     for s in ranked:
         color = _RED if s.tier == "hot" else _YEL if s.tier == "watch" else _DIM
         detail = "; ".join(s.signals) if s.signals else "; ".join(s.reasons)
@@ -505,6 +512,33 @@ def cmd_runners(args: argparse.Namespace) -> int:
             journal.record("signal", {"desk": "runners", "signal": "runner",
                                       "subject": s.candidate.token, "tier": s.tier,
                                       "score": s.score, "signals": list(s.signals)})
+
+
+def cmd_runners_watch(args: argparse.Namespace) -> int:
+    """Always-on loop: rescan every interval, alert only on newly-flagged runners."""
+    import time
+    from .runners.score import rank_runners
+    from .runners.watch import load_seen, save_seen, select_new
+    from .runners import config as rcfg
+    seen = load_seen(rcfg.SEEN_FILE)
+    journal = Journal(config.ORDER_JOURNAL)
+    print(f"watching for fresh runners every {args.interval}s "
+          f"({len(seen)} tokens already seen) — Ctrl-C to stop")
+    try:
+        while True:
+            candidates = _scan_live_candidates(args)
+            if candidates is not None:
+                fresh = select_new(rank_runners(candidates, include_cold=args.all), seen)
+                if fresh:
+                    _emit_runners(fresh, journal)
+                    for s in fresh:
+                        seen.add(s.candidate.token.lower())
+                    save_seen(rcfg.SEEN_FILE, seen)
+                else:
+                    print(f"  {_DIM}· no new runners{_RST}")
+            time.sleep(max(args.interval, 1))
+    except KeyboardInterrupt:
+        print("\nstopped.")
     return 0
 
 
@@ -747,8 +781,12 @@ def build_parser() -> argparse.ArgumentParser:
     ru.add_argument("--fixture", help="JSON of candidates to score")
     ru.add_argument("--discover", action="store_true",
                     help="list fresh WETH pools live from the V3 factory")
+    ru.add_argument("--watch", action="store_true",
+                    help="always-on: rescan on an interval, alert only on new runners")
+    ru.add_argument("--interval", type=int, default=60,
+                    help="seconds between scans in --watch mode")
     ru.add_argument("--blocks", type=int, default=5000,
-                    help="how many blocks back to scan for --discover")
+                    help="how many blocks back to scan")
     ru.add_argument("--all", action="store_true", help="include cold candidates")
     ru.set_defaults(func=cmd_runners)
 

@@ -21,6 +21,9 @@ WETH_USD = float(os.getenv("RH_WETH_USD", "3000"))
 # ~5 minutes of RH blocks (100ms block time -> ~3000 blocks). Tune per real cadence.
 WINDOW_BLOCKS = int(os.getenv("RH_WINDOW_BLOCKS", "3000"))
 
+# Where the watch loop remembers already-surfaced tokens (so it alerts once).
+SEEN_FILE = os.getenv("RH_SEEN_FILE", "runners_seen.json")
+
 # name -> {address, created_topic0, start_block, amm}
 # `created_topic0` is left blank on purpose: discover_fresh SKIPS a pad without
 # it (fail closed), so nothing runs on a guessed event signature. Fill it from

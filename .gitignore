@@ -19,3 +19,4 @@ dist/
 
 # paper portfolio state
 positions.json
+runners_seen.json
