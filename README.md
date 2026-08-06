@@ -93,6 +93,7 @@ in `base_config.py`; the RH `config.py` stays untouched for when coverage lands.
 ```bash
 python -m cambrian probe-cambrian                 # auth-check, list indexed chains
 python -m cambrian scan-base --min-tvl 250000     # rank Base pools by fee APR (read-only)
+python -m cambrian field                          # best APY across the WHOLE field (LP + lending)
 python -m cambrian scan-base --raw                # dump real column names (see note below)
 python -m cambrian evaluate-base-lp --position 250   # scan + run each pool through the desk
 python -m cambrian allocate 0x<token>             # LP vs lending: which yields more
@@ -128,7 +129,11 @@ deliberate seam left unbuilt in `execution.py`, so you can trust the brain's
 picks before a cent is at risk.
 
 - **`scan-base`** — pulls pools across Aerodrome / Uniswap-v3 / Pancake / Sushi /
-  AlienBase / Clones, computes fee APR, filters by TVL, ranks. Read-only.
+  AlienBase / Clones (every pool, paginated — not just the first page), computes
+  fee APR, filters by TVL, ranks. Read-only.
+- **`field`** — the whole yield field in one ranked list: every LP pool *and*
+  every lending market (Aave / Euler / Morpho), best APY first, each LP row
+  tagged with how much of its APR is durable swap fees vs. emissions.
 - **`evaluate-base-lp`** — same LP guardrails (venue allowlist, TVL floor,
   fee-APR-vs-IL stress test, exposure caps), minus the equity gates (crypto is
   24/7). Journals every decision, dry-run.

@@ -239,6 +239,33 @@ def cmd_scan_base(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_field(args: argparse.Namespace) -> int:
+    """The whole yield field on Base: LP pools + lending, ranked by APY."""
+    from .feeds.cambrian_api import CambrianClient, CambrianError
+    from .base.lending import normalize_market
+    from .base.opportunities import build_opportunities
+    try:
+        client = CambrianClient()
+        pools, errors = _load_base_pools(client)
+        markets = [normalize_market(r) for r in client.lending_overview()]
+    except (CambrianError, requests.RequestException) as exc:
+        print(f"{_RED}{exc}{_RST}")
+        return 1
+
+    opps = build_opportunities(pools, markets, min_tvl_usd=args.min_tvl,
+                               max_results=args.n)
+    print(f"Best yield across Base — {len(pools)} pools + {len(markets)} lending "
+          f"markets, top {len(opps)} above {_usd(args.min_tvl)} TVL\n")
+    print(f"  {'#':>2} {'KIND':<5}{'VENUE':<14}{'ASSET/PAIR':<16}{'APR':>9}{'TVL':>14}  DETAIL")
+    for i, o in enumerate(opps, 1):
+        kc = _GREEN if o.kind == "LEND" else _YEL
+        print(f"  {i:>2} {kc}{o.kind:<5}{_RST}{o.venue:<14}{o.label[:16]:<16}"
+              f"{_pct(o.apr):>9}{_usd(o.tvl_usd):>14}  {_DIM}{o.detail}{_RST}")
+    for e in errors:
+        print(f"  {_YEL}· {e}{_RST}")
+    return 0
+
+
 def cmd_evaluate_base_lp(args: argparse.Namespace) -> int:
     """Scan Base pools, then run each through the Base LP desk (dry-run)."""
     from .feeds.cambrian_api import CambrianClient, CambrianError
@@ -515,6 +542,13 @@ def build_parser() -> argparse.ArgumentParser:
     sb.add_argument("--raw", action="store_true",
                     help="print the real column names from one DEX (to confirm ALIASES)")
     sb.set_defaults(func=cmd_scan_base)
+
+    fd = sub.add_parser("field",
+                        help="best APY across the whole field (LP + lending), ranked")
+    fd.add_argument("--min-tvl", type=float, default=250_000.0,
+                    help="TVL floor in USD (default 250k)")
+    fd.add_argument("-n", type=int, default=40, help="max rows to show")
+    fd.set_defaults(func=cmd_field)
 
     eb = sub.add_parser("evaluate-base-lp",
                         help="scan Base pools and run each through the Base LP desk")
