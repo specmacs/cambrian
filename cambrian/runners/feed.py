@@ -21,6 +21,31 @@ from .uniswap_v3 import (POOLCREATED_TOPIC0, SWAP_TOPIC0, aggregate_swaps,
                          decode_pool_created, decode_v3_swap)
 
 
+def find_contracts(client: ChainClient, *, from_block: str,
+                   to_block: str = "latest") -> dict[str, dict[str, int]]:
+    """Self-bootstrap the DEX contract addresses from the chain itself.
+
+    Every V3 `PoolCreated` log is emitted by the V3 factory, and every v4
+    `Initialize` log by the PoolManager — so scanning those topic0s *unfiltered
+    by address* and tallying emitters reveals both. The most frequent address per
+    event is the real contract (confirms the V3 factory, discovers the v4
+    PoolManager). No address needed up front.
+    """
+    from .uniswap_v3 import POOLCREATED_TOPIC0
+    from .uniswap_v4 import INITIALIZE_TOPIC0
+    out: dict[str, dict[str, int]] = {}
+    for key, topic in (("v3_factory", POOLCREATED_TOPIC0),
+                       ("pool_manager", INITIALIZE_TOPIC0)):
+        counts: dict[str, int] = {}
+        for log in client.get_logs(topics=[topic], from_block=from_block,
+                                   to_block=to_block):
+            a = (log.get("address") or "").lower()
+            if a:
+                counts[a] = counts.get(a, 0) + 1
+        out[key] = counts
+    return out
+
+
 def discover_new_pools(client: ChainClient, *, v3_factory: str, weth: str,
                        from_block: str, to_block: str = "latest") -> list[dict]:
     """Every fresh WETH-paired V3 pool created in the window — pad-agnostic.

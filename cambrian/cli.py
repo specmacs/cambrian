@@ -481,6 +481,9 @@ def cmd_runners(args: argparse.Namespace) -> int:
     from .runners.score import rank_runners
     from .runners import config as rcfg
 
+    if args.find_contracts:
+        return _find_contracts(args)
+
     if args.watch:
         return cmd_runners_watch(args)
 
@@ -562,6 +565,31 @@ def _scan_live_candidates(args: argparse.Namespace):
     except (RpcError, requests.RequestException) as exc:
         print(f"{_RED}{exc}{_RST}")
         return None
+
+
+def _find_contracts(args: argparse.Namespace) -> int:
+    """Self-bootstrap the V3 factory + v4 PoolManager from on-chain events."""
+    from .chain import ChainClient, RpcError
+    from .runners.feed import find_contracts
+    from .runners import config as rcfg
+    try:
+        client = ChainClient()
+        latest = client.block_number()
+        found = find_contracts(client, from_block=hex(max(latest - args.blocks, 0)))
+    except (RpcError, requests.RequestException) as exc:
+        print(f"{_RED}{exc}{_RST}")
+        return 1
+    for key, counts in found.items():
+        print(f"\n{key} (emitters of {'PoolCreated' if key=='v3_factory' else 'Initialize'}):")
+        if not counts:
+            print(f"  {_DIM}none in last {args.blocks} blocks — widen --blocks{_RST}")
+        for addr, n in sorted(counts.items(), key=lambda kv: -kv[1]):
+            print(f"  {_GREEN}{addr}{_RST}  ({n} events)")
+    cfg_v3 = rcfg.CONTRACTS.get("v3_factory", "").lower()
+    if cfg_v3 and cfg_v3 in found.get("v3_factory", {}):
+        print(f"\n  {_GREEN}✓ configured v3_factory matches on-chain{_RST}")
+    print(f"\n  {_DIM}put the top pool_manager address into CONTRACTS to enable v4{_RST}")
+    return 0
 
 
 def _discover_fresh_pools(args: argparse.Namespace) -> int:
@@ -781,6 +809,8 @@ def build_parser() -> argparse.ArgumentParser:
     ru.add_argument("--fixture", help="JSON of candidates to score")
     ru.add_argument("--discover", action="store_true",
                     help="list fresh WETH pools live from the V3 factory")
+    ru.add_argument("--find-contracts", action="store_true",
+                    help="self-discover the V3 factory + v4 PoolManager from chain events")
     ru.add_argument("--watch", action="store_true",
                     help="always-on: rescan on an interval, alert only on new runners")
     ru.add_argument("--interval", type=int, default=60,
