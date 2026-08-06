@@ -29,6 +29,8 @@ class Position:
     sleeve: str
     expected_apr: float    # risk-adjusted net APR (the score)
     reason: str
+    entry_apr: float | None = None   # pool's all-in APR at entry (for the monitor)
+    entry_tvl: float | None = None   # pool's TVL at entry (for the monitor)
 
 
 @dataclass(frozen=True)
@@ -94,8 +96,8 @@ def build_portfolio(capital_usd: float, scored: list[PoolScore],
     positions = tuple(
         Position(dex=c.pool.dex, pool=c.pool.address, label=c.pool.label,
                  usd=round(usd, 2), weight=usd / capital_usd, sleeve=c.sleeve,
-                 expected_apr=c.score,
-                 reason="; ".join(c.reasons))
+                 expected_apr=c.score, reason="; ".join(c.reasons),
+                 entry_apr=c.pool.fee_apr, entry_tvl=c.pool.tvl_usd)
         for c, usd in picks
     )
     deployed = sum(p.usd for p in positions)

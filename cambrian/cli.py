@@ -360,7 +360,8 @@ def cmd_rebalance(args: argparse.Namespace) -> int:
                                  "label": a.label, "notional_usd": a.to_usd})
 
     if args.apply:
-        new_state = {p.pool: {"usd": p.usd, "label": p.label}
+        new_state = {p.pool: {"usd": p.usd, "label": p.label, "sleeve": p.sleeve,
+                              "entry_apr": p.entry_apr, "entry_tvl": p.entry_tvl}
                      for p in target.positions}
         state.save_positions(base_config.POSITIONS_FILE, new_state)
         print(f"\n  {_DIM}paper positions updated (dry-run){_RST}")
@@ -381,6 +382,70 @@ def cmd_positions(args: argparse.Namespace) -> int:
     print(f"paper portfolio — {len(pos)} positions, {_usd(total)} deployed\n")
     for pool, rec in sorted(pos.items(), key=lambda kv: -float(kv[1].get("usd", 0))):
         print(f"  {rec.get('label', pool):<18} {_usd(float(rec.get('usd', 0)))}")
+    return 0
+
+
+def _is_stable_label(label: str) -> bool:
+    from . import base_config
+    if "/" not in label:
+        return False
+    a, b = (s.strip().upper() for s in label.split("/", 1))
+    return a in base_config.STABLES and b in base_config.STABLES
+
+
+def cmd_monitor(args: argparse.Namespace) -> int:
+    """Watch current positions; fire rotations on decay/drain and flight-to-stables."""
+    from .feeds.cambrian_api import CambrianClient, CambrianError
+    from .base.monitor import Holding, assess
+    from .base import state
+    from . import base_config
+
+    pos = state.load_positions(base_config.POSITIONS_FILE)
+    if not pos:
+        print("no open paper positions to monitor")
+        return 0
+    try:
+        client = CambrianClient()
+        live, _ = _load_base_pools(client)
+    except (CambrianError, requests.RequestException) as exc:
+        print(f"{_RED}{exc}{_RST}")
+        return 1
+    cur = {p.address: p for p in live}
+
+    holdings = []
+    for pool, rec in pos.items():
+        lp = cur.get(pool)
+        holdings.append(Holding(
+            pool=pool, label=rec.get("label", pool), usd=float(rec.get("usd", 0)),
+            is_stable=_is_stable_label(rec.get("label", "")),
+            entry_apr=rec.get("entry_apr"),
+            current_apr=(lp.fee_apr if lp else None),
+            entry_tvl=rec.get("entry_tvl"),
+            current_tvl=(lp.tvl_usd if lp else None),
+        ))
+
+    report = assess(holdings, market_drawdown=args.market_drop,
+                    portfolio_drawdown=args.book_drawdown)
+    journal = Journal(config.ORDER_JOURNAL)
+
+    if report.go_stable:
+        print(f"{_RED}CIRCUIT BREAKER — FLIGHT TO STABLES{_RST}")
+        for r in report.breaker_reasons:
+            print(f"  {_RED}! {r}{_RST}")
+    print(f"\n  {'POOL':<18}{'ACTION':<9}WHY")
+    for t in report.triggers:
+        color = _RED if t.action == "ROTATE" else _GREEN
+        print(f"  {t.label[:18]:<18}{color}{t.action:<9}{_RST}"
+              f"{'; '.join(t.reasons)}")
+        if t.action == "ROTATE":
+            journal.record("signal", {"desk": "base-lp", "signal": "rotate",
+                                      "subject": t.pool, "label": t.label,
+                                      "reasons": list(t.reasons)})
+    n = len(report.rotations)
+    print(f"\n  {n} rotation signal(s)"
+          + (" — all to stables" if report.go_stable else ""))
+    print(f"  {_DIM}(price stop-loss needs token-price wiring; APR-decay + "
+          f"TVL-drain + breaker are live){_RST}")
     return 0
 
 
@@ -478,6 +543,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     ps = sub.add_parser("positions", help="show current paper positions")
     ps.set_defaults(func=cmd_positions)
+
+    mo = sub.add_parser("monitor",
+                        help="watch positions; fire rotations + flight-to-stables")
+    mo.add_argument("--market-drop", type=float, default=None,
+                    help="benchmark drawdown as a fraction (e.g. 0.15) to test the breaker")
+    mo.add_argument("--book-drawdown", type=float, default=None,
+                    help="portfolio drawdown from high-water as a fraction")
+    mo.set_defaults(func=cmd_monitor)
 
     sub.choices["status"].set_defaults(func=cmd_status)
     return p

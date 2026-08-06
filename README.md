@@ -99,6 +99,8 @@ python -m cambrian allocate 0x<token>             # LP vs lending: which yields 
 python -m cambrian plan 10000                     # turn a deposit into a target portfolio (the brain)
 python -m cambrian rebalance 10000 --apply        # plan moves current -> target, record it (the babysitter)
 python -m cambrian positions                      # show current paper positions
+python -m cambrian monitor                        # watch positions; fire rotations
+python -m cambrian monitor --market-drop 0.18     # test the flight-to-stables breaker
 ```
 
 ### The manager (deposit → portfolio → rebalance, all dry-run)
@@ -112,10 +114,18 @@ the weights. `rebalance` diffs your current paper positions against a fresh
 target and emits the minimal ENTER/EXIT/RESIZE moves, journaling each. Policy
 (sleeve budgets, caps, emission discount, IL costs) lives in `base_config.py`.
 
-**Everything above is simulation.** It decides and sizes real positions and logs
-every move, but moves no funds — placing/pulling actual liquidity (signing) is
-the one deliberate seam left unbuilt in `execution.py`, so you can trust the
-brain's picks before a cent is at risk.
+`monitor` is the defense — the piece that makes active rotation actually work.
+Two layers: **per-position triggers** (a pool's APR decaying below a fraction of
+entry, its TVL draining, or the volatile leg breaking a stop-loss → rotate out),
+and a **flight-to-stables circuit breaker** (a market-wide dump or a book-level
+max-drawdown → pull *everything* non-stable to the reserve, because in a cascade
+there's no green farm to rotate into). Thresholds live in `MonitorPolicy` in
+`base_config.py`.
+
+**Everything above is simulation.** It decides, sizes, rotates, and logs every
+move, but moves no funds — placing/pulling actual liquidity (signing) is the one
+deliberate seam left unbuilt in `execution.py`, so you can trust the brain's
+picks before a cent is at risk.
 
 - **`scan-base`** — pulls pools across Aerodrome / Uniswap-v3 / Pancake / Sushi /
   AlienBase / Clones, computes fee APR, filters by TVL, ranks. Read-only.

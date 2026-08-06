@@ -85,5 +85,23 @@ class BaseLPPolicy:
 
 BASE_POLICY = BaseLPPolicy()
 
+
+@dataclass
+class MonitorPolicy:
+    """When to rotate a position, and when to pull the whole book to stables.
+
+    The first three are per-position rotation triggers (the slow-bleed defense).
+    The last two are the global circuit breaker: in a market-wide dump you don't
+    rotate farm-to-farm — everything's red — you go to stables.
+    """
+    rotate_apr_frac: float = 0.5    # rotate if a pool's APR falls below 50% of entry
+    rotate_tvl_frac: float = 0.5    # rotate if its TVL drains below 50% of entry
+    stop_loss_pct: float = 0.25     # rotate if the volatile leg is down 25% from entry
+    market_dump_pct: float = 0.15   # benchmark down 15% in the window -> flight to stables
+    max_drawdown: float = 0.20      # book down 20% from its high-water mark -> flight to stables
+
+
+MONITOR = MonitorPolicy()
+
 # Where the paper portfolio's current positions are persisted between runs.
 POSITIONS_FILE = os.getenv("BASE_POSITIONS", "positions.json")
