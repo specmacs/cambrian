@@ -24,8 +24,8 @@ except ImportError:
 
 CHAIN_ID = 4663                       # Robinhood Chain mainnet
 CHAIN_NAME = "Robinhood Chain"
-RPC_URL = os.getenv("RH_RPC_URL", "")  # from Chainstack / 1inch / Goldsky / public
-EXPLORER = "https://explorer.rhchain.com"  # verify; Blockscout instance
+RPC_URL = os.getenv("RH_RPC_URL", "")  # public: https://rpc.mainnet.chain.robinhood.com
+EXPLORER = "https://robinhoodchain.blockscout.com"  # official Blockscout instance
 NATIVE_GAS_TOKEN = "ETH"
 BLOCK_TIME_MS = 100
 
