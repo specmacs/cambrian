@@ -17,7 +17,33 @@ from typing import Any
 from ..chain import ChainClient
 from . import config as rcfg
 from .snapshots import RunnerCandidate
-from .uniswap_v3 import SWAP_TOPIC0, aggregate_swaps, decode_v3_swap
+from .uniswap_v3 import (POOLCREATED_TOPIC0, SWAP_TOPIC0, aggregate_swaps,
+                         decode_pool_created, decode_v3_swap)
+
+
+def discover_new_pools(client: ChainClient, *, v3_factory: str, weth: str,
+                       from_block: str, to_block: str = "latest") -> list[dict]:
+    """Every fresh WETH-paired V3 pool created in the window — pad-agnostic.
+
+    Watches the V3 factory's PoolCreated event, so it catches launches from any
+    launchpad (Pons, Noxa, Pools.trade, …) without needing each pad's custom
+    event ABI. Returns {token, pool, fee, weth_is_token0} per new pool.
+    """
+    weth_l = weth.lower()
+    out: list[dict] = []
+    for log in client.get_logs(address=v3_factory, topics=[POOLCREATED_TOPIC0],
+                               from_block=from_block, to_block=to_block):
+        d = decode_pool_created(log)
+        t0, t1 = d["token0"].lower(), d["token1"].lower()
+        if weth_l not in (t0, t1):
+            continue
+        out.append({
+            "token": d["token1"] if t0 == weth_l else d["token0"],
+            "pool": d["pool"],
+            "fee": d["fee"],
+            "weth_is_token0": t0 == weth_l,
+        })
+    return out
 
 
 def discover_fresh(client: ChainClient, *, from_block: str, to_block: str = "latest",

@@ -481,18 +481,16 @@ def cmd_runners(args: argparse.Namespace) -> int:
     from .runners.score import rank_runners
     from .runners import config as rcfg
 
+    if args.discover:
+        return _discover_fresh_pools(args)
+
     if args.fixture:
         fx = _load(args.fixture)
         candidates = [RunnerCandidate(**c) for c in fx["candidates"]]
     else:
-        if not rcfg.LAUNCHPADS:
-            print(f"{_YEL}No launchpads configured. Fill LAUNCHPADS in "
-                  f"cambrian/runners/config.py (factory address + created event "
-                  f"topic0), and set RH_RPC_URL — then live discovery works. "
-                  f"For now: `runners --fixture examples/runners_candidates.json`{_RST}")
-            return 1
-        print(f"{_YEL}Live discovery seam: LAUNCHPADS set but enrich() is unwired "
-              f"(needs each pad's event ABI + explorer metrics). Use --fixture.{_RST}")
+        print(f"{_YEL}Give --fixture for scoring, or --discover to list fresh "
+              f"WETH pools live from the V3 factory. Full live scoring also needs "
+              f"holders/price wiring (see runners/feed.py enrich).{_RST}")
         return 1
 
     ranked = rank_runners(candidates, include_cold=args.all)
@@ -508,6 +506,33 @@ def cmd_runners(args: argparse.Namespace) -> int:
             journal.record("signal", {"desk": "runners", "signal": "runner",
                                       "subject": s.candidate.token, "tier": s.tier,
                                       "score": s.score, "signals": list(s.signals)})
+    return 0
+
+
+def _discover_fresh_pools(args: argparse.Namespace) -> int:
+    from .feeds.cambrian_api import CambrianError  # reused error type
+    from .chain import ChainClient, RpcError
+    from .runners.feed import discover_new_pools
+    from .runners import config as rcfg
+    c = rcfg.CONTRACTS
+    if not c.get("v3_factory") or not c.get("weth"):
+        print(f"{_RED}Set v3_factory + weth in runners/config.py CONTRACTS{_RST}")
+        return 1
+    try:
+        client = ChainClient()
+        latest = client.block_number()
+        from_block = hex(max(latest - args.blocks, 0))
+        pools = discover_new_pools(client, v3_factory=c["v3_factory"],
+                                   weth=c["weth"], from_block=from_block)
+    except (RpcError, requests.RequestException) as exc:
+        print(f"{_RED}{exc}{_RST}")
+        return 1
+    print(f"Fresh WETH pools in last {args.blocks} blocks: {len(pools)}\n")
+    for p in pools:
+        print(f"  {_GREEN}NEW{_RST} token {p['token']}  pool {p['pool']}  "
+              f"fee {p['fee']}")
+    if not pools:
+        print(f"  {_DIM}(none — or verify v3_factory/weth/POOLCREATED_TOPIC0){_RST}")
     return 0
 
 
@@ -680,7 +705,11 @@ def build_parser() -> argparse.ArgumentParser:
     ru = sub.add_parser("runners",
                         help="rank fresh RH-Chain launches by runner signal "
                              "(watch the pads from above)")
-    ru.add_argument("--fixture", help="JSON of candidates (until live feed is wired)")
+    ru.add_argument("--fixture", help="JSON of candidates to score")
+    ru.add_argument("--discover", action="store_true",
+                    help="list fresh WETH pools live from the V3 factory")
+    ru.add_argument("--blocks", type=int, default=5000,
+                    help="how many blocks back to scan for --discover")
     ru.add_argument("--all", action="store_true", help="include cold candidates")
     ru.set_defaults(func=cmd_runners)
 

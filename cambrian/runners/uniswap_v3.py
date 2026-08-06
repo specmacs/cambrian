@@ -23,7 +23,43 @@ from typing import Any
 # canonical Uniswap V3 Swap event topic0. Verify against a real log if unsure.
 SWAP_TOPIC0 = "0xc42079f94a6350d7e6235f29174924f928cc2ac818eb64fed8004e115fbcca67"
 
+# keccak256("PoolCreated(address,address,uint24,int24,address)") — V3 factory's
+# new-pool event. Watching this catches EVERY fresh V3 pool regardless of which
+# launchpad minted the token. Verify against a real log if unsure.
+POOLCREATED_TOPIC0 = "0x783cca1c0412dd0d695e784568c96da2e9c22ff989357a2e8b1d9b2b4e6b7118"
+
 WETH_DECIMALS = 18
+
+
+def _addr(topic_or_word: str) -> str:
+    """Last 20 bytes of a 32-byte word -> checksummed-length lowercase address."""
+    h = topic_or_word[2:] if topic_or_word.startswith("0x") else topic_or_word
+    return "0x" + h[-40:]
+
+
+def decode_pool_created(log: dict) -> dict:
+    """Decode a V3 factory PoolCreated log.
+
+    token0, token1, fee are indexed (topics 1-3); tickSpacing + pool are the data.
+    """
+    topics = log["topics"]
+    data = log["data"][2:] if log["data"].startswith("0x") else log["data"]
+    return {
+        "token0": _addr(topics[1]),
+        "token1": _addr(topics[2]),
+        "fee": int(topics[3], 16),
+        "tickSpacing": _signed(data[0:64]),
+        "pool": _addr(data[64:128]),
+    }
+
+
+def price0_in_1(sqrt_price_x96: int, decimals0: int, decimals1: int) -> float:
+    """Human-unit price of token0 denominated in token1, from sqrtPriceX96.
+
+        price = (sqrtPriceX96 / 2**96)**2 * 10**(decimals0 - decimals1)
+    """
+    ratio = (sqrt_price_x96 / (1 << 96)) ** 2
+    return ratio * (10 ** (decimals0 - decimals1))
 
 
 def _signed(word_hex: str) -> int:

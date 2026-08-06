@@ -30,6 +30,19 @@ LAUNCHPADS: dict[str, dict[str, str]] = {
     # (Noxa fee vault 0x9eFdC1A8e6E94f16A228e44f3025E1f346EE0417 is NOT the factory)
 }
 
+# RH Chain contract addresses — search-derived, ALL UNVERIFIED. Confirm every
+# one on explorer.rhchain.com before going live. Discovery watches the V3
+# factory's PoolCreated event, which catches every fresh WETH pool regardless of
+# which pad minted the token — so these few addresses replace per-pad event ABIs.
+CONTRACTS = {
+    # Uniswap's canonical deterministic V3 factory (same across most chains).
+    "v3_factory": "0x1F98431c8aD98523631AE4a59f267346ea31F984",
+    "weth": "0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73",
+    "usdg": "0x5fc5360d0400a0fd4f2af552add042d716f1d168",
+    # A deep WETH/USDG V3 pool for pricing WETH in USD (fill from the explorer).
+    "weth_usd_pool": "",
+}
+
 # Smart-money addresses to follow. A watched wallet buying a fresh token is the
 # strongest single signal there is. Curate by hand to start.
 WATCHED_WALLETS: set[str] = set()
