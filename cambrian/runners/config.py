@@ -42,21 +42,20 @@ LAUNCHPADS: dict[str, dict[str, str]] = {
     # (Noxa fee vault 0x9eFdC1A8e6E94f16A228e44f3025E1f346EE0417 is NOT the factory)
 }
 
-# RH Chain contract addresses — search-derived, ALL UNVERIFIED. Confirm every
-# one on explorer.rhchain.com before going live. Discovery watches the V3
-# factory's PoolCreated event, which catches every fresh WETH pool regardless of
-# which pad minted the token — so these few addresses replace per-pad event ABIs.
+# RH Chain contract addresses. v3_factory + pool_manager are CHAIN-VERIFIED via
+# `runners --find-contracts` (the dominant emitters of PoolCreated / Initialize) —
+# RH does NOT use Uniswap's canonical V3 factory address, so don't "fix" it back.
+# weth/usdg are search-derived — spot-check on robinhoodchain.blockscout.com.
 CONTRACTS = {
-    # Uniswap's canonical deterministic V3 factory (same across most chains).
-    "v3_factory": "0x1F98431c8aD98523631AE4a59f267346ea31F984",
+    "v3_factory": "0x1f7d7550b1b028f7571e69a784071f0205fd2efa",   # chain-verified
+    "pool_manager": "0x8366a39cc670b4001a1121b8f6a443a643e40951",  # chain-verified (v4)
     "weth": "0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73",
     "usdg": "0x5fc5360d0400a0fd4f2af552add042d716f1d168",
-    # A deep WETH/USDG V3 pool for pricing WETH in USD (fill from the explorer).
-    "weth_usd_pool": "",
-    # Uniswap v4 singleton PoolManager (Pons v2 launches into v4). Fill from the
-    # Uniswap v4 deployments page / explorer — no reliable cross-chain default.
-    "pool_manager": "",
     "native_eth": "0x0000000000000000000000000000000000000000",
+    # A deep WETH/USDG V3 pool for pricing WETH in USD (optional; fill from explorer).
+    "weth_usd_pool": "",
+    # Secondary v3-style factory seen on-chain (2 pools) — likely the Clones fork:
+    # 0xe51960f1b45f1c9fb6d166e6a884f866fc70433b
 }
 
 # Smart-money addresses to follow. A watched wallet buying a fresh token is the
