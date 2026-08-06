@@ -227,10 +227,10 @@ def cmd_scan_base(args: argparse.Namespace) -> int:
     ranked = scan(pools, min_tvl_usd=args.min_tvl, max_results=args.n)
     print(f"Base LP yield — {len(pools)} pools scanned, "
           f"{len(ranked)} clear TVL>={_usd(args.min_tvl)}\n")
-    print(f"  {'DEX':<14} {'PAIR':<18} {'TVL':>14} {'FEE APR':>9}")
+    print(f"  {'DEX':<14} {'PAIR':<16} {'TVL':>13} {'ALL-IN APR':>11} {'FEES ONLY':>10}")
     for p in ranked:
-        print(f"  {p.dex:<14} {p.label[:18]:<18} {_usd(p.tvl_usd):>14} "
-              f"{_pct(p.fee_apr):>9}")
+        print(f"  {p.dex:<14} {p.label[:16]:<16} {_usd(p.tvl_usd):>13} "
+              f"{_pct(p.fee_apr):>11} {_pct(p.swap_fee_apr):>10}")
     for e in errors:
         print(f"  {_YEL}· {e}{_RST}")
     if pools and not ranked:

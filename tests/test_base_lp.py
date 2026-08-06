@@ -11,8 +11,8 @@ LIMITS = BaseLPLimits()
 
 def pool(**over) -> PoolYield:
     base = dict(dex="aerodrome-v2", address="0xpool", label="WETH/USDC",
-                tvl_usd=2_000_000.0, fee_apr=0.20, volume_usd=1_000_000.0,
-                token_addrs=("0xweth", "0xusdc"))
+                tvl_usd=2_000_000.0, fee_apr=0.20, swap_fee_apr=0.05,
+                volume_usd=1_000_000.0, token_addrs=("0xweth", "0xusdc"))
     base.update(over)
     return PoolYield(**base)
 
