@@ -17,6 +17,7 @@ from typing import Any
 from ..chain import ChainClient
 from . import config as rcfg
 from .snapshots import RunnerCandidate
+from .uniswap_v3 import SWAP_TOPIC0, aggregate_swaps, decode_v3_swap
 
 
 def discover_fresh(client: ChainClient, *, from_block: str, to_block: str = "latest",
@@ -39,20 +40,37 @@ def discover_fresh(client: ChainClient, *, from_block: str, to_block: str = "lat
     return hits
 
 
+def pool_swap_metrics(client: ChainClient, pool: str, *, from_block: str,
+                      to_block: str, weth_is_token0: bool,
+                      weth_price_usd: float) -> dict[str, float]:
+    """Volume + buy/sell counts for a V3 pool over a block window.
+
+    This half is fully wired — V3 `Swap` has a standard ABI and topic0, so it
+    works against any RH V3 pool once you have the pool address and WETH price.
+    """
+    logs = client.get_logs(address=pool, topics=[SWAP_TOPIC0],
+                           from_block=from_block, to_block=to_block)
+    swaps = [decode_v3_swap(log) for log in logs]
+    return aggregate_swaps(swaps, weth_is_token0=weth_is_token0,
+                           weth_price_usd=weth_price_usd)
+
+
 def enrich(client: ChainClient, hit: dict[str, Any]) -> RunnerCandidate:  # pragma: no cover
     """Turn a raw creation log into a full candidate.
 
-    SEAM — needs, per launchpad: decode the created event (token + pool address
-    from `hit['log']['topics']`/`data`), then from the explorer/DEX:
-      * liquidity_usd, volume_5m / prior_5m (swap events on the pool)
-      * holders, holders_5m_ago, top_holder_pct (Blockscout token holders)
-      * buys_5m / sells_5m (swap direction)
-      * smart_money_buyers (WATCHED_WALLETS present in recent buys)
-      * lp_locked, hook (v4 PoolManager)
-    Until wired, this raises so nothing silently scores on empty data.
+    Wired already: volume + buys/sells via `pool_swap_metrics` (standard V3
+    Swap ABI). Remaining seams, per launchpad:
+      * decode the created event -> token + V3 pool address (needs the pad's
+        created-event layout; that's why `created_topic0` must be filled)
+      * liquidity_usd (pool WETH balance x price), weth_price_usd
+      * holders, holders_5m_ago, top_holder_pct (Blockscout token-holders API)
+      * smart_money_buyers (WATCHED_WALLETS among recent buy `recipient`s)
+      * lp_locked (LP-token holder is a known locker / burn address)
+    Until those are wired, this raises so nothing silently scores on empty data.
     """
     raise NotImplementedError(
-        "enrich() needs each launchpad's created-event ABI + the explorer's "
-        "token/holder endpoints. Fill LAUNCHPADS and wire the metric fetches, "
-        "or feed the scorer candidates from a fixture (see `runners --fixture`)."
+        "enrich() still needs the pad's created-event layout + the explorer's "
+        "token/holder endpoints + WETH price. Swap volume/flow is wired "
+        "(pool_swap_metrics). Fill created_topic0 and wire those, or feed the "
+        "scorer from a fixture (see `runners --fixture`)."
     )

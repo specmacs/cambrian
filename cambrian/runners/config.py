@@ -12,12 +12,22 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-# name -> {"address": factory, "created_topic0": event-signature hash}
-# Fill from each pad's verified contract. Empty is the safe start.
+# name -> {address, created_topic0, start_block, amm}
+# `created_topic0` is left blank on purpose: discover_fresh SKIPS a pad without
+# it (fail closed), so nothing runs on a guessed event signature. Fill it from
+# the factory's verified contract on explorer.rhchain.com (the token-created
+# event), and CONFIRM the address there before trusting it.
 LAUNCHPADS: dict[str, dict[str, str]] = {
-    # "pons":        {"address": "0x____", "created_topic0": "0x____"},
-    # "noxa":        {"address": "0x____", "created_topic0": "0x____"},
-    # "pools_trade": {"address": "0x____", "created_topic0": "0x____"},
+    "pons": {
+        # UNVERIFIED — confirm on explorer.rhchain.com before going live.
+        "address": "0xA5aAb3F0c6EeadF30Ef1D3Eb997108E976351feB",
+        "created_topic0": "",       # <- fill from the factory's created event
+        "start_block": "8991118",
+        "amm": "uniswap-v3",        # Pons launches into Uniswap V3 vs WETH
+    },
+    # Pons legacy factory: 0x0c37a24F5D23A486FA692d1500881d698B1F77a4 (start 8600612)
+    # "noxa":  {"address": "0x____", "created_topic0": "", "amm": "uniswap-v3"},
+    # (Noxa fee vault 0x9eFdC1A8e6E94f16A228e44f3025E1f346EE0417 is NOT the factory)
 }
 
 # Smart-money addresses to follow. A watched wallet buying a fresh token is the
