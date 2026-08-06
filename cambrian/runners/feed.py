@@ -68,6 +68,51 @@ def discover_fresh(client: ChainClient, *, from_block: str, to_block: str = "lat
     return hits
 
 
+def discover_new_pools_v4(client: ChainClient, *, pool_manager: str, weth: str,
+                          from_block: str, to_block: str = "latest",
+                          native_eth: str | None = None) -> list[dict]:
+    """Fresh v4 pools paired against WETH or native ETH — with their hook.
+
+    v4 pools are PoolIds inside the singleton PoolManager, born on `Initialize`.
+    Returns {token, pool_id, hooks, fee, quote, quote_is_token0, block}. The
+    hook is captured because a v4 pool IS its hook — the degen desk reviews it.
+    """
+    from .uniswap_v4 import INITIALIZE_TOPIC0, NATIVE_ETH, decode_initialize
+    native = (native_eth or NATIVE_ETH).lower()
+    quotes = {weth.lower(), native}
+    out: list[dict] = []
+    for log in client.get_logs(address=pool_manager, topics=[INITIALIZE_TOPIC0],
+                               from_block=from_block, to_block=to_block):
+        d = decode_initialize(log)
+        c0, c1 = d["currency0"].lower(), d["currency1"].lower()
+        if not (quotes & {c0, c1}):
+            continue
+        quote_is_c0 = c0 in quotes
+        blk = log.get("blockNumber")
+        out.append({
+            "token": d["currency1"] if quote_is_c0 else d["currency0"],
+            "pool_id": d["pool_id"],
+            "hooks": d["hooks"],
+            "fee": d["fee"],
+            "quote": "ETH" if native in {c0, c1} else "WETH",
+            "quote_is_token0": quote_is_c0,
+            "block": int(blk, 16) if isinstance(blk, str) else blk,
+        })
+    return out
+
+
+def v4_pool_swap_metrics(client: ChainClient, *, pool_manager: str, pool_id: str,
+                         from_block: str, to_block: str, quote_is_token0: bool,
+                         quote_price_usd: float) -> dict[str, float]:
+    """Volume + buy/sell flow for a v4 pool, filtered by PoolId on the manager."""
+    from .uniswap_v4 import SWAP_TOPIC0, decode_v4_swap
+    logs = client.get_logs(address=pool_manager, topics=[SWAP_TOPIC0, pool_id],
+                           from_block=from_block, to_block=to_block)
+    swaps = [decode_v4_swap(lg) for lg in logs]
+    return aggregate_swaps(swaps, weth_is_token0=quote_is_token0,
+                           weth_price_usd=quote_price_usd)
+
+
 def pool_swap_metrics(client: ChainClient, pool: str, *, from_block: str,
                       to_block: str, weth_is_token0: bool,
                       weth_price_usd: float) -> dict[str, float]:

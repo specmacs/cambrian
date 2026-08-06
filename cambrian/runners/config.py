@@ -50,6 +50,10 @@ CONTRACTS = {
     "usdg": "0x5fc5360d0400a0fd4f2af552add042d716f1d168",
     # A deep WETH/USDG V3 pool for pricing WETH in USD (fill from the explorer).
     "weth_usd_pool": "",
+    # Uniswap v4 singleton PoolManager (Pons v2 launches into v4). Fill from the
+    # Uniswap v4 deployments page / explorer — no reliable cross-chain default.
+    "pool_manager": "",
+    "native_eth": "0x0000000000000000000000000000000000000000",
 }
 
 # Smart-money addresses to follow. A watched wallet buying a fresh token is the

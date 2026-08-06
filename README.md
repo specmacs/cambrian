@@ -189,8 +189,14 @@ Blockscout token holders — no Cambrian. The pipeline (`runners/feed.py`
 math) are unit-tested. **To go live:** set `RH_RPC_URL`, confirm the addresses in
 `runners/config.py` `CONTRACTS` on `explorer.rhchain.com` (they're search-derived,
 flagged UNVERIFIED), optionally set `RH_WETH_USD` and curate `WATCHED_WALLETS`.
-Note: newest Pons (v2) launches use Uniswap **v4** — v3 discovery catches the
-rest today; v4 is a clean follow-on.
+
+**Both Uniswap versions covered:** v3 discovery (factory `PoolCreated`) and **v4**
+discovery (PoolManager `Initialize`, which also captures each pool's **hook** —
+what the degen desk reviews). Pons v2 launches into v4, so `--discover` catches
+those too once you set `pool_manager` in `CONTRACTS`. v4 swap flow decodes with
+the same aggregator (v4 amounts share v3's pool-perspective sign). The remaining
+v4 gap is per-pool liquidity (it lives in the singleton, not a pool address) —
+until wired, v4 candidates fail closed on the liquidity filter.
 
 ## Honest limitations
 

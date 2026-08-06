@@ -546,12 +546,30 @@ def _discover_fresh_pools(args: argparse.Namespace) -> int:
     except (RpcError, requests.RequestException) as exc:
         print(f"{_RED}{exc}{_RST}")
         return 1
-    print(f"Fresh WETH pools in last {args.blocks} blocks: {len(pools)}\n")
+    print(f"Fresh V3 WETH pools in last {args.blocks} blocks: {len(pools)}")
     for p in pools:
-        print(f"  {_GREEN}NEW{_RST} token {p['token']}  pool {p['pool']}  "
-              f"fee {p['fee']}")
+        print(f"  {_GREEN}V3 {_RST} token {p['token']}  pool {p['pool']}  fee {p['fee']}")
+
+    # v4 (Pons v2 launches here) — only if the PoolManager is configured.
+    if c.get("pool_manager"):
+        from .runners.feed import discover_new_pools_v4
+        try:
+            v4 = discover_new_pools_v4(client, pool_manager=c["pool_manager"],
+                                       weth=c["weth"], native_eth=c.get("native_eth"),
+                                       from_block=from_block)
+            print(f"\nFresh v4 pools (ETH/WETH-paired): {len(v4)}")
+            for p in v4:
+                hook = p["hooks"]
+                hooked = "" if hook.lower() == "0x" + "0" * 40 else f"  {_YEL}hook {hook}{_RST}"
+                print(f"  {_GREEN}v4 {_RST} token {p['token']}  vs {p['quote']}"
+                      f"  id {p['pool_id'][:14]}…{hooked}")
+        except (RpcError, requests.RequestException) as exc:
+            print(f"  {_YEL}v4 discovery error: {exc}{_RST}")
+    else:
+        print(f"\n  {_DIM}(set pool_manager in CONTRACTS to also catch v4 / "
+              f"Pons-v2 launches){_RST}")
     if not pools:
-        print(f"  {_DIM}(none — or verify v3_factory/weth/POOLCREATED_TOPIC0){_RST}")
+        print(f"  {_DIM}(no v3 pools — or verify v3_factory/weth/POOLCREATED_TOPIC0){_RST}")
     return 0
 
 
