@@ -102,7 +102,19 @@ python -m cambrian rebalance 10000 --apply        # plan moves current -> target
 python -m cambrian positions                      # show current paper positions
 python -m cambrian monitor                        # watch positions; fire rotations
 python -m cambrian monitor --market-drop 0.18     # test the flight-to-stables breaker
+python -m cambrian run 10000 --apply              # ONE full autonomous cycle (paper)
 ```
+
+### `run` — the whole loop in one command
+
+`run <capital>` is the manager: it scans the field, sizes a fresh target,
+consults the monitor on what you hold, reconciles (rotate the decayers, or in a
+dump exit everything to stables), and executes the resulting ENTER/EXIT/RESIZE
+moves — journaling each and persisting the new positions. It's `scan + plan +
+monitor + rebalance + execute` as a single cycle. Run it on a schedule (cron /
+Task Scheduler) and it manages the book continuously. Still paper: the executor
+journals intent and updates state but signs nothing (`base/execution.py`
+`LiveBaseExecutor` is the one gated seam).
 
 ### The manager (deposit → portfolio → rebalance, all dry-run)
 

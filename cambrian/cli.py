@@ -412,6 +412,68 @@ def cmd_positions(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_run(args: argparse.Namespace) -> int:
+    """One full autonomous cycle: scan -> size -> monitor -> execute (paper)."""
+    from .feeds.cambrian_api import CambrianClient, CambrianError
+    from .base.score import score_all
+    from .base.portfolio import build_portfolio
+    from .base.monitor import Holding, assess
+    from .base.manager import plan_cycle
+    from .base.execution import PaperExecutor
+    from .base import state
+    from . import base_config
+
+    try:
+        client = CambrianClient()
+        pools, _ = _load_base_pools(client)
+    except (CambrianError, requests.RequestException) as exc:
+        print(f"{_RED}{exc}{_RST}")
+        return 1
+
+    target = build_portfolio(args.capital, score_all(pools))
+    current = state.current_usd(base_config.POSITIONS_FILE)
+    saved = state.load_positions(base_config.POSITIONS_FILE)
+    cur_pool = {p.address: p for p in pools}
+
+    holdings = [
+        Holding(pool=pool, label=rec.get("label", pool),
+                usd=float(rec.get("usd", 0)),
+                is_stable=_is_stable_label(rec.get("label", "")),
+                entry_apr=rec.get("entry_apr"),
+                current_apr=(cur_pool[pool].fee_apr if pool in cur_pool else None),
+                entry_tvl=rec.get("entry_tvl"),
+                current_tvl=(cur_pool[pool].tvl_usd if pool in cur_pool else None))
+        for pool, rec in saved.items()
+    ]
+    report = assess(holdings, market_drawdown=args.market_drop,
+                    portfolio_drawdown=args.book_drawdown)
+
+    final, actions = plan_cycle(target, current, report)
+
+    if report.go_stable:
+        print(f"{_RED}CIRCUIT BREAKER — FLIGHT TO STABLES{_RST}")
+        for r in report.breaker_reasons:
+            print(f"  {_RED}! {r}{_RST}")
+        print()
+    _print_portfolio(final)
+
+    print(f"\ncycle: {len(actions)} action(s)"
+          + (f", {len(report.rotations)} rotation signal(s)" if not report.go_stable else ""))
+    for a in actions:
+        color = _GREEN if a.kind == "ENTER" else _RED if a.kind == "EXIT" else _YEL
+        print(f"  {color}{a.kind:<7}{_RST} {a.label:<18} "
+              f"{_usd(a.from_usd)} → {_usd(a.to_usd)}")
+
+    if args.apply:
+        journal = Journal(config.ORDER_JOURNAL)
+        new_state = PaperExecutor().execute(actions, final, journal)
+        state.save_positions(base_config.POSITIONS_FILE, new_state)
+        print(f"\n  {_DIM}executed (paper) — positions updated{_RST}")
+    else:
+        print(f"\n  {_DIM}dry cycle — add --apply to journal + persist{_RST}")
+    return 0
+
+
 def _is_stable_label(label: str) -> bool:
     from . import base_config
     if "/" not in label:
@@ -585,6 +647,17 @@ def build_parser() -> argparse.ArgumentParser:
     mo.add_argument("--book-drawdown", type=float, default=None,
                     help="portfolio drawdown from high-water as a fraction")
     mo.set_defaults(func=cmd_monitor)
+
+    rn = sub.add_parser("run",
+                        help="one full autonomous cycle: scan -> size -> monitor "
+                             "-> execute (paper)")
+    rn.add_argument("capital", type=float, help="deposit size in USD")
+    rn.add_argument("--apply", action="store_true",
+                    help="journal the moves and persist the new positions")
+    rn.add_argument("--market-drop", type=float, default=None,
+                    help="benchmark drawdown fraction, to exercise the breaker")
+    rn.add_argument("--book-drawdown", type=float, default=None)
+    rn.set_defaults(func=cmd_run)
 
     sub.choices["status"].set_defaults(func=cmd_status)
     return p
