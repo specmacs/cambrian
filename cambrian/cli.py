@@ -197,7 +197,7 @@ def _load_base_pools(client, dexes=None):
     pools, errors = [], []
     for dex, endpoint in endpoints.items():
         try:
-            rows = client.pools(endpoint)
+            rows = client.query_all(endpoint)  # full set, all pages
             pools.extend(normalize_pool(r, dex) for r in rows)
         except Exception as exc:  # one DEX failing shouldn't kill the scan
             errors.append(f"{dex}: {exc}")

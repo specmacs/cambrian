@@ -47,6 +47,33 @@ def rows_from_response(payload: Any) -> list[dict[str, Any]]:
     return []
 
 
+def paginate(fetch, *, page_size: int, max_pages: int, key: str | None):
+    """Accumulate rows across pages until exhausted, deduping by `key`.
+
+    Robust to unknown pagination: `fetch(offset)` is called with rising offsets;
+    if the API ignores the offset (returns the same page), the dedupe sees zero
+    new rows and stops — so a wrong offset param degrades to a single page rather
+    than looping forever or double-counting.
+    """
+    seen: set = set()
+    out: list = []
+    for i in range(max_pages):
+        rows = fetch(i * page_size)
+        if not rows:
+            break
+        new = 0
+        for r in rows:
+            k = r.get(key) if (key and isinstance(r, dict)) else id(r)
+            if k in seen:
+                continue
+            seen.add(k)
+            out.append(r)
+            new += 1
+        if new == 0 or len(rows) < page_size:
+            break
+    return out
+
+
 class CambrianClient:
     def __init__(self, api_key: str | None = None, *, base_url: str = BASE_URL,
                  timeout: float = 15.0):
@@ -70,6 +97,19 @@ class CambrianClient:
     def query(self, path: str, **params) -> list[dict[str, Any]]:
         """GET and flatten the columnar response into row dicts."""
         return rows_from_response(self.get(path, **params))
+
+    def query_all(self, path: str, *, page_size: int = 1000, max_pages: int = 50,
+                  offset_param: str = "offset", key: str = "poolId",
+                  **params) -> list[dict[str, Any]]:
+        """Page through an endpoint to get the ENTIRE set, not just the first page.
+
+        Dedupes by `key` (pool id), so if the offset param is wrong the loop stops
+        after one page instead of duplicating — see `paginate`.
+        """
+        def fetch(offset: int) -> list[dict[str, Any]]:
+            return self.query(path, **{**params, "limit": page_size,
+                                       offset_param: offset})
+        return paginate(fetch, page_size=page_size, max_pages=max_pages, key=key)
 
     # --- Convenience --------------------------------------------------------
 
