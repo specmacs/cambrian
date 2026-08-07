@@ -39,9 +39,12 @@ SNIPE_BLOCKS = int(os.getenv("RH_SNIPE_BLOCKS", "3"))  # launch-block window = s
 # secondary). bankr: hook 0x4e34..a544, tokens end in 'ba3', launches on v4.
 PAD_BY_HOOK = {
     "0x4e3468951d49f2eea976ed0d6e75ffcb44a9a544": "bankr",
+    "0x75a54357d9c78a2db19004a5fdc76c50f9242aec": "pad-777",
 }
 PAD_BY_SUFFIX = {
     "ba3": "bankr",
+    "b07": "clanker",     # confirmed Clanker vanity suffix
+    "777": "pad-777",
 }
 
 

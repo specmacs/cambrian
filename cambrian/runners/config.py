@@ -70,10 +70,22 @@ ZERO_ADDR = "0x0000000000000000000000000000000000000000"
 
 PAD_BY_HOOK: dict[str, str] = {
     "0x4e3468951d49f2eea976ed0d6e75ffcb44a9a544": "bankr",
+    # hook that correlates with the '777' vanity suffix (same pad) — name it once IDed.
+    "0x75a54357d9c78a2db19004a5fdc76c50f9242aec": "pad-777",
 }
 PAD_BY_DEPLOYER: dict[str, str] = {}     # launch-tx `to` / factory -> pad name
 PAD_BY_SUFFIX: dict[str, str] = {
     "ba3": "bankr",
+    "b07": "clanker",       # confirmed: Clanker's CREATE2 vanity suffix
+    "777": "pad-777",       # a vanity pad (same one as hook 0x75a5..); rename when IDed
+}
+
+# Shared infrastructure that shows up as a launch-tx `to` but is NOT a launchpad —
+# never fingerprint these as a pad (they'd cluster unrelated launches together).
+INFRA_ADDRS: set[str] = {
+    "0x0000000071727de22e5e9d8baf0edac6f37da032",  # ERC-4337 EntryPoint v0.6
+    "0xca11bde05977b3631167028862be2a173976ca11",  # Multicall3
+    "0x8366a39cc670b4001a1121b8f6a443a643e40951",  # v4 PoolManager (self)
 }
 
 
@@ -118,9 +130,9 @@ def pad_of(token: str | None, hook: str | None,
                 return name
     if h and h != ZERO_ADDR:
         return "hook:" + h[2:8]          # unknown pad, but distinguishable by hook
-    if d and d != ZERO_ADDR:
+    if d and d != ZERO_ADDR and d not in INFRA_ADDRS:
         return "dep:" + d[2:8]           # unknown pad, distinguishable by deployer
-    return None
+    return None                          # zero/infra deployer -> not a pad
 
 # Smart-money addresses to follow. A watched wallet buying a fresh token is the
 # strongest single signal there is. Curate by hand to start.

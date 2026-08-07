@@ -53,8 +53,9 @@ STOP_PCT = float(os.getenv("RH_STOP_PCT", "0.35"))  # stop-loss drawdown below f
 
 # Launchpad fingerprints — v4 hook (authoritative) + vanity address suffix.
 # bankr: hook 0x4e34..a544, tokens end in 'ba3', v4.
-PAD_BY_HOOK = {"0x4e3468951d49f2eea976ed0d6e75ffcb44a9a544": "bankr"}
-PAD_BY_SUFFIX = {"ba3": "bankr"}
+PAD_BY_HOOK = {"0x4e3468951d49f2eea976ed0d6e75ffcb44a9a544": "bankr",
+               "0x75a54357d9c78a2db19004a5fdc76c50f9242aec": "pad-777"}
+PAD_BY_SUFFIX = {"ba3": "bankr", "b07": "clanker", "777": "pad-777"}
 
 
 def pad_of(token, hook):

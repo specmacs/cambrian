@@ -36,6 +36,21 @@ def test_named_deployer_wins_over_fingerprint():
         del PAD_BY_DEPLOYER["0xfeed000000000000000000000000000000000001"]
 
 
+def test_clanker_and_pad777_identified():
+    assert pad_of("0x1111111111111111111111111111111111111b07", None) == "clanker"
+    assert pad_of("0x2222222222222222222222222222222222222777", None) == "pad-777"
+    # the 777 hook maps to the same pad name as the 777 suffix
+    assert pad_of("0xtok", "0x75a54357d9c78a2db19004a5fdc76c50f9242aec") == "pad-777"
+
+
+def test_infra_deployers_are_not_labeled_as_pads():
+    # EntryPoint / Multicall3 / PoolManager route many pads' launches — not a pad.
+    for infra in ("0x0000000071727de22e5e9d8baf0edac6f37da032",
+                  "0xca11bde05977b3631167028862be2a173976ca11",
+                  "0x8366a39cc670b4001a1121b8f6a443a643e40951"):
+        assert pad_of("0xtok", None, deployer=infra) is None
+
+
 def test_truly_unfingerprintable_is_none():
     # hookless, no deployer, no suffix -> nothing to group on
     assert pad_of("0xabc0000000000000000000000000000000000abc",
