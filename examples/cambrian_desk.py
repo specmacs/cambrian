@@ -530,221 +530,281 @@ PAGE = r"""<!doctype html><html><head><meta charset=utf-8><title>CAMBRIAN</title
 <link rel=preconnect href="https://fonts.googleapis.com"><link rel=preconnect href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel=stylesheet>
 <style>
-:root{--bg:#06080d;--sb:#090c13;--pnl:#0b0f17;--pnl2:#0f141e;--bd:#171d29;--bd2:#11161f;
---tx:#e6ecf6;--mut:#7b8aa8;--dim:#414c66;--ac:#00e5a0;--ac2:#00c489;--cy:#4cc9ff;
---rd:#ff4d6a;--am:#ffb340;--grad:linear-gradient(135deg,#00e5a0,#4cc9ff)}
+:root{--bg:#08080c;--pnl:#0d0d13;--pnl2:#121219;--rail:#0a0a10;--bd:#1a1a24;--bd2:#15151d;
+--tx:#e8ecf4;--mut:#8b93a7;--dim:#4a5065;--gr:#3ddc84;--rd:#ff4d6d;--cy:#5ac8fa;--am:#ffb340;
+--pu:#a78bfa;--grad:linear-gradient(135deg,#3ddc84,#5ac8fa)}
 *{box-sizing:border-box;margin:0}
-body{background:var(--bg);color:var(--tx);display:flex;min-height:100vh;
-font:500 13px/1.4 "Inter Tight",-apple-system,"Segoe UI",Roboto,Arial,sans-serif;
--webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale;letter-spacing:-.01em}
-.mono,td.mono,.n,th{font-family:"JetBrains Mono",ui-monospace,"SF Mono",Menlo,Consolas,monospace;
-font-variant-numeric:tabular-nums;font-feature-settings:"tnum" 1,"zero" 1}
-td,.n,.eqbig{font-variant-numeric:tabular-nums}
-/* sidebar */
-aside{width:198px;background:var(--sb);border-right:1px solid var(--bd);padding:16px 12px;
-position:sticky;top:0;height:100vh;display:flex;flex-direction:column;gap:4px;flex-shrink:0}
-.brand{display:flex;align-items:center;gap:9px;padding:2px 8px 16px}
-.gem{width:26px;height:26px;border-radius:8px;background:var(--grad);display:grid;place-items:center;
-color:#04241a;font-weight:800;font-size:14px}
-.brand b{font-size:14px;letter-spacing:.26em;font-weight:800;font-family:"Inter Tight"}
-.nav{display:flex;align-items:center;gap:10px;padding:9px 10px;border-radius:9px;color:var(--mut);
-cursor:pointer;font-weight:600;font-size:12.5px;border:1px solid transparent}
-.nav:hover{color:var(--tx);background:var(--pnl2)}
-.nav.on{color:var(--ac);background:rgba(55,224,176,.08);border-color:rgba(55,224,176,.18)}
-.nav .ic{width:16px;text-align:center;opacity:.9}
-.agents{margin-top:auto;border-top:1px solid var(--bd);padding-top:12px}
-.agents h4{font-size:9.5px;letter-spacing:.14em;color:var(--dim);padding:0 10px 8px;text-transform:uppercase}
-.ag{display:flex;align-items:center;gap:8px;padding:6px 10px;font-size:11.5px;color:var(--mut)}
-.ag .st{width:7px;height:7px;border-radius:50%;background:var(--dim)}
-.ag.on .st{background:var(--ac);box-shadow:0 0 6px rgba(55,224,176,.6)}
-.ag.on{color:var(--tx)}.ag small{margin-left:auto;color:var(--dim);font-size:10px}
-/* main */
-main{flex:1;min-width:0}
-topbar{display:flex;align-items:center;gap:16px;padding:12px 22px;border-bottom:1px solid var(--bd);
-background:rgba(10,13,21,.85);backdrop-filter:blur(8px);position:sticky;top:0;z-index:6}
-.pill{font-size:10px;font-weight:800;letter-spacing:.1em;padding:4px 10px;border-radius:6px}
-.paper{background:rgba(79,195,255,.12);color:var(--cy);border:1px solid rgba(79,195,255,.3)}
-.meta{font-size:11.5px;color:var(--mut)}.meta b{color:var(--tx)}
+::-webkit-scrollbar{width:7px;height:7px}::-webkit-scrollbar-thumb{background:#1e1e2a;border-radius:4px}
+::-webkit-scrollbar-track{background:transparent}
+body{background:var(--bg);color:var(--tx);height:100vh;overflow:hidden;display:flex;flex-direction:column;
+font:500 12.5px/1.4 "Inter Tight",-apple-system,"Segoe UI",Roboto,Arial,sans-serif;
+-webkit-font-smoothing:antialiased;letter-spacing:-.01em}
+.m{font-family:"JetBrains Mono",ui-monospace,Menlo,Consolas,monospace;font-variant-numeric:tabular-nums}
+/* top nav */
+nav{display:flex;align-items:center;gap:22px;padding:0 16px;height:48px;background:var(--pnl);
+border-bottom:1px solid var(--bd);flex-shrink:0}
+.brand{display:flex;align-items:center;gap:8px;padding-right:8px}
+.gem{width:24px;height:24px;border-radius:7px;background:var(--grad);display:grid;place-items:center;
+color:#04241a;font-weight:800;font-size:13px}
+.brand b{font-size:13px;letter-spacing:.24em;font-weight:800}
+.nv{font-size:12.5px;font-weight:600;color:var(--mut);cursor:pointer;padding:15px 2px;
+border-bottom:2px solid transparent;margin-bottom:-1px}
+.nv:hover{color:var(--tx)}.nv.on{color:var(--tx);border-bottom-color:var(--gr)}
 .sp{flex:1}
-.eqbig{font-size:17px;font-weight:800}
-.connect{background:var(--grad);color:#04241a;border:0;padding:8px 16px;border-radius:9px;
-font-weight:800;font-size:12px;cursor:pointer;letter-spacing:.02em}
-.connect:hover{filter:brightness(1.1)}
-/* kpis */
-.kpis{display:grid;grid-template-columns:repeat(5,1fr);gap:10px;padding:16px 22px 6px}
-.kpi{background:var(--pnl);border:1px solid var(--bd);border-radius:12px;padding:12px 15px}
-.kpi .l{font-size:9.5px;letter-spacing:.13em;color:var(--dim);text-transform:uppercase;margin-bottom:4px}
-.kpi .n{font-size:21px;font-weight:800}
-/* cards */
-.view{padding:12px 22px 24px;display:none}.view.on{display:block}
-.g2{display:grid;grid-template-columns:1.4fr 1fr;gap:12px}
-.card{background:var(--pnl);border:1px solid var(--bd);border-radius:13px;overflow:hidden;margin-bottom:12px}
-.card h3{padding:11px 16px;font-size:10.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--mut);
-border-bottom:1px solid var(--bd);display:flex;align-items:center;gap:8px}
-.card h3 .cnt{margin-left:auto;color:var(--dim);font-weight:600}
+.pill{font-size:9.5px;font-weight:800;letter-spacing:.12em;padding:4px 9px;border-radius:5px;
+background:rgba(90,200,250,.1);color:var(--cy);border:1px solid rgba(90,200,250,.25)}
+.eqn{font-size:14px;font-weight:700}
+.btn{background:var(--grad);color:#04241a;border:0;padding:7px 15px;border-radius:8px;
+font:800 11.5px "Inter Tight";cursor:pointer;letter-spacing:.02em}
+.btn:hover{filter:brightness(1.12)}
+/* 3-col shell */
+.shell{flex:1;display:grid;grid-template-columns:282px 1fr 300px;overflow:hidden}
+.rail{background:var(--rail);border-right:1px solid var(--bd);overflow-y:auto}
+.rail.r{border-right:0;border-left:1px solid var(--bd)}
+.rh{padding:11px 14px;font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--dim);
+font-weight:700;border-bottom:1px solid var(--bd2);position:sticky;top:0;background:var(--rail);z-index:2;
+display:flex;align-items:center;gap:7px}
+.rh .c{margin-left:auto;color:var(--dim)}
+center{display:block;overflow-y:auto;background:var(--bg)}
+/* kpi strip */
+.kpis{display:grid;grid-template-columns:repeat(5,1fr);border-bottom:1px solid var(--bd)}
+.kpi{padding:11px 16px;border-right:1px solid var(--bd2)}
+.kpi:last-child{border-right:0}
+.kpi .l{font-size:9px;letter-spacing:.13em;color:var(--dim);text-transform:uppercase;font-weight:700}
+.kpi .n{font-size:19px;font-weight:700;margin-top:3px}
+/* tabs */
+.tabs{display:flex;gap:20px;padding:0 16px;border-bottom:1px solid var(--bd);background:var(--pnl)}
+.tb{font-size:12px;font-weight:600;color:var(--mut);cursor:pointer;padding:11px 1px;
+border-bottom:2px solid transparent;margin-bottom:-1px}
+.tb:hover{color:var(--tx)}.tb.on{color:var(--tx);border-bottom-color:var(--gr)}
+.tb .c{color:var(--dim);font-weight:500;margin-left:5px}
+.pane{display:none}.pane.on{display:block}
+/* tables */
 table{width:100%;border-collapse:collapse}
-th{font-size:9px;letter-spacing:.14em;text-transform:uppercase;color:var(--dim);text-align:right;
-padding:9px 13px;border-bottom:1px solid var(--bd2);font-weight:600;cursor:pointer;user-select:none}
-th:hover{color:var(--mut)}th.s:after{content:" ↓";color:var(--ac)}
+th{font-size:9px;letter-spacing:.13em;text-transform:uppercase;color:var(--dim);text-align:right;
+padding:8px 14px;font-weight:700;border-bottom:1px solid var(--bd2);white-space:nowrap}
 th:first-child,td:first-child{text-align:left}
-td{padding:8px 13px;border-bottom:1px solid var(--bd2);text-align:right;font-size:12.5px}
-tbody tr{transition:background .12s}tbody tr:hover{background:var(--pnl2)}
-@keyframes fl{0%{background:rgba(0,229,160,.16)}100%{background:transparent}}
-tbody tr.new{animation:fl 1.4s ease-out}
-.sym{font-weight:700;font-size:13px;letter-spacing:-.02em;cursor:pointer}
-.sym:hover{color:var(--ac)}
-.toast{position:fixed;bottom:22px;left:50%;transform:translateX(-50%) translateY(70px);
-background:var(--ac);color:#04241a;font-weight:700;padding:9px 18px;border-radius:9px;
-font-size:12px;transition:transform .22s cubic-bezier(.2,.9,.3,1.3);z-index:99}
-.toast.on{transform:translateX(-50%) translateY(0)}
-.filters{display:flex;gap:6px;margin-left:auto}
-.fc{font-size:10px;font-weight:700;letter-spacing:.06em;padding:3px 10px;border-radius:6px;
-border:1px solid var(--bd);color:var(--dim);cursor:pointer;text-transform:uppercase}
-.fc:hover{color:var(--mut)}.fc.on{background:rgba(0,229,160,.1);border-color:rgba(0,229,160,.3);color:var(--ac)}
-.links{display:inline-flex;gap:6px;margin-left:8px;vertical-align:1px}
-.lk{font-size:9.5px;font-weight:700;color:var(--dim);text-decoration:none;border:1px solid var(--bd);
-padding:1px 6px;border-radius:5px}
+td{padding:7px 14px;border-bottom:1px solid var(--bd2);text-align:right;font-size:12.5px;white-space:nowrap}
+tbody tr{transition:background .1s}tbody tr:hover{background:var(--pnl2)}
+tr.buy{background:rgba(61,220,132,.045)}tr.sell{background:rgba(255,77,109,.045)}
+@keyframes fl{0%{background:rgba(61,220,132,.2)}100%{background:transparent}}
+tr.new{animation:fl 1.5s ease-out}
+/* token cell */
+.tk{display:flex;align-items:center;gap:8px}
+.av{width:22px;height:22px;border-radius:6px;display:grid;place-items:center;font-size:9.5px;
+font-weight:800;color:#0b0b0f;flex-shrink:0;letter-spacing:-.03em}
+.sym{font-weight:700;font-size:12.5px;cursor:pointer}.sym:hover{color:var(--gr)}
+.lks{display:flex;gap:4px;opacity:0;transition:opacity .12s}
+tr:hover .lks,.card:hover .lks{opacity:1}
+.lk{font-size:8.5px;font-weight:700;color:var(--dim);text-decoration:none;border:1px solid var(--bd);
+padding:1px 5px;border-radius:4px;letter-spacing:.04em}
 .lk:hover{color:var(--cy);border-color:var(--cy)}
-.padtag{font-size:10px;font-weight:700;padding:2px 8px;border-radius:6px;background:rgba(107,124,156,.12);color:var(--mut)}
-.padtag.v{background:rgba(79,195,255,.12);color:var(--cy)}
-.pos{color:var(--ac)}.neg{color:var(--rd)}.dim{color:var(--dim)}
-.side-BUY{color:var(--ac);font-weight:800}.side-SELL{color:var(--am);font-weight:800}
-.sc{font-size:10px;font-weight:800;padding:2px 8px;border-radius:6px}
-.sc-STRONG{background:rgba(55,224,176,.14);color:var(--ac)}.sc-watch{background:rgba(245,184,76,.12);color:var(--am)}
-.sc-weak{color:var(--dim)}.sc-BLOCKED{background:rgba(255,84,112,.14);color:var(--rd)}
-.empty{color:var(--dim);text-align:center;padding:26px;font-size:12px}
-/* wallets view */
-.wbox{max-width:660px}
-textarea{width:100%;height:170px;background:var(--pnl2);border:1px solid var(--bd);border-radius:10px;
-color:var(--tx);padding:12px;font-family:ui-monospace,Menlo,monospace;font-size:12px;resize:vertical}
-.btn{background:var(--grad);color:#04241a;border:0;padding:9px 18px;border-radius:9px;font-weight:800;cursor:pointer;margin-top:10px}
-.hint{color:var(--dim);font-size:11.5px;margin-top:8px}
-.wcount{font-size:13px;color:var(--ac);font-weight:700;margin-top:12px}
+.pos{color:var(--gr)}.neg{color:var(--rd)}.dim{color:var(--dim)}.mut{color:var(--mut)}
+.tag{font-size:9.5px;font-weight:700;padding:2px 7px;border-radius:5px;background:rgba(139,147,167,.1);color:var(--mut)}
+.tag.v{background:rgba(90,200,250,.1);color:var(--cy)}
+.sc{font-size:9.5px;font-weight:800;padding:2px 7px;border-radius:5px}
+.sc-STRONG{background:rgba(61,220,132,.14);color:var(--gr)}
+.sc-watch{background:rgba(255,179,64,.12);color:var(--am)}
+.sc-weak{color:var(--dim)}.sc-BLOCKED{background:rgba(255,77,109,.14);color:var(--rd)}
+/* rail feed cards */
+.card{padding:10px 14px;border-bottom:1px solid var(--bd2);cursor:default}
+.card:hover{background:var(--pnl2)}
+.ch{display:flex;align-items:center;gap:6px;font-size:11.5px;margin-bottom:7px}
+.ch .who{font-weight:700;color:var(--pu)}
+.ch .act{font-weight:700}.ch .t{margin-left:auto;color:var(--dim);font-size:10.5px}
+.mini{display:flex;align-items:center;gap:9px;padding:8px 10px;background:var(--pnl);
+border:1px solid var(--bd);border-radius:9px}
+.mini .nm{font-weight:700;font-size:12px}
+.mini .sub{font-size:10px;color:var(--dim);margin-top:1px}
+.mini .amt{margin-left:auto;font-weight:700;font-size:12.5px}
+/* right rail scout cards */
+.scard{padding:11px 14px;border-bottom:1px solid var(--bd2)}
+.scard:hover{background:var(--pnl2)}
+.sct{display:flex;align-items:center;gap:8px;margin-bottom:8px}
+.sct .nm{font-weight:700;font-size:13px;cursor:pointer}.sct .nm:hover{color:var(--gr)}
+.grid4{display:grid;grid-template-columns:1fr 1fr;gap:6px 10px}
+.st .l{font-size:8.5px;letter-spacing:.1em;color:var(--dim);text-transform:uppercase;font-weight:700}
+.st .v{font-size:11.5px;font-weight:600;margin-top:1px}
+.empty{color:var(--dim);text-align:center;padding:30px 14px;font-size:11.5px}
+/* status bar */
+.status{display:flex;align-items:center;gap:16px;height:30px;padding:0 14px;background:var(--pnl);
+border-top:1px solid var(--bd);font-size:10.5px;color:var(--dim);flex-shrink:0}
+.status b{color:var(--mut);font-weight:600}
+.dot{width:6px;height:6px;border-radius:50%;background:var(--gr);animation:p 2s infinite}
+@keyframes p{0%{box-shadow:0 0 0 0 rgba(61,220,132,.5)}70%{box-shadow:0 0 0 6px rgba(61,220,132,0)}100%{box-shadow:0 0 0 0 rgba(61,220,132,0)}}
+.agl{display:flex;align-items:center;gap:7px;padding:7px 14px;font-size:11px;color:var(--mut);
+border-bottom:1px solid var(--bd2)}
+.agl .st2{width:6px;height:6px;border-radius:50%;background:var(--dim)}
+.agl.on .st2{background:var(--gr);box-shadow:0 0 5px rgba(61,220,132,.7)}
+.agl.on{color:var(--tx)}.agl small{margin-left:auto;color:var(--dim);font-size:9.5px;letter-spacing:.06em}
+.wv{padding:16px;max-width:620px}
+textarea{width:100%;height:220px;background:var(--pnl);border:1px solid var(--bd);border-radius:10px;
+color:var(--tx);padding:12px;font-family:"JetBrains Mono",monospace;font-size:11.5px;resize:vertical}
+.hint{color:var(--dim);font-size:11px;margin:8px 0}
+.toast{position:fixed;bottom:44px;left:50%;transform:translateX(-50%) translateY(70px);background:var(--gr);
+color:#04241a;font-weight:700;padding:8px 16px;border-radius:8px;font-size:11.5px;
+transition:transform .2s cubic-bezier(.2,.9,.3,1.3);z-index:99}
+.toast.on{transform:translateX(-50%) translateY(0)}
 </style></head><body>
-<aside>
+<nav>
  <div class=brand><div class=gem>◆</div><b>CAMBRIAN</b></div>
- <div class="nav on" data-v=desk><span class=ic>▦</span>Desk</div>
- <div class=nav data-v=scout><span class=ic>◎</span>Scouting</div>
- <div class=nav data-v=wallets><span class=ic>◈</span>Wallets</div>
- <div class=agents><h4>Agents</h4><div id=agents></div></div>
-</aside>
-<main>
-<topbar>
- <span class="pill paper" id=mode>PAPER</span>
- <span class=meta id=meta></span>
+ <span class="nv on" data-v=desk>Desk</span>
+ <span class=nv data-v=scout>Scouting</span>
+ <span class=nv data-v=wallets>Wallets</span>
  <span class=sp></span>
- <span class="eqbig mono" id=eqTop>$0.00</span>
- <button class=connect onclick="alert('Wallet connect (Privy) arrives with LIVE mode. The paper desk needs no wallet.')">Connect Wallet</button>
-</topbar>
-<div class=kpis>
- <div class=kpi><div class=l>Equity P&L</div><div class="n mono" id=eq>$0</div></div>
- <div class=kpi><div class=l>Realized</div><div class="n mono" id=real>$0</div></div>
- <div class=kpi><div class=l>Unrealized</div><div class="n mono" id=unreal>$0</div></div>
- <div class=kpi><div class=l>Open</div><div class="n mono" id=open>0</div></div>
- <div class=kpi><div class=l>Win rate</div><div class="n mono" id=wr>–</div></div>
-</div>
-<div class="view on" id=v-desk>
- <div class=card><h3>Open positions<span class=cnt id=posn></span></h3>
-  <table><thead><tr><th>Token</th><th>Pad</th><th>Agent</th><th>Size</th><th>Value</th><th>Δ%</th><th>uPnL</th><th>Age</th></tr></thead>
-  <tbody id=positions></tbody></table></div>
- <div class=g2>
-  <div class=card><h3>Blotter · live tape</h3>
-   <table><thead><tr><th>Time</th><th></th><th>Token</th><th>Agent</th><th>USD</th><th>PnL</th></tr></thead>
-   <tbody id=blotter></tbody></table></div>
-  <div class=card><h3>Closed trades</h3>
-   <table><thead><tr><th>Token</th><th>Cost</th><th>Exit</th><th>PnL</th><th>Why</th></tr></thead>
-   <tbody id=closed></tbody></table></div>
+ <span class=pill id=mode>PAPER</span>
+ <span class="eqn m" id=eqTop>$0.00</span>
+ <button class=btn onclick="alert('Wallet connect (Privy) arrives with LIVE mode. The paper desk needs no wallet.')">Connect</button>
+</nav>
+<div class=shell>
+ <div class=rail>
+  <div class=rh>Agent activity<span class=c id=actc></span></div>
+  <div id=feed></div>
+  <div class=rh style="border-top:1px solid var(--bd)">Agents</div>
+  <div id=agents></div>
+ </div>
+ <center>
+  <div class=kpis>
+   <div class=kpi><div class=l>Equity</div><div class="n m" id=eq>$0</div></div>
+   <div class=kpi><div class=l>Realized</div><div class="n m" id=real>$0</div></div>
+   <div class=kpi><div class=l>Unrealized</div><div class="n m" id=unreal>$0</div></div>
+   <div class=kpi><div class=l>Open</div><div class="n m" id=open>0</div></div>
+   <div class=kpi><div class=l>Win rate</div><div class="n m" id=wr>–</div></div>
+  </div>
+  <div id=v-desk>
+   <div class=tabs><span class="tb on" data-t=pos>Positions<span class=c id=cpos></span></span>
+    <span class=tb data-t=clo>Closed<span class=c id=cclo></span></span>
+    <span class=tb data-t=blo>Blotter<span class=c id=cblo></span></span></div>
+   <div class="pane on" id=p-pos><table><thead><tr><th>Token</th><th>Pad</th><th>Agent</th>
+    <th>Size</th><th>Value</th><th>Δ%</th><th>uPnL</th><th>Age</th></tr></thead>
+    <tbody id=positions></tbody></table></div>
+   <div class=pane id=p-clo><table><thead><tr><th>Token</th><th>Pad</th><th>Cost</th><th>Exit</th>
+    <th>PnL</th><th>Exit reason</th></tr></thead><tbody id=closed></tbody></table></div>
+   <div class=pane id=p-blo><table><thead><tr><th>Time</th><th></th><th>Token</th><th>Agent</th>
+    <th>USD</th><th>PnL</th></tr></thead><tbody id=blotter></tbody></table></div>
+  </div>
+  <div id=v-scout style=display:none>
+   <table><thead><tr><th>Token</th><th>Pad</th><th>Net flow</th><th>Liquidity</th><th>Confluence</th></tr></thead>
+    <tbody id=scoutfull></tbody></table></div>
+  <div id=v-wallets style=display:none><div class=wv>
+   <div class=hint>Wallets for <b>Agent C</b> to copy-trade. One address per line. Saved to
+    <span class=m>~/cambrian_wallets.json</span>.</div>
+   <textarea id=wtext placeholder="0xabc…&#10;0xdef…"></textarea>
+   <button class=btn style="margin-top:10px" onclick=saveWallets()>Save wallets</button>
+   <div class=hint id=wcount></div></div></div>
+ </center>
+ <div class="rail r">
+  <div class=rh>Hunting<span class=c id=scc></span></div>
+  <div id=scout></div>
  </div>
 </div>
-<div class=view id=v-scout>
- <div class=card><h3>Scouting · fresh launches
-  <span class=filters>
-   <span class="fc on" data-f=all>All</span><span class=fc data-f=verified>Verified pads</span>
-   <span class=fc data-f=strong>Strong only</span></span></h3>
-  <table><thead><tr><th>Token</th><th>Pad</th><th>Net flow</th><th>Liquidity</th><th>Confluence</th></tr></thead>
-  <tbody id=scouting></tbody></table></div>
-</div>
-<div class=view id=v-wallets>
- <div class="card wbox"><h3>Wallet tracker · Agent C feed</h3>
-  <div style="padding:16px">
-   <div class=hint style="margin:0 0 10px">Paste wallet addresses to track — one per line (0x…). Agent C will copy-trade
-   their buys once enabled. Stored locally in <span class=mono>~/cambrian_wallets.json</span>.</div>
-   <textarea id=wtext placeholder="0xabc...&#10;0xdef..."></textarea>
-   <button class=btn onclick=saveWallets()>Save wallets</button>
-   <div class=wcount id=wcount></div>
-  </div></div>
-</div>
-</main>
+<div class=status><span class=dot></span><b id=stmode>paper</b>
+ <span>block <b id=stblk>–</b></span><span>PM <b id=stpm>–</b></span>
+ <span>size <b id=stsz>–</b></span><span>ETH <b>$3,000</b></span>
+ <span class=sp style=flex:1></span><span id=sterr></span><span>CAMBRIAN · Robinhood Chain</span></div>
 <div class=toast id=toast></div>
 <script>
-let FILTER='all',SEEN_ROWS=new Set();
-function toast(m){const t=document.getElementById('toast');t.textContent=m;t.classList.add('on');
- clearTimeout(t._h);t._h=setTimeout(()=>t.classList.remove('on'),1400)}
-function copy(a){navigator.clipboard.writeText(a).then(()=>toast('copied '+a.slice(0,10)+'…'))}
-document.addEventListener('keydown',e=>{if(e.target.tagName=='TEXTAREA')return;
- const k={'1':'desk','2':'scout','3':'wallets'}[e.key];
- if(k)document.querySelector(`.nav[data-v=${k}]`).click()});
-const DEX=t=>`https://dexscreener.com/search?q=${t}`;
-const EXP=t=>`https://robinhoodchain.blockscout.com/address/${t}`;
-const PADURL={"pools-trade":"https://pools.trade/token/","flap":"https://flap.sh/token/","bankr":"https://bankr.bot/token/","pons":"https://pons.fun/token/"};
-function d$(n){const s=n>=0?'':'-',a=Math.abs(n);return s+'$'+(a>=1000?(a/1000).toFixed(1)+'k':a.toFixed(2))}
+const DEX=t=>`https://dexscreener.com/search?q=${t}`,EXP=t=>`https://robinhoodchain.blockscout.com/address/${t}`;
+const PADURL={"pools-trade":"https://pools.trade/token/","flap":"https://flap.sh/token/",
+ "bankr":"https://bankr.bot/token/","pons":"https://pons.fun/token/"};
+const AVC=['#3ddc84','#5ac8fa','#a78bfa','#ffb340','#ff4d6d','#4ade80','#38bdf8','#f472b6'];
+let SEEN=new Set(),FIRST=true;
+function d$(n){const s=n<0?'-':'',a=Math.abs(n);
+ return s+'$'+(a>=1e6?(a/1e6).toFixed(2)+'M':a>=1e3?(a/1e3).toFixed(1)+'K':a.toFixed(2))}
 function cls(n){return n>0?'pos':n<0?'neg':'dim'}
-function tok(sym,addr,pad){
- const p=(pad||'').replace('?','');const pu=PADURL[p]?`<a class=lk href="${PADURL[p]+addr}" target=_blank>PAD</a>`:'';
- return `<span class=sym title="${addr} — click to copy" onclick="copy('${addr}')">${sym||'?'}</span><span class=links>`+
-   `<a class=lk href="${DEX(addr)}" target=_blank>DEX</a>${pu}<a class=lk href="${EXP(addr)}" target=_blank>SCAN</a></span>`}
-function padtag(p,v){return `<span class="padtag ${v?'v':''}">${p}${v?' ✓':''}</span>`}
-document.querySelectorAll('.nav').forEach(n=>n.onclick=()=>{
- document.querySelectorAll('.nav').forEach(x=>x.classList.remove('on'));n.classList.add('on');
- document.querySelectorAll('.view').forEach(x=>x.classList.remove('on'));
- document.getElementById('v-'+n.dataset.v).classList.add('on')});
+function hash(s){let h=0;for(let i=0;i<s.length;i++)h=(h*31+s.charCodeAt(i))|0;return Math.abs(h)}
+function av(sym,addr){const c=AVC[hash(addr)%AVC.length];
+ return `<div class=av style="background:${c}">${(sym||'?').replace(/[^A-Za-z0-9]/g,'').slice(0,2).toUpperCase()}</div>`}
+function toast(m){const t=document.getElementById('toast');t.textContent=m;t.classList.add('on');
+ clearTimeout(t._h);t._h=setTimeout(()=>t.classList.remove('on'),1300)}
+function copy(a){navigator.clipboard.writeText(a).then(()=>toast('copied '+a.slice(0,12)+'…'))}
+function lks(addr,pad){const p=(pad||'').replace('?','');
+ return `<span class=lks><a class=lk href="${DEX(addr)}" target=_blank>DEX</a>`+
+ (PADURL[p]?`<a class=lk href="${PADURL[p]+addr}" target=_blank>PAD</a>`:'')+
+ `<a class=lk href="${EXP(addr)}" target=_blank>SCAN</a></span>`}
+function tkc(sym,addr,pad){return `<div class=tk>${av(sym,addr)}<span class=sym title="${addr} — click to copy" `+
+ `onclick="copy('${addr}')">${sym||'?'}</span>${lks(addr,pad)}</div>`}
+function tag(p,v){return `<span class="tag ${v?'v':''}">${p}${v?' ✓':''}</span>`}
+document.querySelectorAll('.nv').forEach(n=>n.onclick=()=>{
+ document.querySelectorAll('.nv').forEach(x=>x.classList.remove('on'));n.classList.add('on');
+ ['desk','scout','wallets'].forEach(v=>document.getElementById('v-'+v).style.display=v==n.dataset.v?'':'none')});
+document.querySelectorAll('.tb').forEach(t=>t.onclick=()=>{
+ document.querySelectorAll('.tb').forEach(x=>x.classList.remove('on'));t.classList.add('on');
+ document.querySelectorAll('.pane').forEach(p=>p.classList.remove('on'));
+ document.getElementById('p-'+t.dataset.t).classList.add('on')});
+document.addEventListener('keydown',e=>{if(e.target.tagName=='TEXTAREA')return;
+ const k={'1':'desk','2':'scout','3':'wallets'}[e.key];if(k)document.querySelector(`.nv[data-v=${k}]`).click()});
 async function saveWallets(){
- const lines=document.getElementById('wtext').value.split('\n').map(s=>s.trim()).filter(s=>/^0x[a-fA-F0-9]{40}$/.test(s));
- const r=await fetch('/wallets',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(lines)});
- const d=await r.json();document.getElementById('wcount').textContent=`${d.count} wallets tracked`}
+ const l=document.getElementById('wtext').value.split('\n').map(s=>s.trim()).filter(s=>/^0x[a-fA-F0-9]{40}$/.test(s));
+ const d=await(await fetch('/wallets',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(l)})).json();
+ document.getElementById('wcount').textContent=`${d.count} wallets tracked`;toast(`saved ${d.count} wallets`)}
 async function loadWallets(){const d=await(await fetch('/wallets')).json();
  document.getElementById('wtext').value=d.wallets.join('\n');
  document.getElementById('wcount').textContent=`${d.count} wallets tracked`}
-function agents(a){document.getElementById('agents').innerHTML=a.map(x=>
- `<div class="ag ${x.on?'on':''}"><span class=st></span>${x.name}<small>${x.on?'live':'soon'}</small></div>`).join('')}
 async function tick(){let d;try{d=await(await fetch('/data')).json()}catch(e){return}
- document.getElementById('meta').innerHTML=`block <b>${d.block}</b> · PM <b>${d.model}</b> · $${d.size}/trade · ${d.updated}`+(d.err?` <span class=neg>${d.err}</span>`:'');
- const eq=document.getElementById('eqTop');eq.textContent=d$(d.equity);eq.className='eqbig mono '+cls(d.equity);
+ const eq=document.getElementById('eqTop');eq.textContent=d$(d.equity);eq.className='eqn m '+cls(d.equity);
  document.getElementById('eq').innerHTML=`<span class=${cls(d.equity)}>${d$(d.equity)}</span>`;
  document.getElementById('real').innerHTML=`<span class=${cls(d.realized)}>${d$(d.realized)}</span>`;
  document.getElementById('unreal').innerHTML=`<span class=${cls(d.unrealized)}>${d$(d.unrealized)}</span>`;
  document.getElementById('open').textContent=d.positions.length;
  const t=d.wins+d.losses;document.getElementById('wr').textContent=t?Math.round(100*d.wins/t)+'%':'–';
- document.getElementById('posn').textContent=d.positions.length;
- agents(d.agents);
+ document.getElementById('cpos').textContent=d.positions.length;
+ document.getElementById('cclo').textContent=d.closed.length;
+ document.getElementById('cblo').textContent=d.blotter.length;
+ document.getElementById('stblk').textContent=d.block;document.getElementById('stpm').textContent=d.model;
+ document.getElementById('stsz').textContent='$'+d.size;document.getElementById('stmode').textContent=d.mode.toLowerCase();
+ document.getElementById('sterr').innerHTML=d.err?`<span class=neg>${d.err}</span>`:'';
+ // positions
  document.getElementById('positions').innerHTML=d.positions.length?d.positions.map(p=>
-  `<tr><td>${tok(p.sym,p.token,p.pad)}</td><td>${padtag(p.pad,true)}</td><td class=dim>${p.agent}</td>`+
-  `<td class=mono>${d$(p.cost)}</td><td class=mono>${d$(p.value)}</td>`+
-  `<td class="mono ${cls(p.chg)}">${p.chg>0?'+':''}${p.chg}%</td>`+
-  `<td class="mono ${cls(p.upnl)}">${d$(p.upnl)}</td><td class="mono dim">${p.age}m</td></tr>`).join(''):
-  '<tr><td colspan=8 class=empty>flat — waiting for a STRONG signal</td></tr>';
- document.getElementById('blotter').innerHTML=d.blotter.length?d.blotter.map(b=>
-  `<tr><td class="mono dim">${b.t}</td><td class=side-${b.side}>${b.side}</td><td>${tok(b.sym,b.token,b.pad)}</td>`+
-  `<td class=dim>${b.agent}</td><td class=mono>${d$(b.usd)}</td>`+
-  `<td class="mono ${b.pnl==null?'dim':cls(b.pnl)}">${b.pnl==null?'—':d$(b.pnl)}</td></tr>`).join(''):
-  '<tr><td colspan=6 class=empty>no trades yet</td></tr>';
+  `<tr><td>${tkc(p.sym,p.token,p.pad)}</td><td>${tag(p.pad,true)}</td><td class=dim>${p.agent}</td>`+
+  `<td class=m>${d$(p.cost)}</td><td class=m>${d$(p.value)}</td>`+
+  `<td class="m ${cls(p.chg)}">${p.chg>0?'+':''}${p.chg}%</td>`+
+  `<td class="m ${cls(p.upnl)}">${d$(p.upnl)}</td><td class="m dim">${p.age}m</td></tr>`).join(''):
+  '<tr><td colspan=8 class=empty>flat — agents are hunting</td></tr>';
  document.getElementById('closed').innerHTML=d.closed.length?d.closed.map(c=>
-  `<tr><td>${tok(c.sym,c.token,c.pad)}</td><td class=mono>${d$(c.cost)}</td><td class=mono>${d$(c.exit_value)}</td>`+
-  `<td class="mono ${cls(c.pnl)}">${d$(c.pnl)}</td><td class=dim>${c.why}</td></tr>`).join(''):
-  '<tr><td colspan=5 class=empty>none yet</td></tr>';
- let sc=d.scouting.filter(s=>FILTER=='all'||(FILTER=='verified'&&s.verified)||(FILTER=='strong'&&s.tier=='STRONG'));
- document.getElementById('scouting').innerHTML=sc.length?sc.map(s=>{
-  const isnew=!SEEN_ROWS.has(s.token);SEEN_ROWS.add(s.token);
-  return `<tr class="${isnew?'new':''}"><td>${tok(s.sym,s.token,s.pad)}</td><td>${padtag(s.pad,s.verified)}</td>`+
-  `<td class="mono ${cls(s.net)}">${d$(s.net)}</td><td class=mono>${d$(s.liq)}</td>`+
-  `<td><span class="sc sc-${s.tier}">${s.conf} ${s.tier}</span></td></tr>`}).join(''):
-  `<tr><td colspan=5 class=empty>${d.scouting.length?'nothing matches this filter':'scanning Robinhood Chain…'}</td></tr>`;
+  `<tr><td>${tkc(c.sym,c.token,c.pad)}</td><td>${tag(c.pad,true)}</td><td class=m>${d$(c.cost)}</td>`+
+  `<td class=m>${d$(c.exit_value)}</td><td class="m ${cls(c.pnl)}">${d$(c.pnl)}</td>`+
+  `<td class=dim>${c.why}</td></tr>`).join(''):'<tr><td colspan=6 class=empty>no closed trades</td></tr>';
+ document.getElementById('blotter').innerHTML=d.blotter.length?d.blotter.map(b=>
+  `<tr class=${b.side=='BUY'?'buy':'sell'}><td class="m dim">${b.t}</td>`+
+  `<td class="${b.side=='BUY'?'pos':'neg'}" style=font-weight:800>${b.side}</td>`+
+  `<td>${tkc(b.sym,b.token,b.pad)}</td><td class=dim>${b.agent}</td><td class=m>${d$(b.usd)}</td>`+
+  `<td class="m ${b.pnl==null?'dim':cls(b.pnl)}">${b.pnl==null?'—':d$(b.pnl)}</td></tr>`).join(''):
+  '<tr><td colspan=6 class=empty>no trades yet</td></tr>';
+ // left rail: agent activity feed (from blotter)
+ document.getElementById('actc').textContent=d.blotter.length;
+ document.getElementById('feed').innerHTML=d.blotter.length?d.blotter.slice(0,18).map(b=>
+  `<div class=card><div class=ch><span class=who>${b.agent}</span>`+
+  `<span class="act ${b.side=='BUY'?'pos':'neg'}">${b.side=='BUY'?'bought':'sold'}</span>`+
+  `<span class=m>${d$(b.usd)}</span><span class=t>${b.t}</span></div>`+
+  `<div class=mini>${av(b.sym,b.token)}<div><div class=nm>${b.sym||'?'}</div>`+
+  `<div class=sub>${b.pad}</div></div><span class="amt m ${b.pnl==null?'':cls(b.pnl)}">`+
+  `${b.pnl==null?d$(b.usd):(b.pnl>0?'+':'')+d$(b.pnl)}</span></div></div>`).join(''):
+  '<div class=empty>no agent activity yet</div>';
+ document.getElementById('agents').innerHTML=d.agents.map(a=>
+  `<div class="agl ${a.on?'on':''}"><span class=st2></span>${a.name}<small>${a.on?'LIVE':'SOON'}</small></div>`).join('');
+ // right rail: hunting
+ document.getElementById('scc').textContent=d.scouting.length;
+ const sc=d.scouting.map(s=>{const isnew=!SEEN.has(s.token)&&!FIRST;SEEN.add(s.token);
+  return `<div class="scard ${isnew?'new':''}"><div class=sct>${av(s.sym,s.token)}`+
+  `<span class=nm onclick="copy('${s.token}')" title="${s.token}">${s.sym||'?'}</span>`+
+  `<span style=margin-left:auto><span class="sc sc-${s.tier}">${s.tier}</span></span></div>`+
+  `<div class=grid4><div class=st><div class=l>Net flow</div><div class="v m ${cls(s.net)}">${d$(s.net)}</div></div>`+
+  `<div class=st><div class=l>Liquidity</div><div class="v m">${d$(s.liq)}</div></div>`+
+  `<div class=st><div class=l>Pad</div><div class=v>${tag(s.pad,s.verified)}</div></div>`+
+  `<div class=st><div class=l>Confluence</div><div class="v m">${s.conf}</div></div></div>`+
+  `<div style=margin-top:7px>${lks(s.token,s.pad)}</div></div>`}).join('');
+ document.getElementById('scout').innerHTML=sc||'<div class=empty>scanning Robinhood Chain…</div>';
+ document.getElementById('scoutfull').innerHTML=d.scouting.length?d.scouting.map(s=>
+  `<tr><td>${tkc(s.sym,s.token,s.pad)}</td><td>${tag(s.pad,s.verified)}</td>`+
+  `<td class="m ${cls(s.net)}">${d$(s.net)}</td><td class=m>${d$(s.liq)}</td>`+
+  `<td><span class="sc sc-${s.tier}">${s.conf} ${s.tier}</span></td></tr>`).join(''):
+  '<tr><td colspan=5 class=empty>scanning…</td></tr>';
+ FIRST=false;
 }
-document.querySelectorAll('.fc').forEach(f=>f.onclick=()=>{
- document.querySelectorAll('.fc').forEach(x=>x.classList.remove('on'));f.classList.add('on');
- FILTER=f.dataset.f;tick()});
 tick();setInterval(tick,4000);loadWallets();
-</script></body></html>"""
+</script></body></html>
+"""
 
 
 class H(BaseHTTPRequestHandler):
