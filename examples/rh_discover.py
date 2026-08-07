@@ -29,8 +29,10 @@ INITIALIZE = "0xdd466e674ea557f56295e2d0218a125ea4b4f0f6f3307b95f85e6110838d6438
 POOLCREATED = "0x783cca1c0412dd0d695e784568c96da2e9c22ff989357a2e8b1d9b2b4e6b7118"
 V3_SWAP = "0xc42079f94a6350d7e6235f29174924f928cc2ac818eb64fed8004e115fbcca67"
 V4_SWAP = "0x40e9cecb9f5f1f1c5b9c97dec2917b7ee92e57ba5563708daca94dd84ad7112f"
+TRANSFER = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"  # ERC20 Transfer
 POOLS_SLOT = 6
 EXTSLOAD = "0x1e2eaeaf"  # extsload(bytes32)
+SNIPE_BLOCKS = int(os.getenv("RH_SNIPE_BLOCKS", "3"))  # launch-block window = snipers
 
 # ---- minimal pure-Python keccak256 (Ethereum, 0x01 padding) -----------------
 _MASK = (1 << 64) - 1
@@ -118,26 +120,66 @@ def block_ts(blk_hex):
     return int(b["timestamp"], 16) if b else None
 
 
-def swap_volume(addr, topics, frm, weth_is_t0, invert=False):
-    """Sum |WETH leg| over swaps in the window -> USD volume + buy/sell counts.
+def analyze_swaps(addr, topics, frm, weth_is_t0, creation_blk, invert=False):
+    """One pass over a pool's Swap logs -> the metrics that resist gaming.
 
-    invert=True for v4: its Swap event is the SWAPPER's balance delta, the opposite
-    sign to v3's pool-perspective amounts, so a buyer paying WETH reads negative.
-    Flip the sign for v4 or every fresh launch reads sell-skewed. Volume unaffected.
+    Counts are noise (1 big buy vs 10 tiny sells reads bearish but is flat), and
+    snipers/routers make raw buy-count meaningless. So we compute:
+      gross_usd  : total |WETH| traded (liveness)
+      net_usd    : SIGNED WETH into the pool = accumulation(+) vs distribution(-).
+                   This is the honest 'is money flowing in' number.
+      sniper_share: fraction of BUY volume that landed in the first SNIPE_BLOCKS
+                   after launch (bots in at block 0 -> dump-prone).
+      buys/sells : kept for display only, NOT for scoring.
+    invert=True for v4 (swapper-perspective amounts; see the sign fix).
     """
-    vol = buys = sells = 0.0
+    gross = net = sniper_buy = 0.0
+    buys = sells = 0
     for lg in get_logs(topics, frm, addr):
         w = _words(lg["data"], 4 if len(topics) > 1 else 5)  # v4 filtered vs v3
-        a0, a1 = _signed(w[0]), _signed(w[1])
-        leg = a0 if weth_is_t0 else a1
+        leg = _signed(w[0]) if weth_is_t0 else _signed(w[1])
         if invert:
             leg = -leg
-        vol += abs(leg) / 1e18 * WETH_USD
-        if leg > 0:
+        usd = leg / 1e18 * WETH_USD           # signed: +ve = WETH into pool = a buy
+        gross += abs(usd)
+        net += usd
+        if usd > 0:
             buys += 1
-        elif leg < 0:
+            blk = lg.get("blockNumber")
+            blk = int(blk, 16) if isinstance(blk, str) else (blk or 0)
+            if creation_blk and blk and blk <= creation_blk + SNIPE_BLOCKS:
+                sniper_buy += usd
+        elif usd < 0:
             sells += 1
-    return vol, int(buys), int(sells)
+    buy_vol = (gross + net) / 2               # positive half of the signed flow
+    sniper_share = (sniper_buy / buy_vol) if buy_vol > 1e-9 else 0.0
+    return {"gross": gross, "net": net, "buys": buys, "sells": sells,
+            "sniper_share": min(max(sniper_share, 0.0), 1.0)}
+
+
+def transfer_fanout(token, frm, pool):
+    """Wallet-to-wallet ERC20 transfers (not trades) = the transfer-wallet tell.
+
+    A deployer fanning tokens out to fresh wallets fakes holder count / distribution
+    and preps a coordinated dump. Count Transfer logs whose from/to are neither the
+    pool nor the zero address (mint/burn) — real off-market movement — and return how
+    many DISTINCT recipients got tokens that way. High = a farmed/insider book.
+    """
+    try:
+        logs = get_logs([TRANSFER], frm, token)
+    except Exception:
+        return None
+    pool_l = pool.lower()
+    recipients = set()
+    for lg in logs:
+        tps = lg.get("topics", [])
+        if len(tps) < 3:
+            continue
+        frm_a, to_a = _addr(tps[1]).lower(), _addr(tps[2]).lower()
+        if frm_a in (pool_l, NATIVE) or to_a in (pool_l, NATIVE):
+            continue                          # skip trades (pool side) and mint/burn
+        recipients.add(to_a)
+    return len(recipients)
 
 
 def v4_liquidity_usd(pool_id, quote_is_t0):
@@ -202,36 +244,47 @@ def money(x):
     return f"${x:,.0f}" if x is not None else "?"
 
 
-# Live runner score from what a one-shot read can actually see: real depth, real
-# volume, and buy pressure. (The package scorer also uses smart-money + holder
-# growth + volume acceleration — those need Blockscout / a prior window / a
-# watchlist, so they're off here.) Fail closed: unknown liq or no volume = not a
-# runner, just a fresh listing. HOT = alive AND buy-skewed; WATCH = alive.
-MIN_LIQ = float(os.getenv("RH_MIN_LIQ", "5000"))     # thinner than this = ignore
-MIN_VOL = float(os.getenv("RH_MIN_VOL", "1000"))     # under this in 5m = not moving
-VOL_TARGET = float(os.getenv("RH_VOL_TARGET", "10000"))  # vol that maxes the score
+# Runner score from gaming-resistant signals, not trade counts:
+#   NET flow  -> is WETH actually accumulating? (immune to 1-buy/10-sell noise)
+#   SNIPER    -> was the early buying just launch-block bots? (discount it)
+#   FAN-OUT   -> deployer transferring to fresh wallets? (farmed book, discount it)
+# Fail closed: unknown liq or dead pool = not a runner. HOT = money flowing IN,
+# organically, not sniped.
+MIN_LIQ = float(os.getenv("RH_MIN_LIQ", "5000"))      # thinner than this = ignore
+MIN_GROSS = float(os.getenv("RH_MIN_GROSS", "1000"))  # under this traded = not moving
+FLOW_TARGET = float(os.getenv("RH_FLOW_TARGET", "5000"))  # net WETH-in that maxes score
+FANOUT_MAX = int(os.getenv("RH_FANOUT_MAX", "25"))    # fresh-wallet fan-out cap
 
 
-def runner_score(liq, vol, buys, sells):
-    if liq is None or liq < MIN_LIQ or not vol or vol < MIN_VOL:
-        return 0.0, 0.0
-    total = (buys or 0) + (sells or 0)
-    skew = (buys / total) if total else 0.5
-    vol_n = min(vol / VOL_TARGET, 1.0)
-    skew_n = max((skew - 0.5) * 2, 0.0)         # 0 at balanced, 1 at all-buys
-    return round(0.45 * vol_n + 0.55 * skew_n, 3), skew
+def runner_score(liq, m, fanout):
+    """m = analyze_swaps dict. Returns (score, reasons[])."""
+    if liq is None or liq < MIN_LIQ or m is None or m["gross"] < MIN_GROSS:
+        return 0.0, []
+    net_n = max(min(m["net"] / FLOW_TARGET, 1.0), 0.0)   # 0 if net is flat/negative
+    sniper_factor = 1.0 - 0.7 * m["sniper_share"]        # fully sniped -> keep 30%
+    farm_factor = 1.0 if not fanout else max(0.3, 1.0 - fanout / (2.0 * FANOUT_MAX))
+    score = round(net_n * sniper_factor * farm_factor, 3)
+    reasons = []
+    if m["net"] <= 0:
+        reasons.append("net OUT (distribution)")
+    if m["sniper_share"] >= 0.5:
+        reasons.append(f"{m['sniper_share']:.0%} sniped")
+    if fanout and fanout >= FANOUT_MAX:
+        reasons.append(f"{fanout} fan-out wallets")
+    return score, reasons
 
 
 scored = []
 for h in hits[:ENRICH]:
     blk, q_is0 = h["blk"], h["q_is0"]
+    life_from = hex(max(blk - 1, 0))          # from launch = this pool's whole life
     try:
         if h["ver"] == "v4":
-            vol, buys, sells = swap_volume(V4_PM, [V4_SWAP, h["pool"]], win, q_is0, invert=True)
+            m = analyze_swaps(V4_PM, [V4_SWAP, h["pool"]], life_from, q_is0, blk, invert=True)
         else:
-            vol, buys, sells = swap_volume(h["pool"], [V3_SWAP], win, q_is0)
+            m = analyze_swaps(h["pool"], [V3_SWAP], life_from, q_is0, blk)
     except Exception:
-        vol = buys = sells = None
+        m = None
     try:
         if h["ver"] == "v4":
             liq = v4_liquidity_usd(h["pool"], q_is0)
@@ -240,28 +293,36 @@ for h in hits[:ENRICH]:
             liq = bal / 1e18 * WETH_USD * 2
     except Exception:
         liq = None
+    fanout = transfer_fanout(h["token"], life_from, h["pool"])
     try:
         age = (now - block_ts(hex(blk))) / 60 if now else None
     except Exception:
         age = None
-    sc, skew = runner_score(liq, vol, buys, sells)
+    sc, reasons = runner_score(liq, m, fanout)
     tier = "HOT " if sc >= 0.60 else "WATCH" if sc >= 0.30 else "  .  "
-    scored.append((sc, tier, h, blk, age, liq, vol, buys, sells, skew))
+    scored.append((sc, tier, h, age, liq, m, fanout, reasons))
 
-# runners first (by score), spam sinks to the bottom
+# runners first (by net inflow score), sniped/farmed/dead sink to the bottom
 scored.sort(key=lambda r: -r[0])
 runners = sum(1 for r in scored if r[0] >= 0.30)
-print(f"{runners} runner(s) of {len(scored)} deep-read (rest are fresh listings / "
-      f"spray-mint spam), ranked:\n")
-for sc, tier, h, blk, age, liq, vol, buys, sells, skew in scored:
+print(f"{runners} runner(s) of {len(scored)} deep-read (rest not accumulating / "
+      f"sniped / farmed), ranked by NET inflow:\n")
+for sc, tier, h, age, liq, m, fanout, reasons in scored:
     agestr = f"{age:5.0f}m" if age is not None else "   ?  "
-    flow = f"{buys}b/{sells}s" if buys is not None else "?"
-    skewstr = f"{skew:.0%}buy" if buys is not None else ""
+    if m is not None:
+        net = ("+" if m["net"] >= 0 else "") + money(m["net"])
+        flow, snipe = f"{m['buys']}b/{m['sells']}s", f"{m['sniper_share']:.0%}snipe"
+        gross = money(m["gross"])
+    else:
+        net = flow = snipe = gross = "?"
+    fo = f"fan{fanout}" if fanout is not None else ""
+    tail = ("  <- " + ", ".join(reasons)) if reasons else ""
     print(f"[{tier}] {sc:>5.2f}  [{h['ver']}] {h['token']}  age {agestr}  "
-          f"liq {money(liq):>12}  vol5m {money(vol):>10}  {flow:>11} {skewstr}")
+          f"liq {money(liq):>11}  net {net:>10}  gross {gross:>9}  "
+          f"{flow:>9} {snipe:>8} {fo}{tail}")
     print(f"        pool {h['pool']}" + (f"  hook {h['hook']}" if h["hook"] != "-" else ""))
 
-print("\nHOT = real depth + real volume + buy-skewed = a runner starting. "
-      "'.' = fresh listing, not moving yet.")
+print("\nHOT = net WETH accumulating, not sniped, not farmed. Counts shown for "
+      "context only — net flow + sniper + fan-out drive the score.")
 if len(hits) > ENRICH:
     print(f"(+{len(hits) - ENRICH} older pools not deep-read — raise RH_ENRICH to see more)")
