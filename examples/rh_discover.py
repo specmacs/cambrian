@@ -34,6 +34,27 @@ POOLS_SLOT = 6
 EXTSLOAD = "0x1e2eaeaf"  # extsload(bytes32)
 SNIPE_BLOCKS = int(os.getenv("RH_SNIPE_BLOCKS", "3"))  # launch-block window = snipers
 
+# Launchpad fingerprints. Two independent tells identify a pad: the v4 hook every
+# launch routes through (authoritative), and a vanity token-address suffix (cheap
+# secondary). bankr: hook 0x4e34..a544, tokens end in 'ba3', launches on v4.
+PAD_BY_HOOK = {
+    "0x4e3468951d49f2eea976ed0d6e75ffcb44a9a544": "bankr",
+}
+PAD_BY_SUFFIX = {
+    "ba3": "bankr",
+}
+
+
+def pad_of(token, hook):
+    """Which pad launched this? Hook match wins (authoritative); suffix corroborates."""
+    h = (hook or "").lower()
+    if h in PAD_BY_HOOK:
+        return PAD_BY_HOOK[h]
+    for suf, name in PAD_BY_SUFFIX.items():
+        if token.lower().endswith(suf):
+            return name
+    return ""
+
 # ---- minimal pure-Python keccak256 (Ethereum, 0x01 padding) -----------------
 _MASK = (1 << 64) - 1
 _RC = [0x1, 0x8082, 0x800000000000808A, 0x8000000080008000, 0x808B, 0x80000001,
@@ -216,24 +237,37 @@ for lg in get_logs([INITIALIZE], frm, V4_PM):
     if not (quotes & {c0, c1}):
         continue
     q_is0 = c0 in quotes
-    hits.append({"ver": "v4", "token": _addr(t[3]) if q_is0 else _addr(t[2]),
-                 "pool": t[1], "hook": _addr(w[2]), "blk": int(lg["blockNumber"], 16),
-                 "q_is0": q_is0})
+    tok, hook = _addr(t[3]) if q_is0 else _addr(t[2]), _addr(w[2])
+    hits.append({"ver": "v4", "token": tok, "pool": t[1], "hook": hook,
+                 "blk": int(lg["blockNumber"], 16), "q_is0": q_is0,
+                 "pad": pad_of(tok, hook)})
 for lg in get_logs([POOLCREATED], frm, V3_FACTORY):
     t, data = lg["topics"], lg["data"][2:]
     t0, t1 = _addr(t[1]).lower(), _addr(t[2]).lower()
     if WETH not in (t0, t1):
         continue
     weth_is0 = t0 == WETH
-    hits.append({"ver": "v3", "token": _addr(t[2]) if weth_is0 else _addr(t[1]),
-                 "pool": _addr(data[64:128]), "hook": "-",
-                 "blk": int(lg["blockNumber"], 16), "q_is0": weth_is0})
+    tok = _addr(t[2]) if weth_is0 else _addr(t[1])
+    hits.append({"ver": "v3", "token": tok, "pool": _addr(data[64:128]), "hook": "-",
+                 "blk": int(lg["blockNumber"], 16), "q_is0": weth_is0,
+                 "pad": pad_of(tok, None)})
+
+# Optional: watch a single pad, e.g. $env:RH_PAD="bankr"
+PAD_FILTER = os.getenv("RH_PAD", "").lower()
+if PAD_FILTER:
+    hits = [h for h in hits if h.get("pad") == PAD_FILTER]
 
 n4 = sum(1 for h in hits if h["ver"] == "v4")
-print(f"discovered {len(hits)} fresh WETH/ETH pools ({n4} v4, {len(hits) - n4} v3). "
-      f"deep-reading the {min(ENRICH, len(hits))} newest...\n")
+pad_counts = {}
+for h in hits:
+    if h.get("pad"):
+        pad_counts[h["pad"]] = pad_counts.get(h["pad"], 0) + 1
+pad_str = ("  pads: " + ", ".join(f"{k}={v}" for k, v in pad_counts.items())) if pad_counts else ""
+print(f"discovered {len(hits)} fresh WETH/ETH pools ({n4} v4, {len(hits) - n4} v3)"
+      f"{pad_str}. deep-reading the {min(ENRICH, len(hits))} newest...\n")
 if not hits:
-    print("none in this window — raise RH_BLOCKS (e.g. $env:RH_BLOCKS='60000') and retry")
+    print("none in this window — raise RH_BLOCKS (e.g. $env:RH_BLOCKS='60000'), "
+          "or clear RH_PAD, and retry")
     raise SystemExit
 
 # Phase 2: enrich newest-first, printing each as it lands so it never looks hung.
@@ -317,7 +351,8 @@ for sc, tier, h, age, liq, m, fanout, reasons in scored:
         net = flow = snipe = gross = "?"
     fo = f"fan{fanout}" if fanout is not None else ""
     tail = ("  <- " + ", ".join(reasons)) if reasons else ""
-    print(f"[{tier}] {sc:>5.2f}  [{h['ver']}] {h['token']}  age {agestr}  "
+    vtag = f"{h['ver']}/{h['pad']}" if h.get("pad") else h["ver"]
+    print(f"[{tier}] {sc:>5.2f}  [{vtag}] {h['token']}  age {agestr}  "
           f"liq {money(liq):>11}  net {net:>10}  gross {gross:>9}  "
           f"{flow:>9} {snipe:>8} {fo}{tail}")
     print(f"        pool {h['pool']}" + (f"  hook {h['hook']}" if h["hook"] != "-" else ""))

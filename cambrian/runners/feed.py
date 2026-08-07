@@ -224,7 +224,7 @@ def enrich(client: ChainClient, hit: dict[str, Any], *, weth_usd: float,
             smart = 0
 
     return RunnerCandidate(
-        token=token, pool=pool, launchpad=None, symbol=symbol,
+        token=token, pool=pool, launchpad=rcfg.pad_of(token, None), symbol=symbol,
         age_minutes=age_minutes, liquidity_usd=liquidity_usd,
         top_holder_pct=top_holder, holders=holders, holders_5m_ago=None,
         volume_5m_usd=m5["volume_usd"], volume_prior_5m_usd=mp["volume_usd"],
@@ -283,7 +283,8 @@ def enrich_v4(client: ChainClient, hit: dict[str, Any], *, weth_usd: float,
         pass
     symbol, holders, top, age = _holders_age(client, token, hit, now_ts, bs_client)
     return RunnerCandidate(
-        token=token, pool=pid, launchpad=None, symbol=symbol, age_minutes=age,
+        token=token, pool=pid, launchpad=rcfg.pad_of(token, hit["hooks"]),
+        symbol=symbol, age_minutes=age,
         liquidity_usd=liquidity, top_holder_pct=top, holders=holders,
         holders_5m_ago=None, volume_5m_usd=m5["volume_usd"],
         volume_prior_5m_usd=mp["volume_usd"], buys_5m=m5["buys"], sells_5m=m5["sells"],

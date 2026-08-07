@@ -60,12 +60,30 @@ CONTRACTS = {
     # 0xe51960f1b45f1c9fb6d166e6a884f866fc70433b
 }
 
-# Recurring v4 hook seen on-chain across multiple fresh pools (a launchpad's hook;
-# most pools launch hook-less at 0x0). Worth identifying on the explorer — a pad
-# that routes every launch through one hook is a pad worth watching by name.
-KNOWN_V4_HOOKS = {
-    "0x4e3468951d49f2eea976ed0d6e75ffcb44a9a544": "unidentified-pad-1",
+# Launchpad fingerprints. A pad is identified two independent ways: the v4 hook
+# every launch routes through (authoritative) and a vanity token-address suffix
+# (cheap secondary). Both confirmed on-chain for bankr: hook 0x4e34..a544, tokens
+# end in 'ba3', launches on Uniswap v4. Add more pads as their fingerprints surface
+# (run examples/rh_trace.py on a known token to pull a pad's hook + launch contract).
+PAD_BY_HOOK = {
+    "0x4e3468951d49f2eea976ed0d6e75ffcb44a9a544": "bankr",
 }
+PAD_BY_SUFFIX = {
+    "ba3": "bankr",
+}
+
+
+def pad_of(token: str | None, hook: str | None) -> str | None:
+    """Which pad launched this token? Hook match is authoritative; the vanity
+    address suffix corroborates (and covers pads/pools with no hook)."""
+    h = (hook or "").lower()
+    if h in PAD_BY_HOOK:
+        return PAD_BY_HOOK[h]
+    if token:
+        for suf, name in PAD_BY_SUFFIX.items():
+            if token.lower().endswith(suf):
+                return name
+    return None
 
 # Smart-money addresses to follow. A watched wallet buying a fresh token is the
 # strongest single signal there is. Curate by hand to start.

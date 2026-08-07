@@ -43,6 +43,22 @@ MIN_GROSS = float(os.getenv("RH_MIN_GROSS", "1000"))
 FLOW_TARGET = float(os.getenv("RH_FLOW_TARGET", "5000"))
 FANOUT_MAX = int(os.getenv("RH_FANOUT_MAX", "25"))
 BLOCKS_PER_MIN = 600  # ~100ms blocks
+PAD_FILTER = os.getenv("RH_PAD", "").lower()   # e.g. "bankr" to watch one pad only
+
+# Launchpad fingerprints — v4 hook (authoritative) + vanity address suffix.
+# bankr: hook 0x4e34..a544, tokens end in 'ba3', v4.
+PAD_BY_HOOK = {"0x4e3468951d49f2eea976ed0d6e75ffcb44a9a544": "bankr"}
+PAD_BY_SUFFIX = {"ba3": "bankr"}
+
+
+def pad_of(token, hook):
+    h = (hook or "").lower()
+    if h in PAD_BY_HOOK:
+        return PAD_BY_HOOK[h]
+    for suf, name in PAD_BY_SUFFIX.items():
+        if token.lower().endswith(suf):
+            return name
+    return ""
 
 # ---- keccak256 (for v4 extsload liquidity) ----------------------------------
 _MASK = (1 << 64) - 1
@@ -210,19 +226,21 @@ def discover(frm, to):
         if not ({WETH, NATIVE} & {c0, c1}):
             continue
         q0 = c0 in {WETH, NATIVE}
-        out.append({"ver": "v4", "token": _addr(t[3]) if q0 else _addr(t[2]),
-                    "pool": t[1], "hook": _addr(w[2]),
-                    "blk": int(lg["blockNumber"], 16), "q0": q0})
+        tok, hook = _addr(t[3]) if q0 else _addr(t[2]), _addr(w[2])
+        out.append({"ver": "v4", "token": tok, "pool": t[1], "hook": hook,
+                    "blk": int(lg["blockNumber"], 16), "q0": q0,
+                    "pad": pad_of(tok, hook)})
     for lg in get_logs([POOLCREATED], frm, to, addr=V3_FACTORY):
         t, data = lg["topics"], lg["data"][2:]
         t0, t1 = _addr(t[1]).lower(), _addr(t[2]).lower()
         if WETH not in (t0, t1):
             continue
         w0 = t0 == WETH
-        out.append({"ver": "v3", "token": _addr(t[2]) if w0 else _addr(t[1]),
-                    "pool": _addr(data[64:128]), "hook": "-",
-                    "blk": int(lg["blockNumber"], 16), "q0": w0})
-    return out
+        tok = _addr(t[2]) if w0 else _addr(t[1])
+        out.append({"ver": "v3", "token": tok, "pool": _addr(data[64:128]), "hook": "-",
+                    "blk": int(lg["blockNumber"], 16), "q0": w0,
+                    "pad": pad_of(tok, None)})
+    return [h for h in out if not PAD_FILTER or h["pad"] == PAD_FILTER]
 
 
 def enrich(h):
@@ -261,7 +279,8 @@ def save_state(last_block, tracked):
 def alert(kind, h, sc, info):
     m = info["m"]
     bar = "=" * 60
-    print(f"\n{bar}\n*** {kind}: {tier_of(sc)} {sc:.2f}  [{h['ver']}] {h['token']}")
+    vtag = f"{h['ver']}/{h['pad']}" if h.get("pad") else h["ver"]
+    print(f"\n{bar}\n*** {kind}: {tier_of(sc)} {sc:.2f}  [{vtag}] {h['token']}")
     print(f"    liq {money(info['liq'])}  net {'+' if m['net'] >= 0 else ''}{money(m['net'])}"
           f"  gross {money(m['gross'])}  {m['buys']}b/{m['sells']}s"
           f"  {m['sniper_share']:.0%}snipe  fan{info['fanout']}")
@@ -274,8 +293,9 @@ def main():
     latest = int(rpc("eth_blockNumber", []), 16)
     if not last_block:
         last_block = max(latest - BLOCKS_PER_MIN, 0)   # first run: last ~1 min
+    filt = f", pad={PAD_FILTER}" if PAD_FILTER else ""
     print(f"watching RH from block {last_block} (interval {INTERVAL}s, "
-          f"tracking {TRACK_MINUTES:.0f}m). Ctrl+C to stop.\n")
+          f"tracking {TRACK_MINUTES:.0f}m{filt}). Ctrl+C to stop.\n")
 
     while True:
         try:
@@ -306,7 +326,9 @@ def main():
                 h["peak"] = max(h.get("peak", 0.0), sc)
             save_state(last_block, tracked)
             ts = time.strftime("%H:%M:%S")
-            print(f"[{ts}] block {latest}  tracking {len(tracked)} pools  "
+            nb = sum(1 for h in tracked.values() if h.get("pad") == "bankr")
+            padstr = f"  bankr {nb}" if nb else ""
+            print(f"[{ts}] block {latest}  tracking {len(tracked)} pools{padstr}  "
                   f"{hot} live  (newest {min(len(fresh), MAX_TRACK)} re-read)")
         except Exception as e:
             print(f"tick error ({e}) — retrying next interval")
