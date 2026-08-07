@@ -44,6 +44,11 @@ FLOW_TARGET = float(os.getenv("RH_FLOW_TARGET", "5000"))
 FANOUT_MAX = int(os.getenv("RH_FANOUT_MAX", "25"))
 BLOCKS_PER_MIN = 600  # ~100ms blocks
 PAD_FILTER = os.getenv("RH_PAD", "").lower()   # e.g. "bankr" to watch one pad only
+# Opt-in: on a HOT alert, print a ready Definitive Flash BUY intent (params only,
+# never executed here — sign/submit via the Flash MCP). RH_ACT=1 to enable.
+ACT = os.getenv("RH_ACT", "") not in ("", "0", "false")
+ACT_CONTRA = os.getenv("RH_CONTRA", "0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73")  # RH WETH
+ACT_QTY = os.getenv("RH_QTY", "0.02")          # spend amount, in contra units
 
 # Launchpad fingerprints — v4 hook (authoritative) + vanity address suffix.
 # bankr: hook 0x4e34..a544, tokens end in 'ba3', v4.
@@ -285,6 +290,13 @@ def alert(kind, h, sc, info):
           f"  gross {money(m['gross'])}  {m['buys']}b/{m['sells']}s"
           f"  {m['sniper_share']:.0%}snipe  fan{info['fanout']}")
     print(f"    pool {h['pool']}" + (f"  hook {h['hook']}" if h['hook'] != '-' else ""))
+    if ACT and tier_of(sc) == "HOT":
+        print(f"    ACT> BUY via Definitive Flash (QuickTrade) on robinhood")
+        print(f"         targetAsset {h['token']}  contraAsset {ACT_CONTRA}  qty {ACT_QTY}")
+        print(f"         MCP: flash_submit_order {{targetChain:robinhood, contraChain:robinhood,")
+        print(f"              targetAsset:{h['token']}, contraAsset:{ACT_CONTRA}, side:buy,")
+        print(f"              qty:{ACT_QTY}, orderType:market, quickTrade:true, maxSlippage:0.05}}")
+        print(f"         (params only — sign+submit in the Flash MCP; no key touched here)")
     print(bar)
 
 
