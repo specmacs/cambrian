@@ -196,7 +196,28 @@ def money(x):
     return f"${x:,.0f}" if x is not None else "?"
 
 
-for i, h in enumerate(hits[:ENRICH], 1):
+# Live runner score from what a one-shot read can actually see: real depth, real
+# volume, and buy pressure. (The package scorer also uses smart-money + holder
+# growth + volume acceleration — those need Blockscout / a prior window / a
+# watchlist, so they're off here.) Fail closed: unknown liq or no volume = not a
+# runner, just a fresh listing. HOT = alive AND buy-skewed; WATCH = alive.
+MIN_LIQ = float(os.getenv("RH_MIN_LIQ", "5000"))     # thinner than this = ignore
+MIN_VOL = float(os.getenv("RH_MIN_VOL", "1000"))     # under this in 5m = not moving
+VOL_TARGET = float(os.getenv("RH_VOL_TARGET", "10000"))  # vol that maxes the score
+
+
+def runner_score(liq, vol, buys, sells):
+    if liq is None or liq < MIN_LIQ or not vol or vol < MIN_VOL:
+        return 0.0, 0.0
+    total = (buys or 0) + (sells or 0)
+    skew = (buys / total) if total else 0.5
+    vol_n = min(vol / VOL_TARGET, 1.0)
+    skew_n = max((skew - 0.5) * 2, 0.0)         # 0 at balanced, 1 at all-buys
+    return round(0.45 * vol_n + 0.55 * skew_n, 3), skew
+
+
+scored = []
+for h in hits[:ENRICH]:
     blk, q_is0 = h["blk"], h["q_is0"]
     try:
         if h["ver"] == "v4":
@@ -217,12 +238,24 @@ for i, h in enumerate(hits[:ENRICH], 1):
         age = (now - block_ts(hex(blk))) / 60 if now else None
     except Exception:
         age = None
+    sc, skew = runner_score(liq, vol, buys, sells)
+    tier = "HOT " if sc >= 0.60 else "WATCH" if sc >= 0.30 else "  .  "
+    scored.append((sc, tier, h, blk, age, liq, vol, buys, sells, skew))
+
+# runners first (by score), spam sinks to the bottom
+scored.sort(key=lambda r: -r[0])
+runners = sum(1 for r in scored if r[0] >= 0.30)
+print(f"{runners} runner(s) of {len(scored)} deep-read (rest are fresh listings / "
+      f"spray-mint spam), ranked:\n")
+for sc, tier, h, blk, age, liq, vol, buys, sells, skew in scored:
     agestr = f"{age:5.0f}m" if age is not None else "   ?  "
     flow = f"{buys}b/{sells}s" if buys is not None else "?"
-    print(f"{i:>2}. [{h['ver']}] {h['token']}  blk {blk}  age {agestr}  "
-          f"liq {money(liq):>12}  vol5m {money(vol):>10}  {flow}")
-    print(f"      pool {h['pool']}" + (f"  hook {h['hook']}" if h["hook"] != "-" else ""))
+    skewstr = f"{skew:.0%}buy" if buys is not None else ""
+    print(f"[{tier}] {sc:>5.2f}  [{h['ver']}] {h['token']}  age {agestr}  "
+          f"liq {money(liq):>12}  vol5m {money(vol):>10}  {flow:>11} {skewstr}")
+    print(f"        pool {h['pool']}" + (f"  hook {h['hook']}" if h["hook"] != "-" else ""))
 
-print("\nfresh + rising vol + non-zero liq + skewed to buys = a runner starting.")
+print("\nHOT = real depth + real volume + buy-skewed = a runner starting. "
+      "'.' = fresh listing, not moving yet.")
 if len(hits) > ENRICH:
-    print(f"(+{len(hits) - ENRICH} older pools not shown — raise RH_ENRICH to see more)")
+    print(f"(+{len(hits) - ENRICH} older pools not deep-read — raise RH_ENRICH to see more)")

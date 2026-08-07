@@ -45,17 +45,26 @@ LAUNCHPADS: dict[str, dict[str, str]] = {
 # RH Chain contract addresses. v3_factory + pool_manager are CHAIN-VERIFIED via
 # `runners --find-contracts` (the dominant emitters of PoolCreated / Initialize) —
 # RH does NOT use Uniswap's canonical V3 factory address, so don't "fix" it back.
-# weth/usdg are search-derived — spot-check on robinhoodchain.blockscout.com.
+# weth is CHAIN-CONFIRMED too: a live `rh_discover` run read non-zero liquidity on
+# many V3 pools paired against it (a wrong WETH would read $0 everywhere). usdg is
+# still search-derived — spot-check on robinhoodchain.blockscout.com.
 CONTRACTS = {
     "v3_factory": "0x1f7d7550b1b028f7571e69a784071f0205fd2efa",   # chain-verified
     "pool_manager": "0x8366a39cc670b4001a1121b8f6a443a643e40951",  # chain-verified (v4)
-    "weth": "0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73",
+    "weth": "0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73",          # chain-confirmed
     "usdg": "0x5fc5360d0400a0fd4f2af552add042d716f1d168",
     "native_eth": "0x0000000000000000000000000000000000000000",
     # A deep WETH/USDG V3 pool for pricing WETH in USD (optional; fill from explorer).
     "weth_usd_pool": "",
     # Secondary v3-style factory seen on-chain (2 pools) — likely the Clones fork:
     # 0xe51960f1b45f1c9fb6d166e6a884f866fc70433b
+}
+
+# Recurring v4 hook seen on-chain across multiple fresh pools (a launchpad's hook;
+# most pools launch hook-less at 0x0). Worth identifying on the explorer — a pad
+# that routes every launch through one hook is a pad worth watching by name.
+KNOWN_V4_HOOKS = {
+    "0x4e3468951d49f2eea976ed0d6e75ffcb44a9a544": "unidentified-pad-1",
 }
 
 # Smart-money addresses to follow. A watched wallet buying a fresh token is the
