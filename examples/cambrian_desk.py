@@ -527,20 +527,26 @@ def worker():
 
 
 PAGE = r"""<!doctype html><html><head><meta charset=utf-8><title>CAMBRIAN</title>
+<link rel=preconnect href="https://fonts.googleapis.com"><link rel=preconnect href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel=stylesheet>
 <style>
-:root{--bg:#07090f;--sb:#0a0d15;--pnl:#0d1119;--pnl2:#10151f;--bd:#181e2c;--bd2:#12172227;
---tx:#dbe3f0;--mut:#6b7c9c;--dim:#3c4763;--ac:#37e0b0;--ac2:#22c896;--cy:#4fc3ff;
---rd:#ff5470;--am:#f5b84c;--grad:linear-gradient(135deg,#37e0b0,#4fc3ff)}
+:root{--bg:#06080d;--sb:#090c13;--pnl:#0b0f17;--pnl2:#0f141e;--bd:#171d29;--bd2:#11161f;
+--tx:#e6ecf6;--mut:#7b8aa8;--dim:#414c66;--ac:#00e5a0;--ac2:#00c489;--cy:#4cc9ff;
+--rd:#ff4d6a;--am:#ffb340;--grad:linear-gradient(135deg,#00e5a0,#4cc9ff)}
 *{box-sizing:border-box;margin:0}
-body{background:var(--bg);color:var(--tx);font:13px/1.45 Inter,-apple-system,"Segoe UI",Roboto,Arial,sans-serif;display:flex;min-height:100vh}
-.mono{font-family:"JetBrains Mono",ui-monospace,"SF Mono",Menlo,Consolas,monospace}
+body{background:var(--bg);color:var(--tx);display:flex;min-height:100vh;
+font:500 13px/1.4 "Inter Tight",-apple-system,"Segoe UI",Roboto,Arial,sans-serif;
+-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale;letter-spacing:-.01em}
+.mono,td.mono,.n,th{font-family:"JetBrains Mono",ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+font-variant-numeric:tabular-nums;font-feature-settings:"tnum" 1,"zero" 1}
+td,.n,.eqbig{font-variant-numeric:tabular-nums}
 /* sidebar */
 aside{width:198px;background:var(--sb);border-right:1px solid var(--bd);padding:16px 12px;
 position:sticky;top:0;height:100vh;display:flex;flex-direction:column;gap:4px;flex-shrink:0}
 .brand{display:flex;align-items:center;gap:9px;padding:2px 8px 16px}
 .gem{width:26px;height:26px;border-radius:8px;background:var(--grad);display:grid;place-items:center;
 color:#04241a;font-weight:800;font-size:14px}
-.brand b{font-size:15px;letter-spacing:.22em;font-weight:800}
+.brand b{font-size:14px;letter-spacing:.26em;font-weight:800;font-family:"Inter Tight"}
 .nav{display:flex;align-items:center;gap:10px;padding:9px 10px;border-radius:9px;color:var(--mut);
 cursor:pointer;font-weight:600;font-size:12.5px;border:1px solid transparent}
 .nav:hover{color:var(--tx);background:var(--pnl2)}
@@ -577,12 +583,24 @@ font-weight:800;font-size:12px;cursor:pointer;letter-spacing:.02em}
 border-bottom:1px solid var(--bd);display:flex;align-items:center;gap:8px}
 .card h3 .cnt{margin-left:auto;color:var(--dim);font-weight:600}
 table{width:100%;border-collapse:collapse}
-th{font-size:9.5px;letter-spacing:.09em;text-transform:uppercase;color:var(--dim);text-align:right;
-padding:8px 13px;border-bottom:1px solid var(--bd2)}
+th{font-size:9px;letter-spacing:.14em;text-transform:uppercase;color:var(--dim);text-align:right;
+padding:9px 13px;border-bottom:1px solid var(--bd2);font-weight:600;cursor:pointer;user-select:none}
+th:hover{color:var(--mut)}th.s:after{content:" ↓";color:var(--ac)}
 th:first-child,td:first-child{text-align:left}
-td{padding:9px 13px;border-bottom:1px solid var(--bd2);text-align:right;font-size:12.5px}
+td{padding:8px 13px;border-bottom:1px solid var(--bd2);text-align:right;font-size:12.5px}
 tbody tr{transition:background .12s}tbody tr:hover{background:var(--pnl2)}
-.sym{font-weight:800;font-size:13px}
+@keyframes fl{0%{background:rgba(0,229,160,.16)}100%{background:transparent}}
+tbody tr.new{animation:fl 1.4s ease-out}
+.sym{font-weight:700;font-size:13px;letter-spacing:-.02em;cursor:pointer}
+.sym:hover{color:var(--ac)}
+.toast{position:fixed;bottom:22px;left:50%;transform:translateX(-50%) translateY(70px);
+background:var(--ac);color:#04241a;font-weight:700;padding:9px 18px;border-radius:9px;
+font-size:12px;transition:transform .22s cubic-bezier(.2,.9,.3,1.3);z-index:99}
+.toast.on{transform:translateX(-50%) translateY(0)}
+.filters{display:flex;gap:6px;margin-left:auto}
+.fc{font-size:10px;font-weight:700;letter-spacing:.06em;padding:3px 10px;border-radius:6px;
+border:1px solid var(--bd);color:var(--dim);cursor:pointer;text-transform:uppercase}
+.fc:hover{color:var(--mut)}.fc.on{background:rgba(0,229,160,.1);border-color:rgba(0,229,160,.3);color:var(--ac)}
 .links{display:inline-flex;gap:6px;margin-left:8px;vertical-align:1px}
 .lk{font-size:9.5px;font-weight:700;color:var(--dim);text-decoration:none;border:1px solid var(--bd);
 padding:1px 6px;border-radius:5px}
@@ -639,7 +657,10 @@ color:var(--tx);padding:12px;font-family:ui-monospace,Menlo,monospace;font-size:
  </div>
 </div>
 <div class=view id=v-scout>
- <div class=card><h3>Scouting · fresh launches</h3>
+ <div class=card><h3>Scouting · fresh launches
+  <span class=filters>
+   <span class="fc on" data-f=all>All</span><span class=fc data-f=verified>Verified pads</span>
+   <span class=fc data-f=strong>Strong only</span></span></h3>
   <table><thead><tr><th>Token</th><th>Pad</th><th>Net flow</th><th>Liquidity</th><th>Confluence</th></tr></thead>
   <tbody id=scouting></tbody></table></div>
 </div>
@@ -654,7 +675,15 @@ color:var(--tx);padding:12px;font-family:ui-monospace,Menlo,monospace;font-size:
   </div></div>
 </div>
 </main>
+<div class=toast id=toast></div>
 <script>
+let FILTER='all',SEEN_ROWS=new Set();
+function toast(m){const t=document.getElementById('toast');t.textContent=m;t.classList.add('on');
+ clearTimeout(t._h);t._h=setTimeout(()=>t.classList.remove('on'),1400)}
+function copy(a){navigator.clipboard.writeText(a).then(()=>toast('copied '+a.slice(0,10)+'…'))}
+document.addEventListener('keydown',e=>{if(e.target.tagName=='TEXTAREA')return;
+ const k={'1':'desk','2':'scout','3':'wallets'}[e.key];
+ if(k)document.querySelector(`.nav[data-v=${k}]`).click()});
 const DEX=t=>`https://dexscreener.com/search?q=${t}`;
 const EXP=t=>`https://robinhoodchain.blockscout.com/address/${t}`;
 const PADURL={"pools-trade":"https://pools.trade/token/","flap":"https://flap.sh/token/","bankr":"https://bankr.bot/token/","pons":"https://pons.fun/token/"};
@@ -662,7 +691,7 @@ function d$(n){const s=n>=0?'':'-',a=Math.abs(n);return s+'$'+(a>=1000?(a/1000).
 function cls(n){return n>0?'pos':n<0?'neg':'dim'}
 function tok(sym,addr,pad){
  const p=(pad||'').replace('?','');const pu=PADURL[p]?`<a class=lk href="${PADURL[p]+addr}" target=_blank>PAD</a>`:'';
- return `<span class=sym title="${addr}">${sym||'?'}</span><span class=links>`+
+ return `<span class=sym title="${addr} — click to copy" onclick="copy('${addr}')">${sym||'?'}</span><span class=links>`+
    `<a class=lk href="${DEX(addr)}" target=_blank>DEX</a>${pu}<a class=lk href="${EXP(addr)}" target=_blank>SCAN</a></span>`}
 function padtag(p,v){return `<span class="padtag ${v?'v':''}">${p}${v?' ✓':''}</span>`}
 document.querySelectorAll('.nav').forEach(n=>n.onclick=()=>{
@@ -703,12 +732,17 @@ async function tick(){let d;try{d=await(await fetch('/data')).json()}catch(e){re
   `<tr><td>${tok(c.sym,c.token,c.pad)}</td><td class=mono>${d$(c.cost)}</td><td class=mono>${d$(c.exit_value)}</td>`+
   `<td class="mono ${cls(c.pnl)}">${d$(c.pnl)}</td><td class=dim>${c.why}</td></tr>`).join(''):
   '<tr><td colspan=5 class=empty>none yet</td></tr>';
- document.getElementById('scouting').innerHTML=d.scouting.length?d.scouting.map(s=>
-  `<tr><td>${tok(s.sym,s.token,s.pad)}</td><td>${padtag(s.pad,s.verified)}</td>`+
+ let sc=d.scouting.filter(s=>FILTER=='all'||(FILTER=='verified'&&s.verified)||(FILTER=='strong'&&s.tier=='STRONG'));
+ document.getElementById('scouting').innerHTML=sc.length?sc.map(s=>{
+  const isnew=!SEEN_ROWS.has(s.token);SEEN_ROWS.add(s.token);
+  return `<tr class="${isnew?'new':''}"><td>${tok(s.sym,s.token,s.pad)}</td><td>${padtag(s.pad,s.verified)}</td>`+
   `<td class="mono ${cls(s.net)}">${d$(s.net)}</td><td class=mono>${d$(s.liq)}</td>`+
-  `<td><span class="sc sc-${s.tier}">${s.conf} ${s.tier}</span></td></tr>`).join(''):
-  '<tr><td colspan=5 class=empty>scanning Robinhood Chain…</td></tr>';
+  `<td><span class="sc sc-${s.tier}">${s.conf} ${s.tier}</span></td></tr>`}).join(''):
+  `<tr><td colspan=5 class=empty>${d.scouting.length?'nothing matches this filter':'scanning Robinhood Chain…'}</td></tr>`;
 }
+document.querySelectorAll('.fc').forEach(f=>f.onclick=()=>{
+ document.querySelectorAll('.fc').forEach(x=>x.classList.remove('on'));f.classList.add('on');
+ FILTER=f.dataset.f;tick()});
 tick();setInterval(tick,4000);loadWallets();
 </script></body></html>"""
 
