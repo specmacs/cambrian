@@ -13,7 +13,6 @@ uniswap_v4}.py; the scorer/tiering lives in the package — this is the live rea
 """
 
 import os
-import time
 import requests
 
 RPC = os.getenv("RH_RPC_URL", "https://rpc.mainnet.chain.robinhood.com")
