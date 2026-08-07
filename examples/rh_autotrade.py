@@ -52,7 +52,7 @@ FLASH_KEY = os.getenv("RH_FLASH_KEY", flash.FLASH_DEV_KEY)
 USE_LLM = os.getenv("RH_LLM", "") not in ("", "0", "false")
 LLM_BASE = os.getenv("RH_LLM_BASE", "https://api.surplusintelligence.ai/v1")
 LLM_KEY = os.getenv("RH_LLM_KEY", "")
-LLM_MODEL = os.getenv("RH_LLM_MODEL", "gpt-4o-mini")
+LLM_MODEL = os.getenv("RH_LLM_MODEL", "claude-opus-4.8")  # any model Surplus routes
 LLM_MIN_CONF = float(os.getenv("RH_LLM_MIN_CONF", "0.6"))
 
 POLICY = TradePolicy(

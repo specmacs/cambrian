@@ -6,6 +6,12 @@ survivor, given the on-chain facts. OpenAI-compatible, so it works with Surplus
 Intelligence (an inference marketplace) or any OpenAI-style endpoint — set the
 base URL and key.
 
+Surplus specifics (from their docs): base URL https://api.surplusintelligence.ai/v1,
+endpoint /chat/completions, auth header `Authorization: Bearer <key>` where the key
+starts with `inf_`, standard OpenAI body {model, messages, ...}. Models include
+`claude-opus-4.8` (and others); the marketplace routes each call to the cheapest
+seller — pick a small/cheap model for a 24/7 judge.
+
 Pure parts (prompt build, verdict parse) are unit-tested. The HTTP call is a thin
 seam. FAIL CLOSED: an error, a timeout, or an unparseable reply is treated as
 SKIP — the model must clearly say buy, or no buy. The key is read from the
