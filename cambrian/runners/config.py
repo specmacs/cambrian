@@ -79,10 +79,11 @@ PAD_BY_DEPLOYER: dict[str, str] = {
     # RH activity (both hookless) — too clean a match to be anything else. Trace a
     # Pons-launched token with rh_who to hard-confirm; correct here if it differs.
     "0x0000ffffbe8efe702c8703ae3477ff5de3d319c0": "pons",
-    # Pools.trade (Uniswap Labs' RH pad): deployed the pools for $FRONG — the
-    # confirmed flagship token that topped Pools.trade at launch — so 0x58daec is
-    # Pools.trade's pool deployer. Hookless v4, pairs vs WETH (already covered by the
-    # WETH discovery). Identified by deployer since it uses no custom hook.
+    # Pools.trade (Uniswap Labs' RH pad): launches via Uniswap's canonical CREATE2
+    # deployer (CCA), so the "deployer" is Uniswap infra, not a bespoke factory. It
+    # deployed the pools for $FRONG (the confirmed flagship Pools.trade token), and
+    # on RH Pools.trade IS the Uniswap launchpad, so CCA-deployed ≈ Pools.trade.
+    # Hookless v4, WETH-paired (already covered by discovery).
     "0x58daec3116aae6d93017baaea7749052e8a04fa7": "pools-trade",
 }
 PAD_BY_SUFFIX: dict[str, str] = {
