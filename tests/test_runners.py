@@ -1,5 +1,5 @@
 from cambrian.runners.config import RunnerPolicy
-from cambrian.runners.score import rank_runners, score_runner
+from cambrian.runners.score import flow_score, rank_runners, score_runner
 from cambrian.runners.snapshots import RunnerCandidate
 
 POLICY = RunnerPolicy()
@@ -75,6 +75,30 @@ def test_transfer_fanout_discounts_the_score():
     base = score_runner(cand(), policy=POLICY).score
     farmed = score_runner(cand(transfer_fanout=60), policy=POLICY)
     assert farmed.score < base and any("fan-out" in x for x in farmed.signals)
+
+
+def test_flow_score_hot_on_real_accumulation():
+    c = RunnerCandidate(token="0xt", pool="0xp", launchpad="bankr",
+                        liquidity_usd=30_000, volume_5m_usd=22_000, net_flow_usd=4_000)
+    assert flow_score(c) >= 0.60           # HOT: strong net inflow, deep, liquid
+
+
+def test_flow_score_zero_on_distribution_or_thin_or_quiet():
+    d = dict(token="0xt", pool="0xp", launchpad="bankr")
+    assert flow_score(RunnerCandidate(**d, liquidity_usd=30_000, volume_5m_usd=22_000,
+                                      net_flow_usd=-500)) == 0.0   # net OUT
+    assert flow_score(RunnerCandidate(**d, liquidity_usd=1_000, volume_5m_usd=22_000,
+                                      net_flow_usd=4_000)) == 0.0  # thin
+    assert flow_score(RunnerCandidate(**d, liquidity_usd=30_000, volume_5m_usd=50,
+                                      net_flow_usd=40)) == 0.0     # quiet
+
+
+def test_flow_score_discounts_snipers():
+    d = dict(token="0xt", pool="0xp", launchpad="bankr", liquidity_usd=30_000,
+             volume_5m_usd=22_000, net_flow_usd=5_000)
+    clean = flow_score(RunnerCandidate(**d, sniper_share=0.0))
+    sniped = flow_score(RunnerCandidate(**d, sniper_share=0.9))
+    assert sniped < clean
 
 
 def test_rank_filters_and_orders():

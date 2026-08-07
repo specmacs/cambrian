@@ -102,6 +102,29 @@ def score_runner(c: RunnerCandidate, *, policy: RunnerPolicy | None = None,
     return RunnerScore(c, score, tier, (), tuple(signals))
 
 
+def flow_score(c: RunnerCandidate, *, min_liq: float = 5_000.0,
+               min_gross: float = 1_000.0, flow_target: float = 5_000.0) -> float:
+    """The net-flow score used by the live tools (rh_discover / rh_watch) and the
+    auto-trader — gaming-resistant and computable from what `scan_live` populates.
+
+    Trade counts and the legacy weighted `score_runner` need data a one-shot read
+    doesn't have; this scores on NET WETH inflow (accumulation), gated by real
+    depth and volume, discounted by sniper share and fan-out when known. 0..1;
+    HOT >= 0.60. Fail closed: unknown/negative net or thin/quiet pool = 0.
+    """
+    liq, net, gross = c.liquidity_usd, c.net_flow_usd, c.volume_5m_usd
+    if liq is None or liq < min_liq or not gross or gross < min_gross:
+        return 0.0
+    if net is None or net <= 0:
+        return 0.0
+    net_n = max(min(net / flow_target, 1.0), 0.0)
+    sniper = c.sniper_share or 0.0
+    fan = c.transfer_fanout or 0
+    sniper_factor = 1.0 - 0.7 * min(max(sniper, 0.0), 1.0)
+    farm_factor = 1.0 if not fan else max(0.3, 1.0 - fan / 50.0)
+    return round(net_n * sniper_factor * farm_factor, 3)
+
+
 def rank_runners(candidates: list[RunnerCandidate], *,
                  policy: RunnerPolicy | None = None,
                  include_cold: bool = False) -> list[RunnerScore]:

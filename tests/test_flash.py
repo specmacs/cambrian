@@ -1,6 +1,8 @@
-from cambrian.runners.flash import (FLASH_CHAIN, TradeIntent, intent_from_score,
-                                    mcp_call, quote_body, stop_from_entry,
-                                    stop_loss_body)
+from cambrian.runners.flash import (ExitPlan, FLASH_CHAIN, TradeIntent,
+                                    conviction_from, exit_ladder,
+                                    intent_from_score, mcp_call, quote_body,
+                                    stop_from_entry, stop_loss_body,
+                                    take_profit_body)
 from cambrian.runners.score import RunnerScore
 from cambrian.runners.snapshots import RunnerCandidate
 
@@ -34,6 +36,38 @@ def test_stop_from_entry_is_below_fill():
     trig = s["triggers"][0]
     assert trig["triggerType"] == "lower"
     assert abs(float(trig["notionalPrice"]) - 0.00065) < 1e-9   # 0.001 * (1-0.35)
+
+
+def test_take_profit_is_an_upper_trigger_sell():
+    t = take_profit_body(TOKEN, contra=WETH, qty="500", target_usd="0.002")
+    assert t["side"] == "sell" and t["orderType"] == "take-profit"
+    assert t["triggers"] == [{"notionalPrice": "0.002", "triggerType": "upper"}]
+
+
+def test_exit_ladder_rung0_pulls_initials_and_scales_out():
+    # bought 1000 tokens at $0.001 ($1 stake). Default rungs 2x/3x/5x, no conviction.
+    L = exit_ladder(entry_usd=0.001, qty_tokens=1000.0)
+    assert L["stop_loss_usd"] == 0.0007 and L["stop_loss_qty"] == 1000.0
+    r = L["rungs"]
+    assert r[0]["mult"] == 2.0 and r[0]["price_usd"] == 0.002 and r[0]["qty"] == 500.0
+    assert r[1]["mult"] == 3.0 and r[1]["qty"] == 250.0    # 0.25 of original
+    assert r[2]["mult"] == 5.0 and r[2]["qty"] == 150.0    # 0.15 of original
+    assert L["moon_bag_qty"] == 100.0                      # the rest rides
+    assert L["moon_stop_usd"] == 0.001 and L["moon_take_profit_usd"] == 0.025
+
+
+def test_conviction_holds_a_bigger_moon_bag():
+    low = exit_ladder(0.001, 1000.0, conviction=0.0)
+    high = exit_ladder(0.001, 1000.0, conviction=1.0)
+    # rung 0 (initials) is identical; upper trims shrink, so the bag grows.
+    assert high["rungs"][0]["qty"] == low["rungs"][0]["qty"] == 500.0
+    assert high["rungs"][1]["qty"] < low["rungs"][1]["qty"]
+    assert high["moon_bag_qty"] > low["moon_bag_qty"]      # let it run
+
+
+def test_conviction_from_rewards_score_and_volume():
+    assert conviction_from(0.9, 30_000) > conviction_from(0.6, 1_000)
+    assert 0.0 <= conviction_from(0.4, None) <= 1.0
 
 
 def _score(tier="hot", pad="bankr"):

@@ -65,13 +65,74 @@ def stop_loss_body(token: str, *, contra: str, qty: str, stop_usd: str,
     }
 
 
+def take_profit_body(token: str, *, contra: str, qty: str, target_usd: str,
+                     chain: str = FLASH_CHAIN) -> dict:
+    """A resting take-profit: market-sell qty target-tokens when price rises to
+    target_usd (an `upper` trigger)."""
+    return {
+        "targetChain": chain, "contraChain": chain,
+        "targetAsset": token, "contraAsset": contra,
+        "side": "sell", "qty": str(qty), "orderType": "take-profit",
+        "triggers": [{"notionalPrice": str(target_usd), "triggerType": "upper"}],
+    }
+
+
 def stop_from_entry(token: str, *, contra: str, qty: str, entry_usd: float,
-                    drawdown: float = 0.35, chain: str = FLASH_CHAIN) -> dict:
+                    drawdown: float = 0.30, chain: str = FLASH_CHAIN) -> dict:
     """A stop-loss placed `drawdown` below your fill price. You only know the fill
     price after the market buy lands, so this is the follow-up leg: buy, read the
     fill, then rest this to auto-sell back to the contra asset if it dumps."""
     stop = round(entry_usd * (1.0 - drawdown), 12)
     return stop_loss_body(token, contra=contra, qty=qty, stop_usd=str(stop), chain=chain)
+
+
+@dataclass(frozen=True)
+class ExitPlan:
+    """A LADDERED, conviction-aware exit for a sniped runner. Cut losers fast, pull
+    initials at the first rung (risk-free), then scale OUT on the way up — but when
+    the runner is genuinely strong, hold back the upper trims and let a bigger moon
+    bag run. Defaults are an aggressive-but-sane degen profile."""
+    stop_loss_pct: float = 0.30
+    # (multiple, fraction-of-ORIGINAL-position to sell at that rung). The first rung
+    # is always resized to pull initials exactly (sell 1/mult); later rungs trim.
+    tp_rungs: tuple = ((2.0, 0.50), (3.0, 0.25), (5.0, 0.15))
+    moon_stop_pct: float = 0.0      # breakeven stop on the free moon bag (can't lose)
+    moon_tp_mult: float = 25.0      # sell whatever's left of the bag here
+    conviction_hold: float = 0.40   # at conviction=1, hold back this much of the
+    #                                 scheduled UPPER trims — i.e. let it run
+
+
+def conviction_from(score: float, gross_usd: float | None,
+                    strong_gross: float = 25_000.0) -> float:
+    """0..1 'let it run' signal: a HOT score plus real traded volume. Strong volume
+    on a high score = conviction to hold a bigger bag rather than TP it all."""
+    g = min((gross_usd or 0.0) / strong_gross, 1.0)
+    return round(0.6 * min(max(score, 0.0), 1.0) + 0.4 * g, 3)
+
+
+def exit_ladder(entry_usd: float, qty_tokens: float, plan: ExitPlan | None = None,
+                conviction: float = 0.0) -> dict:
+    """Build the exit ladder from a fill. Rung 0 pulls initials (sell 1/mult so the
+    stake is recovered); upper rungs trim, scaled DOWN by conviction so a strong
+    runner keeps a bigger moon bag. Prices are USD/token, qtys are target-tokens."""
+    plan = plan or ExitPlan()
+    conviction = min(max(conviction, 0.0), 1.0)
+    rungs, sold = [], 0.0
+    for i, (mult, frac) in enumerate(plan.tp_rungs):
+        sell_frac = (1.0 / mult) if i == 0 else frac * (1.0 - conviction * plan.conviction_hold)
+        qty_i = min(qty_tokens * sell_frac, qty_tokens - sold)
+        sold += qty_i
+        rungs.append({"mult": mult, "price_usd": round(entry_usd * mult, 12),
+                      "qty": round(qty_i, 6)})
+    return {
+        "stop_loss_usd": round(entry_usd * (1 - plan.stop_loss_pct), 12),
+        "stop_loss_qty": qty_tokens,               # full position until initials are out
+        "rungs": rungs,                            # scale-out ladder on the way up
+        "moon_bag_qty": round(max(qty_tokens - sold, 0.0), 6),
+        "moon_stop_usd": round(entry_usd * (1 - plan.moon_stop_pct), 12),
+        "moon_take_profit_usd": round(entry_usd * plan.moon_tp_mult, 12),
+        "conviction": conviction,
+    }
 
 
 @dataclass(frozen=True)
