@@ -34,12 +34,19 @@ def test_decode_initialize_captures_hook_and_currencies():
 
 
 def test_decode_v4_swap_and_aggregate():
-    # amount1 (WETH=token1) positive = WETH in = buy
+    # v4 is SWAPPER-perspective: a buyer PAYS WETH, so a positive WETH amount here
+    # means the swapper RECEIVED WETH = they sold. Without invert it'd misread as a
+    # buy (the v3 rule); with invert=True the sign is corrected.
     data = "0x" + _w(-500) + _w(2 * 10**18) + _w(0) + _w(0) + _w(0) + _w(3000)
     d = decode_v4_swap({"data": data})
     assert d["amount0"] == -500 and d["amount1"] == 2 * 10**18
-    out = aggregate_swaps([d], weth_is_token0=False, weth_price_usd=3000.0)
-    assert out["buys"] == 1 and out["volume_usd"] == 2 * 3000.0
+    # v3 rule (no invert) would wrongly call this a buy:
+    naive = aggregate_swaps([d], weth_is_token0=False, weth_price_usd=3000.0)
+    assert naive["buys"] == 1
+    # v4 rule (invert=True): positive WETH to the swapper = a sell. Volume unchanged.
+    out = aggregate_swaps([d], weth_is_token0=False, weth_price_usd=3000.0, invert=True)
+    assert out["sells"] == 1 and out["buys"] == 0
+    assert out["volume_usd"] == 2 * 3000.0
 
 
 class _Fake:

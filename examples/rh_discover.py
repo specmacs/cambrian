@@ -118,13 +118,20 @@ def block_ts(blk_hex):
     return int(b["timestamp"], 16) if b else None
 
 
-def swap_volume(addr, topics, frm, weth_is_t0):
-    """Sum |WETH leg| over swaps in the window -> USD volume + buy/sell counts."""
+def swap_volume(addr, topics, frm, weth_is_t0, invert=False):
+    """Sum |WETH leg| over swaps in the window -> USD volume + buy/sell counts.
+
+    invert=True for v4: its Swap event is the SWAPPER's balance delta, the opposite
+    sign to v3's pool-perspective amounts, so a buyer paying WETH reads negative.
+    Flip the sign for v4 or every fresh launch reads sell-skewed. Volume unaffected.
+    """
     vol = buys = sells = 0.0
     for lg in get_logs(topics, frm, addr):
         w = _words(lg["data"], 4 if len(topics) > 1 else 5)  # v4 filtered vs v3
         a0, a1 = _signed(w[0]), _signed(w[1])
         leg = a0 if weth_is_t0 else a1
+        if invert:
+            leg = -leg
         vol += abs(leg) / 1e18 * WETH_USD
         if leg > 0:
             buys += 1
@@ -220,7 +227,7 @@ for h in hits[:ENRICH]:
     blk, q_is0 = h["blk"], h["q_is0"]
     try:
         if h["ver"] == "v4":
-            vol, buys, sells = swap_volume(V4_PM, [V4_SWAP, h["pool"]], win, q_is0)
+            vol, buys, sells = swap_volume(V4_PM, [V4_SWAP, h["pool"]], win, q_is0, invert=True)
         else:
             vol, buys, sells = swap_volume(h["pool"], [V3_SWAP], win, q_is0)
     except Exception:

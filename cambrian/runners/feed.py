@@ -135,7 +135,7 @@ def v4_pool_swap_metrics(client: ChainClient, *, pool_manager: str, pool_id: str
                            from_block=from_block, to_block=to_block)
     swaps = [decode_v4_swap(lg) for lg in logs]
     return aggregate_swaps(swaps, weth_is_token0=quote_is_token0,
-                           weth_price_usd=quote_price_usd)
+                           weth_price_usd=quote_price_usd, invert=True)
 
 
 def pool_swap_metrics(client: ChainClient, pool: str, *, from_block: str,

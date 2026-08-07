@@ -82,17 +82,25 @@ def decode_v3_swap(log: dict[str, Any]) -> dict[str, int]:
 
 
 def aggregate_swaps(swaps: list[dict[str, int]], *, weth_is_token0: bool,
-                    weth_price_usd: float) -> dict[str, float]:
+                    weth_price_usd: float, invert: bool = False) -> dict[str, float]:
     """Roll decoded swaps up into volume (USD) and buy/sell counts.
 
     Volume is measured on the WETH leg (the priced side): |WETH moved| × price.
+
+    `invert` flips the buy/sell sign for Uniswap v4. v3 Swap amounts are from the
+    POOL's perspective (WETH into the pool = positive = a buy). v4 flipped this:
+    its Swap event emits the SWAPPER's balance delta, so a buyer paying WETH shows
+    a NEGATIVE WETH amount. Same trade, opposite sign — so v4 callers pass
+    invert=True. Volume is |amount|, unaffected either way.
     """
     volume_usd = 0.0
     buys = sells = 0
     for s in swaps:
         weth_amt = s["amount0"] if weth_is_token0 else s["amount1"]
+        if invert:
+            weth_amt = -weth_amt
         volume_usd += abs(weth_amt) / (10 ** WETH_DECIMALS) * weth_price_usd
-        if weth_amt > 0:      # WETH into the pool -> someone bought the token
+        if weth_amt > 0:      # (v3 frame) WETH into the pool -> someone bought
             buys += 1
         elif weth_amt < 0:
             sells += 1

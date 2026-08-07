@@ -12,8 +12,11 @@ from the v4 ABI — verify against a real log if unsure.
          int128 amount1, uint160 sqrtPriceX96, uint128 liquidity, int24 tick,
          uint24 fee)
 
-`amount0/1` are pool-balance deltas (same perspective as v3 — positive = token in
-= a buy of the other side), so `aggregate_swaps` from the v3 module works here.
+`amount0/1` are the SWAPPER's balance deltas — the OPPOSITE sign convention to v3
+(where amounts are the pool's perspective). A buyer paying WETH shows a negative
+WETH amount here, positive in v3. So `aggregate_swaps` works for v4 too, but must
+be called with invert=True (see feed.v4_pool_swap_metrics). A live RH run caught
+this: every fresh v4 launch read as sell-skewed until the sign was flipped.
 """
 
 from __future__ import annotations
