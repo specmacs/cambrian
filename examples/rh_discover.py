@@ -149,7 +149,9 @@ def v4_liquidity_usd(pool_id, quote_is_t0):
     return reserve / 1e18 * WETH_USD * 2
 
 
-# ---- discover ---------------------------------------------------------------
+# ---- discover (fast) then enrich (slow, newest first, with progress) --------
+ENRICH = int(os.getenv("RH_ENRICH", "25"))   # how many newest pools to deep-read
+
 latest = int(rpc("eth_blockNumber", []), 16)
 now = block_ts("latest")
 frm = hex(max(latest - BLOCKS, 0))
@@ -157,65 +159,70 @@ win = hex(max(latest - WINDOW, 0))
 print(f"connected — block {latest}, scanning back {BLOCKS} blocks "
       f"(~{BLOCKS * 0.1 / 60:.0f} min of chain)\n")
 
-rows = []
-
-# v4 (dominant on RH): Initialize on the PoolManager
+# Phase 1: discovery — two log queries, fast. Just find the fresh pools.
+hits = []
+quotes = {WETH, NATIVE}
 for lg in get_logs([INITIALIZE], frm, V4_PM):
-    t = lg["topics"]
-    w = _words(lg["data"], 5)
-    c0, c1 = _addr(t[2]), _addr(t[3])
-    quotes = {WETH, NATIVE}
-    if not (quotes & {c0.lower(), c1.lower()}):
+    t, w = lg["topics"], _words(lg["data"], 5)
+    c0, c1 = _addr(t[2]).lower(), _addr(t[3]).lower()
+    if not (quotes & {c0, c1}):
         continue
-    q_is0 = c0.lower() in quotes
-    token = c1 if q_is0 else c0
-    blk = int(lg["blockNumber"], 16)
-    try:
-        vol, buys, sells = swap_volume(V4_PM, [V4_SWAP, t[1]], win, q_is0)
-    except Exception:
-        vol = buys = sells = None
-    try:
-        liq = v4_liquidity_usd(t[1], q_is0)
-    except Exception:
-        liq = None
-    age = (now - block_ts(hex(blk))) / 60 if now else None
-    rows.append(("v4", token, t[1], _addr(w[2]), blk, age, liq, vol, buys, sells))
-
-# v3: PoolCreated on the factory
+    q_is0 = c0 in quotes
+    hits.append({"ver": "v4", "token": _addr(t[3]) if q_is0 else _addr(t[2]),
+                 "pool": t[1], "hook": _addr(w[2]), "blk": int(lg["blockNumber"], 16),
+                 "q_is0": q_is0})
 for lg in get_logs([POOLCREATED], frm, V3_FACTORY):
-    t = lg["topics"]
-    data = lg["data"][2:]
-    t0, t1 = _addr(t[1]), _addr(t[2])
-    if WETH not in (t0.lower(), t1.lower()):
+    t, data = lg["topics"], lg["data"][2:]
+    t0, t1 = _addr(t[1]).lower(), _addr(t[2]).lower()
+    if WETH not in (t0, t1):
         continue
-    weth_is0 = t0.lower() == WETH
-    token = t1 if weth_is0 else t0
-    pool = _addr(data[64:128])
-    blk = int(lg["blockNumber"], 16)
+    weth_is0 = t0 == WETH
+    hits.append({"ver": "v3", "token": _addr(t[2]) if weth_is0 else _addr(t[1]),
+                 "pool": _addr(data[64:128]), "hook": "-",
+                 "blk": int(lg["blockNumber"], 16), "q_is0": weth_is0})
+
+n4 = sum(1 for h in hits if h["ver"] == "v4")
+print(f"discovered {len(hits)} fresh WETH/ETH pools ({n4} v4, {len(hits) - n4} v3). "
+      f"deep-reading the {min(ENRICH, len(hits))} newest...\n")
+if not hits:
+    print("none in this window — raise RH_BLOCKS (e.g. $env:RH_BLOCKS='60000') and retry")
+    raise SystemExit
+
+# Phase 2: enrich newest-first, printing each as it lands so it never looks hung.
+hits.sort(key=lambda h: -h["blk"])
+
+
+def money(x):
+    return f"${x:,.0f}" if x is not None else "?"
+
+
+for i, h in enumerate(hits[:ENRICH], 1):
+    blk, q_is0 = h["blk"], h["q_is0"]
     try:
-        vol, buys, sells = swap_volume(pool, [V3_SWAP], win, weth_is0)
+        if h["ver"] == "v4":
+            vol, buys, sells = swap_volume(V4_PM, [V4_SWAP, h["pool"]], win, q_is0)
+        else:
+            vol, buys, sells = swap_volume(h["pool"], [V3_SWAP], win, q_is0)
     except Exception:
         vol = buys = sells = None
     try:
-        bal = int(rpc("eth_call", [{"to": WETH, "data": "0x70a08231" + "0" * 24 + pool[2:]}, "latest"]), 16)
-        liq = bal / 1e18 * WETH_USD * 2
+        if h["ver"] == "v4":
+            liq = v4_liquidity_usd(h["pool"], q_is0)
+        else:
+            bal = int(rpc("eth_call", [{"to": WETH, "data": "0x70a08231" + "0" * 24 + h["pool"][2:]}, "latest"]), 16)
+            liq = bal / 1e18 * WETH_USD * 2
     except Exception:
         liq = None
-    age = (now - block_ts(hex(blk))) / 60 if now else None
-    rows.append(("v3", token, pool, "-", blk, age, liq, vol, buys, sells))
+    try:
+        age = (now - block_ts(hex(blk))) / 60 if now else None
+    except Exception:
+        age = None
+    agestr = f"{age:5.0f}m" if age is not None else "   ?  "
+    flow = f"{buys}b/{sells}s" if buys is not None else "?"
+    print(f"{i:>2}. [{h['ver']}] {h['token']}  blk {blk}  age {agestr}  "
+          f"liq {money(liq):>12}  vol5m {money(vol):>10}  {flow}")
+    print(f"      pool {h['pool']}" + (f"  hook {h['hook']}" if h["hook"] != "-" else ""))
 
-# newest first
-rows.sort(key=lambda r: -r[4])
-if not rows:
-    print("no fresh WETH/ETH pools in this window — increase RH_BLOCKS and retry")
-else:
-    print(f"{len(rows)} fresh pool(s), newest first:\n")
-    for ver, token, pool, hook, blk, age, liq, vol, buys, sells in rows:
-        agestr = f"{age:5.0f}m" if age is not None else "   ?  "
-        liqstr = f"${liq:,.0f}" if liq is not None else "?"
-        volstr = f"${vol:,.0f}" if vol is not None else "?"
-        flow = f"{buys}b/{sells}s" if buys is not None else "?"
-        print(f"[{ver}] {token}  blk {blk}  age {agestr}  "
-              f"liq {liqstr:>12}  vol5m {volstr:>10}  {flow}")
-        print(f"      pool {pool}" + (f"  hook {hook}" if hook != "-" else ""))
-    print("\nfresh + rising vol + non-zero liq + skewed to buys = a runner starting.")
+print("\nfresh + rising vol + non-zero liq + skewed to buys = a runner starting.")
+if len(hits) > ENRICH:
+    print(f"(+{len(hits) - ENRICH} older pools not shown — raise RH_ENRICH to see more)")
