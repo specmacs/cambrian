@@ -76,7 +76,6 @@ PAD_BY_HOOK: dict[str, str] = {
 PAD_BY_DEPLOYER: dict[str, str] = {}     # launch-tx `to` / factory -> pad name
 PAD_BY_SUFFIX: dict[str, str] = {
     "ba3": "bankr",
-    "b07": "clanker",       # confirmed: Clanker's CREATE2 vanity suffix
     "777": "pad-777",       # a vanity pad (same one as hook 0x75a5..); rename when IDed
 }
 

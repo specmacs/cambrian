@@ -36,8 +36,7 @@ def test_named_deployer_wins_over_fingerprint():
         del PAD_BY_DEPLOYER["0xfeed000000000000000000000000000000000001"]
 
 
-def test_clanker_and_pad777_identified():
-    assert pad_of("0x1111111111111111111111111111111111111b07", None) == "clanker"
+def test_pad777_identified_by_hook_and_suffix():
     assert pad_of("0x2222222222222222222222222222222222222777", None) == "pad-777"
     # the 777 hook maps to the same pad name as the 777 suffix
     assert pad_of("0xtok", "0x75a54357d9c78a2db19004a5fdc76c50f9242aec") == "pad-777"

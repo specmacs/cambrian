@@ -43,7 +43,6 @@ PAD_BY_HOOK = {
 }
 PAD_BY_SUFFIX = {
     "ba3": "bankr",
-    "b07": "clanker",     # confirmed Clanker vanity suffix
     "777": "pad-777",
 }
 
