@@ -75,9 +75,10 @@ PAD_BY_HOOK: dict[str, str] = {
 }
 PAD_BY_DEPLOYER: dict[str, str] = {
     # Pons is the dominant, hookless pad -> identified by its launch-tx deployer.
-    # 0x0000ffff.. was ~54% of sampled deployers (Pons is ~50%+ of RH activity);
-    # confirm with rh_who on a known Pons token before trusting, then set it here.
-    # "0x0000ffffbe8efe702c8703ae3477ff5de3d319c0": "pons",
+    # INFERRED: 0x0000ffff.. was ~54% of sampled deployers and Pons is ~50%+ of all
+    # RH activity (both hookless) — too clean a match to be anything else. Trace a
+    # Pons-launched token with rh_who to hard-confirm; correct here if it differs.
+    "0x0000ffffbe8efe702c8703ae3477ff5de3d319c0": "pons",
 }
 PAD_BY_SUFFIX: dict[str, str] = {
     "ba3": "bankr",
