@@ -78,6 +78,24 @@ def score_runner(c: RunnerCandidate, *, policy: RunnerPolicy | None = None,
         if skew > 0.65:
             signals.append(f"{skew:.0%} buys")
 
+    # --- Gaming-resistant overlays (neutral when the fact is unknown/None) ---
+    # Trade counts are easily faked; net flow, snipers and fan-out are not.
+    # Net OUTflow = distribution: not a runner no matter how the counts look.
+    if c.net_flow_usd is not None and c.net_flow_usd <= 0:
+        return RunnerScore(c, 0.0, "cold", (),
+                           tuple(signals) + ("net outflow (distribution)",))
+    if c.net_flow_usd is not None and c.net_flow_usd > 0:
+        signals.append(f"net +${c.net_flow_usd:,.0f} in")
+    # Launch-block snipers inflate early buys, then dump — discount the score.
+    if c.sniper_share is not None:
+        score *= 1.0 - policy.sniper_discount * min(max(c.sniper_share, 0.0), 1.0)
+        if c.sniper_share >= 0.5:
+            signals.append(f"{c.sniper_share:.0%} sniped (discounted)")
+    # A deployer fanning tokens to fresh wallets = a farmed book, not real holders.
+    if c.transfer_fanout is not None and c.transfer_fanout >= policy.max_fanout:
+        score *= 0.4
+        signals.append(f"{c.transfer_fanout} fan-out wallets (discounted)")
+
     score = round(score, 3)
     tier = ("hot" if score >= policy.min_score_hot
             else "watch" if score >= policy.min_score_watch else "cold")

@@ -83,6 +83,8 @@ class RunnerPolicy:
     max_top_holder_pct: float = 0.25      # rug filter (fraction)
     require_trusted_launchpad: bool = False
     vol_accel_hot: float = 3.0            # 5m volume >= 3x the prior 5m = running
+    max_fanout: int = 25                  # wallet-to-wallet transfers above this = farmed
+    sniper_discount: float = 0.7          # how hard launch-block sniping cuts the score
     # Tiering.
     min_score_watch: float = 0.30
     min_score_hot: float = 0.60

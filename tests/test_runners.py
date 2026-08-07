@@ -54,6 +54,29 @@ def test_quiet_token_is_cold_not_flagged():
     assert s.tier == "cold"
 
 
+def test_net_outflow_is_cold_despite_buy_counts():
+    # Counts look bullish (200b/50s) but net WETH is leaving = distribution.
+    s = score_runner(cand(net_flow_usd=-1_500), policy=POLICY)
+    assert s.tier == "cold" and any("outflow" in x for x in s.signals)
+
+
+def test_net_inflow_adds_signal():
+    s = score_runner(cand(net_flow_usd=8_000), policy=POLICY)
+    assert any("net +$" in x for x in s.signals)
+
+
+def test_snipers_discount_the_score():
+    base = score_runner(cand(), policy=POLICY).score
+    sniped = score_runner(cand(sniper_share=0.9), policy=POLICY)
+    assert sniped.score < base and any("sniped" in x for x in sniped.signals)
+
+
+def test_transfer_fanout_discounts_the_score():
+    base = score_runner(cand(), policy=POLICY).score
+    farmed = score_runner(cand(transfer_fanout=60), policy=POLICY)
+    assert farmed.score < base and any("fan-out" in x for x in farmed.signals)
+
+
 def test_rank_filters_and_orders():
     hot = cand(symbol="HOT", smart_money_buyers=3)
     rug = cand(symbol="RUG", top_holder_pct=0.5)

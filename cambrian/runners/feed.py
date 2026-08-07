@@ -229,7 +229,7 @@ def enrich(client: ChainClient, hit: dict[str, Any], *, weth_usd: float,
         top_holder_pct=top_holder, holders=holders, holders_5m_ago=None,
         volume_5m_usd=m5["volume_usd"], volume_prior_5m_usd=mp["volume_usd"],
         buys_5m=m5["buys"], sells_5m=m5["sells"], smart_money_buyers=smart,
-        lp_locked=None, hook=None,
+        lp_locked=None, hook=None, net_flow_usd=m5.get("net_usd"),
     )
 
 
@@ -288,6 +288,7 @@ def enrich_v4(client: ChainClient, hit: dict[str, Any], *, weth_usd: float,
         holders_5m_ago=None, volume_5m_usd=m5["volume_usd"],
         volume_prior_5m_usd=mp["volume_usd"], buys_5m=m5["buys"], sells_5m=m5["sells"],
         smart_money_buyers=0, lp_locked=None, hook=hit["hooks"],
+        net_flow_usd=m5.get("net_usd"),
     )
 
 

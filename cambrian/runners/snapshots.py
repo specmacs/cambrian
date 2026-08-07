@@ -28,3 +28,9 @@ class RunnerCandidate:
     smart_money_buyers: int = 0       # count of WATCHED_WALLETS that bought
     lp_locked: bool | None = None
     hook: str | None = None           # v4 hook (None = no hook)
+    # Gaming-resistant signals (None = unknown -> neutral in the scorer). Trade
+    # counts lie: 1 big buy vs 10 tiny sells, launch-block snipers, and deployers
+    # fanning tokens to fresh wallets all distort them. These don't.
+    net_flow_usd: float | None = None      # signed WETH in: +accumulation / -distribution
+    sniper_share: float | None = None      # fraction of buy-vol in the launch block window
+    transfer_fanout: int | None = None     # wallet-to-wallet ERC20 transfers (farmed book)

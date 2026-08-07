@@ -93,15 +93,17 @@ def aggregate_swaps(swaps: list[dict[str, int]], *, weth_is_token0: bool,
     a NEGATIVE WETH amount. Same trade, opposite sign — so v4 callers pass
     invert=True. Volume is |amount|, unaffected either way.
     """
-    volume_usd = 0.0
+    volume_usd = net_usd = 0.0
     buys = sells = 0
     for s in swaps:
         weth_amt = s["amount0"] if weth_is_token0 else s["amount1"]
         if invert:
             weth_amt = -weth_amt
-        volume_usd += abs(weth_amt) / (10 ** WETH_DECIMALS) * weth_price_usd
-        if weth_amt > 0:      # (v3 frame) WETH into the pool -> someone bought
+        usd = weth_amt / (10 ** WETH_DECIMALS) * weth_price_usd
+        volume_usd += abs(usd)
+        net_usd += usd            # signed: +ve = WETH into pool = net accumulation
+        if weth_amt > 0:          # (v3 frame) WETH into the pool -> someone bought
             buys += 1
         elif weth_amt < 0:
             sells += 1
-    return {"volume_usd": volume_usd, "buys": buys, "sells": sells}
+    return {"volume_usd": volume_usd, "net_usd": net_usd, "buys": buys, "sells": sells}
