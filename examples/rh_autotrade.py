@@ -33,6 +33,7 @@ from cambrian.runners.autotrade import (TradePolicy, Wallet, record_buy,
                                         record_close, should_buy)
 from cambrian.runners import config as rcfg
 from cambrian.runners import flash
+from cambrian.runners import llm as llmjudge
 
 # ---- config (env-overridable) -----------------------------------------------
 INTERVAL = int(os.getenv("RH_INTERVAL", "30"))
@@ -44,21 +45,32 @@ LIVE = os.getenv("RH_LIVE", "") not in ("", "0", "false")
 CONTRA = os.getenv("RH_CONTRA", rcfg.CONTRACTS["weth"])   # spend asset
 FLASH_KEY = os.getenv("RH_FLASH_KEY", flash.FLASH_DEV_KEY)
 
+# Intelligence-led decision (Surplus Intelligence or any OpenAI-compatible endpoint).
+# RH_LLM=1 makes the MODEL decide buy/skip on each candidate that clears the safety
+# rails; the math is then only a cheap liveness pre-filter, not the decision. The
+# key is read here from the env and passed to the seam — never printed or committed.
+USE_LLM = os.getenv("RH_LLM", "") not in ("", "0", "false")
+LLM_BASE = os.getenv("RH_LLM_BASE", "https://api.surplusintelligence.ai/v1")
+LLM_KEY = os.getenv("RH_LLM_KEY", "")
+LLM_MODEL = os.getenv("RH_LLM_MODEL", "gpt-4o-mini")
+LLM_MIN_CONF = float(os.getenv("RH_LLM_MIN_CONF", "0.6"))
+
 POLICY = TradePolicy(
     spend_per_trade=float(os.getenv("RH_SPEND", "0.02")),
     max_total_deployed=float(os.getenv("RH_MAX_TOTAL", "0.10")),
     max_positions=int(os.getenv("RH_MAX_POS", "5")),
-    min_score=float(os.getenv("RH_MIN_SCORE", "0.60")),          # HOT
-    require_pad=os.getenv("RH_PAD", "bankr").lower() or None,     # bankr-only by default
+    # In LLM mode the model is the judge, so the math score gate is relaxed to a bare
+    # liveness floor; the other rails (liquidity-to-exit, caps, loss limit) still bind.
+    min_score=float(os.getenv("RH_MIN_SCORE", "0.05" if USE_LLM else "0.60")),
+    require_pad=(os.getenv("RH_PAD", "").lower() or None),        # default: all pads
     min_liquidity_usd=float(os.getenv("RH_MIN_LIQ", "20000")),
     cooldown_seconds=float(os.getenv("RH_COOLDOWN", "60")),
     daily_loss_limit=float(os.getenv("RH_DAILY_LOSS", "0.04")),
 )
 PLAN = flash.ExitPlan(
     stop_loss_pct=float(os.getenv("RH_STOP_PCT", "0.30")),
-    tp_mult=float(os.getenv("RH_TP_MULT", "2.0")),
     moon_stop_pct=float(os.getenv("RH_MOON_STOP_PCT", "0.0")),   # breakeven
-    moon_tp_mult=float(os.getenv("RH_MOON_TP_MULT", "10.0")),
+    moon_tp_mult=float(os.getenv("RH_MOON_TP_MULT", "25.0")),
 )
 
 
@@ -205,11 +217,16 @@ def main():
     if LIVE:
         funder, sign_typed = _funder_and_signer()
         print(f"*** LIVE trading as {funder} — real funds. ***")
-    print(f"auto-trader [{mode}] pad={POLICY.require_pad} spend={POLICY.spend_per_trade} "
-          f"cap={POLICY.max_total_deployed} minLiq=${POLICY.min_liquidity_usd:,.0f} "
-          f"stop={PLAN.stop_loss_pct:.0%} tp={PLAN.tp_mult}x moon->{PLAN.moon_tp_mult}x")
-    print(f"exit ladder: cut -{PLAN.stop_loss_pct:.0%} | pull initials at {PLAN.tp_mult}x "
-          f"| ride a free moon bag (stop breakeven) to {PLAN.moon_tp_mult}x\n")
+    rungs = "/".join(f"{m}x" for m, _ in PLAN.tp_rungs)
+    judge = f"LLM({LLM_MODEL})" if USE_LLM else "math"
+    print(f"auto-trader [{mode}] decide={judge} pad={POLICY.require_pad or 'all'} "
+          f"spend={POLICY.spend_per_trade} cap={POLICY.max_total_deployed} "
+          f"minLiq=${POLICY.min_liquidity_usd:,.0f}")
+    print(f"exit ladder: cut -{PLAN.stop_loss_pct:.0%} | pull initials at 2x | scale out "
+          f"{rungs} | ride a free moon bag (breakeven stop) to {PLAN.moon_tp_mult}x")
+    if USE_LLM and not LLM_KEY:
+        print("!! RH_LLM=1 but RH_LLM_KEY unset — set your Surplus key in the env.")
+    print()
 
     while True:
         try:
@@ -219,12 +236,37 @@ def main():
             now = time.time()
             for c in cands:
                 sc = flow_score(c)
+                # Safety rails (deterministic, non-negotiable): exitable liquidity,
+                # caps, loss limit, dedupe, cooldown. In LLM mode the score gate is
+                # relaxed (min_score ~0) so the MODEL is the real buy/skip judge.
                 d = should_buy(token=c.token, score=sc, pad=c.launchpad,
                                liquidity_usd=c.liquidity_usd, sniper_share=c.sniper_share,
                                fanout=c.transfer_fanout, wallet=wallet, policy=POLICY, now=now)
                 if not d.ok:
                     continue
-                tag = f"[{ (c.launchpad or '?') }] {c.token}  score {sc:.2f}  liq ${c.liquidity_usd:,.0f}  net ${c.net_flow_usd or 0:,.0f}"
+                # Intelligence decides among what cleared the rails.
+                if USE_LLM:
+                    facts = {"pad": c.launchpad or "unknown",
+                             "age_minutes": round(c.age_minutes or 0, 1),
+                             "liquidity_usd": round(c.liquidity_usd or 0),
+                             "net_flow_usd": round(c.net_flow_usd or 0),
+                             "gross_volume_usd": round(c.volume_5m_usd or 0),
+                             "sniper_share": c.sniper_share, "transfer_fanout": c.transfer_fanout,
+                             "buys": c.buys_5m, "sells": c.sells_5m,
+                             "math_flow_score_0to1": sc}
+                    v = llmjudge.llm_judge(facts, base_url=LLM_BASE, api_key=LLM_KEY,
+                                           model=LLM_MODEL, min_confidence=LLM_MIN_CONF)
+                    if v["decision"] != "buy":
+                        if not LIVE:
+                            print(f"skip [{c.launchpad or '?'}] {c.token[:10]}.. "
+                                  f"liq ${c.liquidity_usd or 0:,.0f} net ${c.net_flow_usd or 0:,.0f}"
+                                  f"  <- LLM: {v['reason']}")
+                            wallet.seen.add(c.token)
+                        continue
+                    decided = f"LLM buy ({v['confidence']:.2f}): {v['reason']}"
+                else:
+                    decided = f"score {sc:.2f}"
+                tag = f"[{ (c.launchpad or '?') }] {c.token}  {decided}  liq ${c.liquidity_usd:,.0f}  net ${c.net_flow_usd or 0:,.0f}"
                 if not LIVE:
                     conv = flash.conviction_from(sc, c.volume_5m_usd)
                     L = flash.exit_ladder(1.0, 1000.0, PLAN, conviction=conv)  # unit preview
