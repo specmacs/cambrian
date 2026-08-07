@@ -79,7 +79,16 @@ PAD_BY_DEPLOYER: dict[str, str] = {
     # RH activity (both hookless) — too clean a match to be anything else. Trace a
     # Pons-launched token with rh_who to hard-confirm; correct here if it differs.
     "0x0000ffffbe8efe702c8703ae3477ff5de3d319c0": "pons",
+    # Pools.trade (Uniswap Labs' RH pad): CONFIRMED via a traced token — it deployed
+    # ~90% of the pools pairing against POOLS_QUOTE. Hookless v4, pairs vs POOLS_QUOTE
+    # (NOT WETH), so WETH-only discovery misses most of its launches (see POOLS_QUOTE).
+    "0x58daec3116aae6d93017baaea7749052e8a04fa7": "pools-trade",
 }
+
+# Pools.trade pairs new tokens against THIS base asset, not WETH. The WETH-only
+# discovery (feed.discover_new_pools*) therefore misses most Pools.trade launches;
+# add this to the quote set to cover them. (Verify it isn't just a hot token.)
+POOLS_QUOTE = "0x6245e67affa44a23077f0ea7f981a8dc743a0c47"
 PAD_BY_SUFFIX: dict[str, str] = {
     "ba3": "bankr",
     "777": "flap",          # confirmed: Flap grinds '7777' token addresses (hookless)

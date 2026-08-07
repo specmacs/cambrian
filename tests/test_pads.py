@@ -46,6 +46,11 @@ def test_pons_identified_by_deployer():
                   deployer="0x0000ffffbe8efe702c8703ae3477ff5de3d319c0") == "pons"
 
 
+def test_pools_trade_identified_by_deployer():
+    assert pad_of("0xtok", None,
+                  deployer="0x58daec3116aae6d93017baaea7749052e8a04fa7") == "pools-trade"
+
+
 def test_infra_deployers_are_not_labeled_as_pads():
     # EntryPoint / Multicall3 / PoolManager route many pads' launches — not a pad.
     for infra in ("0x0000000071727de22e5e9d8baf0edac6f37da032",
