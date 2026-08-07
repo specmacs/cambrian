@@ -49,6 +49,7 @@ PAD_FILTER = os.getenv("RH_PAD", "").lower()   # e.g. "bankr" to watch one pad o
 ACT = os.getenv("RH_ACT", "") not in ("", "0", "false")
 ACT_CONTRA = os.getenv("RH_CONTRA", "0x0Bd7D308f8E1639FAb988df18A8011f41EAcAD73")  # RH WETH
 ACT_QTY = os.getenv("RH_QTY", "0.02")          # spend amount, in contra units
+STOP_PCT = float(os.getenv("RH_STOP_PCT", "0.35"))  # stop-loss drawdown below fill
 
 # Launchpad fingerprints — v4 hook (authoritative) + vanity address suffix.
 # bankr: hook 0x4e34..a544, tokens end in 'ba3', v4.
@@ -297,6 +298,9 @@ def alert(kind, h, sc, info):
         print(f"              targetAsset:{h['token']}, contraAsset:{ACT_CONTRA}, side:buy,")
         print(f"              qty:{ACT_QTY}, orderType:market, quickTrade:true, maxSlippage:0.05}}")
         print(f"         (params only — sign+submit in the Flash MCP; no key touched here)")
+        print(f"    THEN> after the buy fills, rest a stop-loss ~{STOP_PCT:.0%} below your")
+        print(f"          fill: orderType stop-loss, side sell, trigger notionalPrice=fill*{1 - STOP_PCT:.2f}")
+        print(f"          -> auto-exits back to {ACT_CONTRA} if it dumps (flight to stables)")
     print(bar)
 
 

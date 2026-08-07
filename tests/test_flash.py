@@ -1,5 +1,6 @@
 from cambrian.runners.flash import (FLASH_CHAIN, TradeIntent, intent_from_score,
-                                    mcp_call, quote_body, stop_loss_body)
+                                    mcp_call, quote_body, stop_from_entry,
+                                    stop_loss_body)
 from cambrian.runners.score import RunnerScore
 from cambrian.runners.snapshots import RunnerCandidate
 
@@ -25,6 +26,14 @@ def test_stop_loss_is_a_lower_trigger_sell():
     s = stop_loss_body(TOKEN, contra=WETH, qty="1000", stop_usd="0.0004")
     assert s["side"] == "sell" and s["orderType"] == "stop-loss"
     assert s["triggers"] == [{"notionalPrice": "0.0004", "triggerType": "lower"}]
+
+
+def test_stop_from_entry_is_below_fill():
+    s = stop_from_entry(TOKEN, contra=WETH, qty="1000", entry_usd=0.001, drawdown=0.35)
+    assert s["orderType"] == "stop-loss" and s["side"] == "sell"
+    trig = s["triggers"][0]
+    assert trig["triggerType"] == "lower"
+    assert abs(float(trig["notionalPrice"]) - 0.00065) < 1e-9   # 0.001 * (1-0.35)
 
 
 def _score(tier="hot", pad="bankr"):

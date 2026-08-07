@@ -65,6 +65,15 @@ def stop_loss_body(token: str, *, contra: str, qty: str, stop_usd: str,
     }
 
 
+def stop_from_entry(token: str, *, contra: str, qty: str, entry_usd: float,
+                    drawdown: float = 0.35, chain: str = FLASH_CHAIN) -> dict:
+    """A stop-loss placed `drawdown` below your fill price. You only know the fill
+    price after the market buy lands, so this is the follow-up leg: buy, read the
+    fill, then rest this to auto-sell back to the contra asset if it dumps."""
+    stop = round(entry_usd * (1.0 - drawdown), 12)
+    return stop_loss_body(token, contra=contra, qty=qty, stop_usd=str(stop), chain=chain)
+
+
 @dataclass(frozen=True)
 class TradeIntent:
     """A proposed action for a HOT runner — inspectable, not executed."""
