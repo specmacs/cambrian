@@ -38,6 +38,24 @@ def test_stop_from_entry_is_below_fill():
     assert abs(float(trig["notionalPrice"]) - 0.00065) < 1e-9   # 0.001 * (1-0.35)
 
 
+def test_roundtrip_flags_honeypot_and_tax():
+    from cambrian.runners.flash import roundtrip_verdict, sell_quote_body
+    # can't sell at all -> honeypot
+    hp = roundtrip_verdict(38.0, None)
+    assert not hp["sellable"] and "honeypot" in hp["reason"].lower()
+    # sells back for 50% -> high tax, rejected (default max_loss 25%)
+    tax = roundtrip_verdict(38.0, 19.0)
+    assert not tax["sellable"] and tax["retention"] == 0.5
+    # clean round trip (keeps 97%) -> sellable
+    ok = roundtrip_verdict(38.0, 37.0)
+    assert ok["sellable"] and ok["retention"] > 0.95
+    # no buy quote -> not sellable
+    assert not roundtrip_verdict(0, 10)["sellable"]
+    # sell-quote body is a market SELL in target-token units
+    b = sell_quote_body(TOKEN, contra=WETH, qty_tokens="1000000")
+    assert b["side"] == "sell" and b["qty"] == "1000000" and b["orderType"] == "market"
+
+
 def test_take_profit_is_an_upper_trigger_sell():
     t = take_profit_body(TOKEN, contra=WETH, qty="500", target_usd="0.002")
     assert t["side"] == "sell" and t["orderType"] == "take-profit"

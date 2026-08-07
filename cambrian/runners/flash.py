@@ -50,6 +50,45 @@ def quote_body(token: str, *, contra: str, qty: str, side: str = "buy",
     return body
 
 
+def sell_quote_body(token: str, *, contra: str, qty_tokens: str,
+                    max_slippage: str = "0.2", chain: str = FLASH_CHAIN,
+                    funder: str | None = None) -> dict:
+    """A /quote body to SELL qty_tokens of `token` back to `contra`. Used to
+    simulate the exit — if this quote won't route, the token is a honeypot."""
+    body = {"targetChain": chain, "contraChain": chain,
+            "targetAsset": token, "contraAsset": contra,
+            "side": "sell", "qty": str(qty_tokens), "orderType": "market",
+            "maxSlippage": str(max_slippage)}
+    if funder:
+        body["funderAddress"] = funder
+    return body
+
+
+def roundtrip_verdict(usd_in: float | None, usd_out: float | None, *,
+                      max_loss: float = 0.25) -> dict:
+    """Honeypot / high-tax gate from a buy→sell round trip (both in USD notional).
+
+    usd_in  = value you spend buying the token,
+    usd_out = value you'd get back selling it RIGHT BACK.
+    A honeypot can't be sold (usd_out is None -> sell quote failed). A high-tax
+    token sells back for far less than you put in. Sellable only when the round
+    trip keeps at least (1 - max_loss). This is a HARD gate: never buy what you
+    can't prove you can exit. NB: a passing round trip is strong evidence, not a
+    100% guarantee — block-delayed or per-address honeypots can still evade a
+    simulation, so keep size small and always rest the stop-loss.
+    """
+    if not usd_in or usd_in <= 0:
+        return {"sellable": False, "retention": 0.0, "reason": "no buy quote"}
+    if usd_out is None:
+        return {"sellable": False, "retention": 0.0,
+                "reason": "SELL QUOTE FAILED — honeypot (can't exit)"}
+    ret = usd_out / usd_in
+    if ret >= (1 - max_loss):
+        return {"sellable": True, "retention": round(ret, 4), "reason": "sellable"}
+    return {"sellable": False, "retention": round(ret, 4),
+            "reason": f"round-trip keeps only {ret:.0%} — high tax / soft honeypot"}
+
+
 def stop_loss_body(token: str, *, contra: str, qty: str, stop_usd: str,
                    chain: str = FLASH_CHAIN) -> dict:
     """A resting stop-loss: market-sell the runner if it draws down to stop_usd.
