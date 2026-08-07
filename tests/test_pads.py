@@ -36,10 +36,9 @@ def test_named_deployer_wins_over_fingerprint():
         del PAD_BY_DEPLOYER["0xfeed000000000000000000000000000000000001"]
 
 
-def test_pad777_identified_by_hook_and_suffix():
-    assert pad_of("0x2222222222222222222222222222222222222777", None) == "pad-777"
-    # the 777 hook maps to the same pad name as the 777 suffix
-    assert pad_of("0xtok", "0x75a54357d9c78a2db19004a5fdc76c50f9242aec") == "pad-777"
+def test_flap_identified_by_7777_suffix():
+    # Flap grinds 7777 token addresses (hookless) -> the '777' 3-char cluster
+    assert pad_of("0x20024e485c0b22b42855589700721b28320a7777", None) == "flap"
 
 
 def test_infra_deployers_are_not_labeled_as_pads():

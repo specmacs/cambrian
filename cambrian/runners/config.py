@@ -70,13 +70,18 @@ ZERO_ADDR = "0x0000000000000000000000000000000000000000"
 
 PAD_BY_HOOK: dict[str, str] = {
     "0x4e3468951d49f2eea976ed0d6e75ffcb44a9a544": "bankr",
-    # hook that correlates with the '777' vanity suffix (same pad) — name it once IDed.
-    "0x75a54357d9c78a2db19004a5fdc76c50f9242aec": "pad-777",
+    # 0x75a54357.. is a distinct unnamed HOOKED pad (~23 launches) — NOT flap (flap
+    # is hookless, IDed by the 7777 suffix). Name it once traced.
 }
-PAD_BY_DEPLOYER: dict[str, str] = {}     # launch-tx `to` / factory -> pad name
+PAD_BY_DEPLOYER: dict[str, str] = {
+    # Pons is the dominant, hookless pad -> identified by its launch-tx deployer.
+    # 0x0000ffff.. was ~54% of sampled deployers (Pons is ~50%+ of RH activity);
+    # confirm with rh_who on a known Pons token before trusting, then set it here.
+    # "0x0000ffffbe8efe702c8703ae3477ff5de3d319c0": "pons",
+}
 PAD_BY_SUFFIX: dict[str, str] = {
     "ba3": "bankr",
-    "777": "pad-777",       # a vanity pad (same one as hook 0x75a5..); rename when IDed
+    "777": "flap",          # confirmed: Flap grinds '7777' token addresses (hookless)
 }
 
 # Shared infrastructure that shows up as a launch-tx `to` but is NOT a launchpad —
