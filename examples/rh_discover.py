@@ -46,13 +46,16 @@ PAD_BY_SUFFIX = {
 
 
 def pad_of(token, hook):
-    """Which pad launched this? Hook match wins (authoritative); suffix corroborates."""
+    """Which pad? Named where known (hook > suffix); otherwise a stable short
+    hook fingerprint so EVERY hooked launch still carries a pad label to group by."""
     h = (hook or "").lower()
     if h in PAD_BY_HOOK:
         return PAD_BY_HOOK[h]
     for suf, name in PAD_BY_SUFFIX.items():
         if token.lower().endswith(suf):
             return name
+    if h and h != NATIVE:
+        return "hook:" + h[2:8]
     return ""
 
 # ---- minimal pure-Python keccak256 (Ethereum, 0x01 padding) -----------------

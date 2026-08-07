@@ -64,6 +64,8 @@ def pad_of(token, hook):
     for suf, name in PAD_BY_SUFFIX.items():
         if token.lower().endswith(suf):
             return name
+    if h and h != NATIVE:
+        return "hook:" + h[2:8]     # unknown pad, still grouped by its hook
     return ""
 
 # ---- keccak256 (for v4 extsload liquidity) ----------------------------------

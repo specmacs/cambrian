@@ -60,29 +60,66 @@ CONTRACTS = {
     # 0xe51960f1b45f1c9fb6d166e6a884f866fc70433b
 }
 
-# Launchpad fingerprints. A pad is identified two independent ways: the v4 hook
-# every launch routes through (authoritative) and a vanity token-address suffix
-# (cheap secondary). Both confirmed on-chain for bankr: hook 0x4e34..a544, tokens
-# end in 'ba3', launches on Uniswap v4. Add more pads as their fingerprints surface
-# (run examples/rh_trace.py on a known token to pull a pad's hook + launch contract).
-PAD_BY_HOOK = {
+# Launchpad fingerprints. A pad is identified up to three independent ways: the v4
+# hook every launch routes through (authoritative), the launch-tx deployer/factory
+# (for hookless pads — needs a tx lookup, see rh_trace/rh_pads), and a vanity
+# token-address suffix (cheap). Confirmed for bankr: hook 0x4e34..a544, tokens end
+# in 'ba3', v4. Name more pads as the census (examples/rh_pads.py) surfaces them —
+# either edit these maps or drop them in RH_PADS_FILE (merged at import, no code edit).
+ZERO_ADDR = "0x0000000000000000000000000000000000000000"
+
+PAD_BY_HOOK: dict[str, str] = {
     "0x4e3468951d49f2eea976ed0d6e75ffcb44a9a544": "bankr",
 }
-PAD_BY_SUFFIX = {
+PAD_BY_DEPLOYER: dict[str, str] = {}     # launch-tx `to` / factory -> pad name
+PAD_BY_SUFFIX: dict[str, str] = {
     "ba3": "bankr",
 }
 
 
-def pad_of(token: str | None, hook: str | None) -> str | None:
-    """Which pad launched this token? Hook match is authoritative; the vanity
-    address suffix corroborates (and covers pads/pools with no hook)."""
+def _load_pad_names() -> None:
+    """Merge user-supplied pad names from RH_PADS_FILE (JSON) so you can name every
+    pad the census finds without editing code:
+        {"hooks": {"0x..": "pons"}, "deployers": {"0x..": "noxa"},
+         "suffixes": {"xyz": "flap"}}
+    """
+    path = os.getenv("RH_PADS_FILE", "")
+    if not path:
+        return
+    try:
+        import json
+        with open(path) as fh:
+            data = json.load(fh)
+        PAD_BY_HOOK.update({k.lower(): v for k, v in data.get("hooks", {}).items()})
+        PAD_BY_DEPLOYER.update({k.lower(): v for k, v in data.get("deployers", {}).items()})
+        PAD_BY_SUFFIX.update({k.lower(): v for k, v in data.get("suffixes", {}).items()})
+    except Exception:
+        pass
+
+
+_load_pad_names()
+
+
+def pad_of(token: str | None, hook: str | None,
+           deployer: str | None = None) -> str | None:
+    """Which pad launched this token? Named where known (hook > deployer > suffix,
+    hook being authoritative); otherwise a STABLE short fingerprint so EVERY launch
+    still carries a pad label you can group by and name later. None only when there
+    is nothing to fingerprint (hookless, no deployer given, no suffix match)."""
     h = (hook or "").lower()
     if h in PAD_BY_HOOK:
         return PAD_BY_HOOK[h]
+    d = (deployer or "").lower()
+    if d in PAD_BY_DEPLOYER:
+        return PAD_BY_DEPLOYER[d]
     if token:
         for suf, name in PAD_BY_SUFFIX.items():
             if token.lower().endswith(suf):
                 return name
+    if h and h != ZERO_ADDR:
+        return "hook:" + h[2:8]          # unknown pad, but distinguishable by hook
+    if d and d != ZERO_ADDR:
+        return "dep:" + d[2:8]           # unknown pad, distinguishable by deployer
     return None
 
 # Smart-money addresses to follow. A watched wallet buying a fresh token is the
