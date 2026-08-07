@@ -50,9 +50,9 @@ FLASH_KEY = os.getenv("RH_FLASH_KEY", flash.FLASH_DEV_KEY)
 # rails; the math is then only a cheap liveness pre-filter, not the decision. The
 # key is read here from the env and passed to the seam — never printed or committed.
 USE_LLM = os.getenv("RH_LLM", "") not in ("", "0", "false")
-LLM_BASE = os.getenv("RH_LLM_BASE", "https://api.surplusintelligence.ai/v1")
+LLM_BASE = os.getenv("RH_LLM_BASE", "https://api.surplusintelligence.ai/min30/v1")
 LLM_KEY = os.getenv("RH_LLM_KEY", "")
-LLM_MODEL = os.getenv("RH_LLM_MODEL", "claude-opus-4.8")  # any model Surplus routes
+LLM_MODEL = os.getenv("RH_LLM_MODEL", "claude-opus-4.7")  # any model Surplus routes
 LLM_MIN_CONF = float(os.getenv("RH_LLM_MIN_CONF", "0.6"))
 
 POLICY = TradePolicy(

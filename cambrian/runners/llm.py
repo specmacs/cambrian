@@ -6,11 +6,12 @@ survivor, given the on-chain facts. OpenAI-compatible, so it works with Surplus
 Intelligence (an inference marketplace) or any OpenAI-style endpoint — set the
 base URL and key.
 
-Surplus specifics (from their docs): base URL https://api.surplusintelligence.ai/v1,
-endpoint /chat/completions, auth header `Authorization: Bearer <key>` where the key
-starts with `inf_`, standard OpenAI body {model, messages, ...}. Models include
-`claude-opus-4.8` (and others); the marketplace routes each call to the cheapest
-seller — pick a small/cheap model for a 24/7 judge.
+Surplus specifics (from their docs): base URL includes a market segment, e.g.
+https://api.surplusintelligence.ai/min30/v1 , then /chat/completions. Auth header
+`Authorization: Bearer <key>` where the key starts with `inf_`, standard OpenAI
+body {model, messages, ...}. Models include `claude-opus-4.7` (and others); the
+marketplace routes each call to the cheapest seller — pick a cheap model for a
+24/7 judge, and set the base URL to the market segment you want.
 
 Pure parts (prompt build, verdict parse) are unit-tested. The HTTP call is a thin
 seam. FAIL CLOSED: an error, a timeout, or an unparseable reply is treated as
@@ -22,7 +23,7 @@ from __future__ import annotations
 
 import json
 
-SURPLUS_BASE_URL = "https://api.surplusintelligence.ai/v1"
+SURPLUS_BASE_URL = "https://api.surplusintelligence.ai/min30/v1"  # /min30/ = a market segment
 
 SYSTEM = (
     "You are a risk judge for sniping brand-new memecoins on Robinhood Chain. "
@@ -78,7 +79,7 @@ def llm_judge(facts: dict, *, base_url: str, api_key: str, model: str,
             headers={"Authorization": f"Bearer {api_key}",
                      "content-type": "application/json"},
             json={"model": model, "messages": judge_messages(facts),
-                  "temperature": 0, "max_tokens": 120},
+                  "temperature": 0, "max_tokens": 120, "stream": False},
             timeout=timeout)
         r.raise_for_status()
         text = r.json()["choices"][0]["message"]["content"]
