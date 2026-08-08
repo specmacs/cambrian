@@ -98,10 +98,16 @@ EVT_V2_PAIR_CREATED = "0x0d3648bd0f6ba80134a33ba9275ac585d9d315f0ad8355cddefde31
 EVT_V2_SWAP = "0xd78ad95fa46c994b6551d0da85fc275fe613ce37657fb8d5e3d130840159d822"
 EVT_V2_SYNC = "0x1c411e9a96e071241c2f21f7726b17ae89e3cab4c78be50e062b03a9fffbbad1"
 
-# flap supports TAX TOKENS at 1%, 3%, 5% or 10% (docs.flap.sh). A 10% tax is a
-# silent P&L killer and looks like slippage, so tax must be read before sizing —
-# see FLAP_TAX_TOKEN_V3_IMPL to spot a taxed token by implementation.
-FLAP_TAX_RATES_BPS = (100, 300, 500, 1000)
+# flap TAX TOKENS. The public docs describe a 1/3/5/10% menu; the chain disagrees.
+# Reading buyTaxRate()/sellTaxRate() across 120 consecutive live launches:
+#   10.0% x74 | 7.3% x11 | 6.3% x6 | 4.3% x5 | 1.3% x5 | 9.3%/8.3%/5.3%/3.3% x4
+#    3.0% x1  | 2.3% x1  | 1.0% x1
+# So rates are arbitrary, not tiered, and 62% of flap launches carry the maximum
+# 10%. Gate on the number, never on a known-tier set. Owner's hard rule is 3% —
+# see runners/flap_tax.py, which enforces it. Post-gate, only ~7% of flap flow is
+# tradable, so flap's headline launch rate is NOT its tradable rate.
+FLAP_TAX_HELPER = "0xb10bD2672aE63735d677164A54B573a016f0203C"
+FLAP_MAX_TAX_BPS = 300
 
 # name -> {address, created_topic0, start_block, amm}
 # `created_topic0` is left blank on purpose: discover_fresh SKIPS a pad without

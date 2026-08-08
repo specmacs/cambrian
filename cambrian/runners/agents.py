@@ -12,6 +12,8 @@ CONFLUENCE_WEIGHTS. That's the whole extension point.
 
 from __future__ import annotations
 
+from .flap_tax import MAX_TAX_BPS
+
 
 def agent_flow(net_usd: float | None, gross_usd: float | None,
                flow_target: float = 5_000.0) -> tuple[float, str]:
@@ -46,10 +48,19 @@ def agent_momentum(buys: int | None, sells: int | None) -> tuple[float, str]:
     return round(max((skew - 0.5) * 2, 0.0), 3), f"{skew:.0%} buys"
 
 
-def agent_safety(pad_verified: bool, sellable: bool | None) -> tuple[float, str]:
-    """The rug/honeypot gate. A token from a VERIFIED pad (hook/deployer proof)
+def agent_safety(pad_verified: bool, sellable: bool | None,
+                 tax_bps: int | None = None) -> tuple[float, str]:
+    """The rug/honeypot/tax gate. A token from a VERIFIED pad (hook/deployer proof)
     runs the pad's standard template — safe. Otherwise we trust the sell-sim:
-    sellable -> ok, not sellable -> honeypot (hard zero)."""
+    sellable -> ok, not sellable -> honeypot (hard zero).
+
+    Tax outranks everything, including pad verification. Owner's rule: never touch
+    a token taxed above 3%. A flap token can be perfectly "verified" and perfectly
+    sellable and still hand back 10% on the way out — the tax is a certain loss,
+    not a risk, so it is checked FIRST and returns a hard zero.
+    """
+    if tax_bps is not None and tax_bps > MAX_TAX_BPS:
+        return 0.0, f"TAX {tax_bps / 100:.2g}% > {MAX_TAX_BPS / 100:.0f}% limit"
     if pad_verified:
         return 1.0, "verified pad (standard contract)"
     if sellable is True:

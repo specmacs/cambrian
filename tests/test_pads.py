@@ -229,7 +229,10 @@ def test_flap_portal_matches_the_configured_launchpad():
     assert FLAP_PORTAL.lower() == LAUNCHPADS["flap"]["address"].lower()
 
 
-def test_flap_tax_rates_are_known_so_sizing_can_account_for_them():
-    # A 10% tax reads as slippage and silently destroys P&L if ignored.
-    from cambrian.runners.config import FLAP_TAX_RATES_BPS
-    assert max(FLAP_TAX_RATES_BPS) == 1000
+def test_flap_tax_ceiling_is_the_owners_three_percent_rule():
+    # The public docs describe a 1/3/5/10% menu, but live rates are arbitrary
+    # (730, 630, 430 bps ...), so the gate is a numeric ceiling, not a tier set.
+    from cambrian.runners.config import FLAP_MAX_TAX_BPS, FLAP_TAX_HELPER
+    from cambrian.runners.flap_tax import MAX_TAX_BPS
+    assert FLAP_MAX_TAX_BPS == MAX_TAX_BPS == 300
+    assert FLAP_TAX_HELPER.lower() == "0xb10bd2672ae63735d677164a54b573a016f0203c"

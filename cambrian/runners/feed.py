@@ -73,6 +73,62 @@ def discover_new_pools(client: ChainClient, *, v3_factory: str, weth: str,
     return out
 
 
+def discover_new_pools_v2(client: ChainClient, *, v2_factory: str, weth: str,
+                          from_block: str, to_block: str = "latest") -> list[dict]:
+    """Every fresh WETH-paired V2 pair created in the window — pad-agnostic.
+
+    This is where flap lands: 186 of 186 sampled flap launches opened their V2
+    pair in the launch tx itself. Mirrors `discover_new_pools` (v3) so callers can
+    treat the three venues uniformly.
+    """
+    from .uniswap_v2 import PAIRCREATED_TOPIC0, decode_pair_created
+    weth_l = weth.lower()
+    out: list[dict] = []
+    for log in client.get_logs(address=v2_factory, topics=[PAIRCREATED_TOPIC0],
+                               from_block=from_block, to_block=to_block):
+        d = decode_pair_created(log)
+        t0, t1 = d["token0"].lower(), d["token1"].lower()
+        if weth_l not in (t0, t1):
+            continue
+        blk = log.get("blockNumber")
+        out.append({
+            "token": d["token1"] if t0 == weth_l else d["token0"],
+            "pool": d["pair"],
+            "weth_is_token0": t0 == weth_l,
+            "venue": "v2",
+            "block": int(blk, 16) if isinstance(blk, str) else blk,
+        })
+    return out
+
+
+def v2_pool_swap_metrics(client: ChainClient, pair: str, *, from_block: str,
+                         to_block: str, weth_is_token0: bool,
+                         weth_price_usd: float) -> dict[str, float]:
+    """Volume + buy/sell flow for a V2 pair over a block window.
+
+    `decode_v2_swap` already folds V2's four unsigned legs into v3's signed
+    pool-perspective convention, so this needs no sign inversion (unlike v4).
+    """
+    from .uniswap_v2 import SWAP_TOPIC0 as V2_SWAP, decode_v2_swap
+    logs = client.get_logs(address=pair, topics=[V2_SWAP],
+                           from_block=from_block, to_block=to_block)
+    swaps = [decode_v2_swap(lg) for lg in logs]
+    return aggregate_swaps(swaps, weth_is_token0=weth_is_token0,
+                           weth_price_usd=weth_price_usd)
+
+
+def v2_pool_depth_usd(client: ChainClient, pair: str, *, weth_is_token0: bool,
+                      weth_usd: float) -> float | None:
+    """Exact quote-side depth for a V2 pair (reserves, not an estimate)."""
+    from .uniswap_v2 import liquidity_usd_from_reserves, read_reserves
+    try:
+        return liquidity_usd_from_reserves(read_reserves(client, pair),
+                                           quote_is_token0=weth_is_token0,
+                                           quote_price_usd=weth_usd)
+    except Exception:
+        return None
+
+
 def discover_fresh(client: ChainClient, *, from_block: str, to_block: str = "latest",
                    launchpads: dict | None = None) -> list[dict[str, Any]]:
     """Return raw creation-event logs across the watched launchpads.
@@ -168,15 +224,19 @@ def enrich(client: ChainClient, hit: dict[str, Any], *, weth_usd: float,
     """
     token, pool = hit["token"], hit["pool"]
     weth_is_token0 = hit["weth_is_token0"]
+    venue = hit.get("venue", "v3")
     recent_from = hex(max(latest_block - window_blocks, 0))
     prior_from = hex(max(latest_block - 2 * window_blocks, 0))
     prior_to = hex(max(latest_block - window_blocks - 1, 0))
 
     def _swaps(fb, tb):
+        # V2 and V3 have different Swap ABIs and topic0s; decoding a V2 log with
+        # the V3 decoder silently yields garbage rather than failing, so dispatch
+        # on venue instead of trying both.
+        fn = v2_pool_swap_metrics if venue == "v2" else pool_swap_metrics
         try:
-            return pool_swap_metrics(client, pool, from_block=fb, to_block=tb,
-                                     weth_is_token0=weth_is_token0,
-                                     weth_price_usd=weth_usd)
+            return fn(client, pool, from_block=fb, to_block=tb,
+                      weth_is_token0=weth_is_token0, weth_price_usd=weth_usd)
         except Exception:
             return {"volume_usd": None, "buys": None, "sells": None}
 
@@ -184,12 +244,18 @@ def enrich(client: ChainClient, hit: dict[str, Any], *, weth_usd: float,
     mp = _swaps(prior_from, prior_to)
 
     liquidity_usd = None
-    try:
-        weth = rcfg.CONTRACTS["weth"]
-        bal = client.erc20_balance_of(weth, pool) / 1e18
-        liquidity_usd = bal * weth_usd * 2  # WETH side x2 as a total-depth proxy
-    except Exception:
-        pass
+    if venue == "v2":
+        # A V2 pair's reserves ARE its depth — exact, one call, no proxy needed.
+        liquidity_usd = v2_pool_depth_usd(client, pool,
+                                          weth_is_token0=weth_is_token0,
+                                          weth_usd=weth_usd)
+    if liquidity_usd is None:
+        try:
+            weth = rcfg.CONTRACTS["weth"]
+            bal = client.erc20_balance_of(weth, pool) / 1e18
+            liquidity_usd = bal * weth_usd * 2  # WETH side x2 as a total-depth proxy
+        except Exception:
+            pass
 
     symbol = holders = top_holder = None
     if bs_client is not None:

@@ -204,14 +204,37 @@ The documented graduation event `LaunchedToDEX(address,address,uint256,uint256)`
 blocks. On Robinhood Chain flap does not run the bonding-curve-then-graduate path
 its generic docs describe; the pair exists at launch.
 
-**Adding Uniswap V2 support is now the highest-value work item** — quoting,
-liquidity and honeypot checks all need a V2 path (`getReserves`, constant-product
-math) alongside the existing v3/v4 ones.
+**Uniswap V2 support is BUILT** — `cambrian/runners/uniswap_v2.py` (decoding +
+constant-product math), `feed.discover_new_pools_v2` / `v2_pool_swap_metrics` /
+`v2_pool_depth_usd`, and `enrich` now dispatches on `hit["venue"]`. V2 depth is
+EXACT (reserves are the balance), unlike the v3/v4 upper-bound proxies, and
+`amount_out` doubles as the sell-quote for honeypot checks.
 
-⚠️ **flap supports TAX TOKENS at 1%, 3%, 5% or 10%.** A 10% tax presents as
-slippage and quietly destroys P&L, so tax must be read before sizing. Taxed tokens
-use implementation `0x7777C874..3333` (`TOKEN_TAXED_V3`) vs `0x88882688..2222`
-for standard ones.
+Sign convention: `decode_v2_swap` folds V2's four unsigned legs into v3's signed
+pool-perspective form (`in - out`), so `aggregate_swaps` works with invert=False
+like v3. Only v4 inverts. A test pins this — get it wrong and every V2 buy reads
+as a sell, which is exactly the bug that once hit v4.
+
+### The tax gate — owner's hard rule: never above 3%
+
+Enforced in `runners/flap_tax.py` and wired into `agent_safety`, where it outranks
+pad verification: a verified, sellable flap token can still hand back 10% on exit,
+and that is a certain loss rather than a risk.
+
+Read the rate straight off the token — `buyTaxRate()` / `sellTaxRate()`, uint16
+basis points. Do NOT parse the Tax Token Helper's `getTaxTokenInfoV2`: it returns
+a 20-word struct whose field order is not published, and guessing offsets for a
+safety gate is the wrong trade.
+
+**The public docs' 1/3/5/10% menu is wrong.** Live rates are arbitrary. Across 120
+consecutive launches: 10.0% x74, 7.3% x11, 6.3% x6, 4.3% x5, 1.3% x5, 9.3%/8.3%/
+5.3%/3.3% x4 each, 3.0% x1, 2.3% x1, 1.0% x1. So gate on the number, never on a
+tier set.
+
+⚠️ **This removes ~93% of flap flow.** 62% of launches carry the maximum 10%. Live
+run: of 32 V2 pools in a 1,500-block window, **30 blocked, 2 passed**. flap's
+headline launch rate is NOT its tradable rate — size the opportunity off the
+post-gate number.
 
 Known tokens: FRONG (pools.trade flagship)
 `0x6245e67affA44a23077f0Ea7f981a8DC743a0c47`.
@@ -417,6 +440,12 @@ The environment's network level is now **Full**, so `curl` reaches RH's RPC,
 pools.trade, Uniswap's gateway and GitHub. `WebFetch` uses a separate
 Anthropic-side path that may still refuse hosts; **use `curl` when WebFetch is
 blocked** — it is a complete substitute and is how every scan above was run.
+
+**The RPC caps `eth_getLogs` to ~2,048 blocks per request** ("requested logs from
+N blocks ... only allowed to ..."). Exceeding it returns an error, not a truncated
+result, so a helper that swallows errors silently reports ZERO launches rather
+than failing loudly. Chunk every scan, and never pass a wide range with
+`toBlock:"latest"` — the range grows as blocks arrive and trips the cap mid-run.
 
 Cloning public repos works (`git clone --depth 1 https://github.com/...`), which
 is the fastest way to settle an ABI or event question definitively. Prefer it
