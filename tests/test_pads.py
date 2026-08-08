@@ -145,3 +145,51 @@ def _keccak(data: bytes) -> bytes:
     ns: dict = {}
     exec(text[text.index("_M = (1 << 64)"):text.index("def rpc(")], ns)
     return ns["kec"](data)
+
+
+# --- pools.trade is the Uniswap launcher stack -------------------------------
+
+def test_pools_trade_stack_addresses_are_distinct_and_well_formed():
+    from cambrian.runners.config import POOLS_TRADE
+    for k, v in POOLS_TRADE.items():
+        assert v.startswith("0x") and len(v) == 42, k
+    # the two InstantLaunchStrategy deployments are different contracts
+    assert POOLS_TRADE["instant_strategy_1"] != POOLS_TRADE["instant_strategy_2"]
+
+
+def test_every_pools_trade_strategy_is_a_named_strategy():
+    # A launch that reaches us through the launcher must resolve to a known
+    # mechanism; an unmapped strategy is how an unverified token slips through.
+    from cambrian.runners.config import POOLS_TRADE, PAD_BY_STRATEGY
+    for key in ("instant_strategy_1", "instant_strategy_2",
+                "lbp_strategy", "universal_router_strategy"):
+        assert POOLS_TRADE[key].lower() in PAD_BY_STRATEGY, key
+
+
+def test_universal_router_strategy_is_not_the_universal_router():
+    # UniversalRouterStrategy (a launcher strategy) vs Uniswap's actual Universal
+    # Router 0x88767899..0904. Conflating them would point trades at the wrong
+    # contract entirely.
+    from cambrian.runners.config import POOLS_TRADE
+    assert (POOLS_TRADE["universal_router_strategy"].lower()
+            != "0x8876789976decbfcbbbe364623c63652db8c0904")
+
+
+def test_position_manager_is_infrastructure_not_a_pad():
+    # 0x58daec.. is v4's PositionManager per Uniswap's own deployment table. It
+    # appears inside launch txs, so it must never be treated as a pad deployer.
+    from cambrian.runners.config import POOLS_TRADE, PAD_BY_DEPLOYER
+    pm = POOLS_TRADE["position_manager"].lower()
+    assert pm == "0x58daec3116aae6d93017baaea7749052e8a04fa7"
+    assert pm not in {k.lower() for k in PAD_BY_DEPLOYER}
+
+
+def test_independent_pads_do_not_reuse_the_pools_trade_launchers():
+    # Sampled live: 0 of 24 Pons/flap launches touched the LiquidityLauncher. If a
+    # pad factory ever equals a launcher, our "came via the launcher => pools.trade"
+    # inference breaks.
+    from cambrian.runners.config import LAUNCHPADS, POOLS_TRADE
+    launchers = {POOLS_TRADE["launcher_v3_2_0"].lower(),
+                 POOLS_TRADE["launcher_v3_0_0"].lower()}
+    for name in ("pons", "flap"):
+        assert LAUNCHPADS[name]["address"].lower() not in launchers, name

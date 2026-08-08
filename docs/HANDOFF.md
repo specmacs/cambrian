@@ -90,6 +90,37 @@ was an address suffix (`ba3`, `777`), which anyone can spoof with a vanity
 grind. **The suffix map is kept only as a last-resort hint and must never gate
 a buy.**
 
+### pools.trade IS this launcher stack
+
+pools.trade is Uniswap Labs' own launchpad (live 2026-08-05) and runs entirely on
+Uniswap's own contracts. Every name below is the contract's **source-verified name
+on Blockscout**, not our guess — and the descriptive labels this project had
+already chosen turned out to match Uniswap's real contract names exactly.
+
+```
+LiquidityLauncher                  0x0000fffFbe8efe702c8703ae3477ff5de3d319c0  v3.2.0
+LiquidityLauncher                  0x00004c4ccc709ef590f7c81102c0689f0263d4e9  v3.0.0
+ContinuousClearingAuctionFactory   0x000000001f26a0044baa66024e7b6599c61963f8
+InstantLaunchStrategy              0x23f8209572b4a1c2ad88a42749e830791fb027f1  184/40k
+InstantLaunchStrategy              0xad44d55e7f8337c3ce113fbb591486e85be104b2   11/40k
+LBPStrategy                        0x05d552391067389ee44fec3924157ed33f976000   12/40k
+UniversalRouterStrategy            0x1242c9439d589cae85e121b1f79f2af51e91dcee   96/40k
+```
+
+pools.trade offers exactly two formats and both are now pinned on-chain:
+
+- **Instant Launch** → `InstantLaunchStrategy`, tradable immediately.
+- **Crowd Launch** → `LBPStrategy`, four hours of bids through the auction
+  factory, then a pool. **PROVEN, not inferred:** in 12 of 12 sampled
+  `AuctionCreated` txs the token was distributed through `LBPStrategy`, and that
+  factory is the sole emitter of `AuctionCreated` on the chain.
+
+Launcher launches settle into **hookless** v4 pools (`hooks == address(0)`),
+which is how they are told apart from hooked pads on the same PoolManager.
+
+`UniversalRouterStrategy` is a launcher strategy, **not** Uniswap's Universal
+Router (`0x8876789976decbfcbbbe364623c63652db8c0904`). Do not conflate them.
+
 ### Pad identity = `TokenDistributed.strategy`
 
 Each pad runs its own strategy + fee-splitter pair.
@@ -169,7 +200,10 @@ POST https://interface.gateway.uniswap.org/v1/graphql
 ```
 
 Use it as an independent second opinion, probed **in parallel** with the chain
-scan, never as a blocking dependency. `trade-api.gateway.uniswap.org` 404s on
+scan, never as a blocking dependency. It does index launcher tokens and returns
+`isSpam` / `safetyLevel`, which is real triage signal. GraphQL **introspection is
+FORBIDDEN** (`errorCode: FORBIDDEN`), so query only known fields — you cannot
+discover the schema from the endpoint. `trade-api.gateway.uniswap.org` 404s on
 `/check_approval` for this chain.
 
 ---
@@ -214,6 +248,26 @@ correctly pointed out one $10 buy can be followed by ten $1 sells.
 launcher, false of the chain: Pons emits a literal `TokenLaunched`. The old
 wording told the next session not to look, so the claim protected itself. Fixed
 above, with the real signature pinned by a keccak test.
+
+**7b. "Shared infrastructure every pad routes through" was false.** Correction #2
+removed the LiquidityLauncher from the pad maps — correct — but justified it by
+claiming every pad routes through it. Sampled live, **0 of 24** Pons and flap
+launches touched the launcher at all; those pads run their own factories end to
+end. The launcher is pools.trade's stack specifically. Keep it out of the pad
+maps because it is a launcher, not because everyone uses it. This makes
+"arrived via the launcher" a much stronger signal than we had credited.
+
+**7c. `0x58daec..4fa7` is v4's PositionManager.** Correction #3 removed it from
+`PAD_BY_DEPLOYER` (right) on the grounds that it was "a token in the launch"
+(wrong). Uniswap's published v4 deployment table for chain 4663 lists it as the
+**PositionManager** — core infrastructure, which is exactly why it turns up
+inside launch txs.
+
+**7d. Two Pons `TokenLaunched` fields were mislabelled here.** topic2 is the
+**deployer**, not the pool; the pool is the second data word. Confirmed against
+Pons's official docs, which publish the same topic0 we derived by keccak. The
+trailing words are `positionId` and `restrictionsEndBlock`, not anonymous
+counters — `restrictionsEndBlock` says when launch restrictions lift.
 
 **8. The desk regressed to Google-Fonts `<link>` tags.** `examples/cambrian_desk.py`
 in the repo was an older copy that fetched Geist from `fonts.googleapis.com` —
@@ -348,7 +402,9 @@ it. Import it by slicing the source between `_M = (1 << 64)` and `def rpc(`.
    recover flap's launch-event *signature text* (topic0 is chain-observed, not
    yet keccak-proven), and decode Pons's two unlabelled `uint256`s — both are
    monotonic counters, one stepping ~3-4 and the other ~5 per launch.
-   Next pads to run the same recipe on: Noxa, bankr, ArrowPad, hood.fun.
+   pools.trade is now mapped too (see above) — its stack is Uniswap's launcher,
+   all source-verified. Owner's call: Noxa / bankr / ArrowPad / hood.fun and the
+   unnamed hook are **not worth chasing**; do not spend time on them.
 2. **Make verified-only trading the default** — refuse any token not traceable
    to a named strategy or a confirmed pad event. Proposed, not yet confirmed by
    the owner.

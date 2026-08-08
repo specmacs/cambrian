@@ -37,15 +37,23 @@ SEEN_FILE = os.getenv("RH_SEEN_FILE", "runners_seen.json")
 # accurate — it just belongs to a pad we had not yet identified.
 #
 # Pons emits BOTH per launch, in the same tx (105 and 106 firings over the same
-# 40k-block window — one each per token):
-#   TokenDeployed(address indexed token, address indexed pool,
-#                 address indexed v3Factory, address quote, uint256, uint256)
-#   TokenLaunched(address indexed token, address indexed pool,
-#                 address indexed v3Factory, address quote, address creator,
-#                 uint256, uint256, uint256, uint256, uint256)
-# topic1 is the new token, topic2 its v3 pool, topic3 the v3 factory (constant),
-# and the first data word is WETH. On TokenLaunched the last data word is the
-# creator's initial buy in wei (observed 0, 0.2e18, 3.5e18) — real entry signal.
+# 40k-block window — one each per token). The TokenLaunched field names below are
+# from Pons's official docs (docs.ponsfamily.com), which publish this exact
+# topic0 — an independent confirmation of the keccak we derived:
+#   TokenLaunched(address indexed token, address indexed deployer,
+#                 address indexed dexFactory, address pairToken, address pool,
+#                 uint256 dexId, uint256 launchConfigId, uint256 positionId,
+#                 uint256 restrictionsEndBlock, uint256 initialBuyAmount)
+#   TokenDeployed(address,address,address,address,uint256,uint256)  (same layout head)
+# NOTE topic2 is the DEPLOYER, not the pool — the pool is the 2nd data word. An
+# earlier reading here had those two swapped. `initialBuyAmount` (last data word)
+# is the creator's own opening buy in wei, observed 0, 0.2e18 and 3.5e18, and
+# `restrictionsEndBlock` is when launch restrictions lift — both are entry signal
+# available at t=0. Pons's docs recommend exactly this: index TokenLaunched off
+# the factory, then index each emitted pool's Swap events.
+PONS_FACTORY = "0xA5aAb3F0c6EeadF30Ef1D3Eb997108E976351feB"          # start 8991118
+PONS_FACTORY_LEGACY = "0x0c37a24F5D23A486FA692d1500881d698B1F77a4"   # start 8600612
+PONS_LOCKER = "0x736D76699C26D0d966744cAe304C000d471f7F35"
 EVT_PONS_TOKEN_DEPLOYED = "0x1461370115e1c2be79cb529f8cfcbd11316e789d9c6099fc83417b0b4c48c62a"
 EVT_PONS_TOKEN_LAUNCHED = "0xdb51ea9ad51ab453a65a4cb7e60c3cb378c9501bb002609f8f97778fb6c4235a"
 
@@ -131,10 +139,11 @@ PAD_BY_DEPLOYER: dict[str, str] = {
     # is how unverified contracts got through the gate. Pads are told apart by the
     # `strategy` in TokenDistributed instead; see LAUNCHER/STRATEGY below.
     # 0x58daec.. was also removed. We had it as "pools-trade" on the theory that it
-    # deployed FRONG's pools. Reading FRONG's actual launch tx on-chain, that tx's
-    # `to` is the v3.0.0 launcher, and 0x58daec.. merely emits an ERC-20 Transfer at
-    # its own address inside that tx — it is a token in the launch, not the pad.
-    # Pools.trade is now identified by its strategy instead (see PAD_BY_STRATEGY).
+    # deployed FRONG's pools, then concluded it was "a token in the launch". Both
+    # readings were wrong: Uniswap's published v4 deployment table for chain 4663
+    # lists 0x58daec3116aae6d93017baaea7749052e8a04fa7 as the **PositionManager**.
+    # It is core v4 infrastructure, which is exactly why it shows up in launch txs.
+    # Right to remove, wrong reason — see POOLS_TRADE["position_manager"].
 }
 PAD_BY_SUFFIX: dict[str, str] = {
     "ba3": "bankr",
@@ -160,10 +169,44 @@ PAD_BY_SUFFIX: dict[str, str] = {
 # went through v3.0.0, which is why an earlier scan reported it as "not launched
 # via the launcher" at all. Always iterate the whole dict.
 UNI_LAUNCHERS = {
-    "v3.2.0": "0x0000fffFbe8efe702c8703ae3477ff5de3d319c0",   # 330 dists / 40k blocks
-    "v3.0.0": "0x00004c4ccc709ef590f7c81102c0689f0263d4e9",   # 7 dists / 40k blocks
+    "v3.2.0": "0x0000fffFbe8efe702c8703ae3477ff5de3d319c0",   # 306 dists / 40k blocks
+    "v3.0.0": "0x00004c4ccc709ef590f7c81102c0689f0263d4e9",   # 8 dists / 40k blocks
 }
 UNI_LAUNCHER = UNI_LAUNCHERS["v3.2.0"]                        # back-compat alias
+
+# --- This launcher stack IS pools.trade -------------------------------------
+# pools.trade is Uniswap Labs' own launchpad (live 2026-08-05) and it runs on
+# Uniswap's own contracts, every one of them source-verified on Blockscout under
+# these names. So "came through the launcher" is a far stronger identification
+# than we credited it with.
+#
+# IMPORTANT correction to correction #2. We had removed the launcher from
+# PAD_BY_DEPLOYER on the reasoning that it is "shared infrastructure that EVERY
+# pad routes through". Removing it was right, but that premise is false: sampling
+# recent launches, 0 of 24 Pons and flap launches touched the LiquidityLauncher
+# at all — those pads run their own factories end to end. Keep the launcher out
+# of the pad maps because it is a launcher, not because everyone uses it.
+#
+# pools.trade offers exactly two formats, and both are pinned on-chain:
+#   Instant Launch  -> InstantLaunchStrategy, token tradable immediately
+#   Crowd Launch    -> LBPStrategy, 4h of bids via the auction factory, then a pool
+# The Crowd mapping is PROVEN, not inferred: in 12 of 12 sampled AuctionCreated
+# transactions the token was distributed through LBPStrategy, and the auction
+# factory is the sole emitter of AuctionCreated on this chain.
+#
+# Launcher launches settle into HOOKLESS v4 pools (hooks == address(0)), which is
+# how they are told apart from hooked pads sharing the same PoolManager.
+POOLS_TRADE = {
+    "launcher_v3_2_0": "0x0000fffFbe8efe702c8703ae3477ff5de3d319c0",  # LiquidityLauncher
+    "launcher_v3_0_0": "0x00004c4ccc709ef590f7c81102c0689f0263d4e9",  # LiquidityLauncher
+    "cca_factory": "0x000000001f26a0044baa66024e7b6599c61963f8",  # ContinuousClearingAuctionFactory
+    "instant_strategy_1": "0x23f8209572b4a1c2ad88a42749e830791fb027f1",  # InstantLaunchStrategy
+    "instant_strategy_2": "0xad44d55e7f8337c3ce113fbb591486e85be104b2",  # InstantLaunchStrategy
+    "lbp_strategy": "0x05d552391067389ee44fec3924157ed33f976000",        # LBPStrategy
+    "universal_router_strategy": "0x1242c9439d589cae85e121b1f79f2af51e91dcee",  # UniversalRouterStrategy
+    "pool_manager": "0x8366a39cc670b4001a1121b8f6a443a643e40951",   # v4, hookless pools
+    "position_manager": "0x58daec3116aae6d93017baaea7749052e8a04fa7",
+}
 
 EVT_TOKEN_CREATED = "0x2e2b3f61b70d2d131b2a807371103cc98d51adcaa5e9a8f9c32658ad8426e74e"
 EVT_TOKEN_DISTRIBUTED = "0x67226bacccef969dab310a9e55dc1cf821363658e433fd330344f5cc00c79ac8"
@@ -173,19 +216,31 @@ EVT_AUCTION_CREATED = "0x7ede475fad18ccf0039f2b956c4d43a8b4ed0853de4daaa8ae25299
 # identity — each pad runs its own strategy/fee-splitter pair. Names are the
 # contract roles from the repo; which pad operates which is still being mapped
 # by examples/rh_launcher.py, so these stay descriptive rather than branded.
+# Every name below is now the contract's OWN source-verified name on Blockscout,
+# not our guess — the descriptive labels we chose turned out to match Uniswap's
+# actual contract names exactly. They still describe a launch MECHANISM rather
+# than a brand, which stays the right way to read them: all of these strategies
+# belong to the pools.trade stack (see POOLS_TRADE above), so the useful question
+# is which format a token launched under, not which pad "owns" the strategy.
 PAD_BY_STRATEGY: dict[str, str] = {
     # CONFIRMED: FRONG (0x6245e6..0c47), the pools.trade flagship, was distributed
     # through this strategy on the v3.0.0 launcher. Chain-verified, not inferred.
+    # This one is NOT source-verified on Blockscout — the only unverified strategy
+    # we have seen, so treat the label as resting on the FRONG trace alone.
     "0x60d73b21cdf2ea846ab3d58699bbbb8f29d72491": "pools-trade",
-    # Named from the roles Uniswap publishes for RH. Which brand operates each is
-    # still open, so the labels describe the mechanism rather than claim a pad.
-    "0x23f8209572b4a1c2ad88a42749e830791fb027f1": "instant-launch-1",
-    "0xad44d55e7f8337c3ce113fbb591486e85be104b2": "instant-launch-2",
-    "0x05d552391067389ee44fec3924157ed33f976000": "lbp",
-    "0x1242c9439d589cae85e121b1f79f2af51e91dcee": "universal-router",
+    # `InstantLaunchStrategy` (both) — pools.trade "Instant Launch": tradable at once.
+    "0x23f8209572b4a1c2ad88a42749e830791fb027f1": "instant-launch-1",   # 184/40k
+    "0xad44d55e7f8337c3ce113fbb591486e85be104b2": "instant-launch-2",   # 11/40k
+    # `LBPStrategy` — pools.trade "Crowd Launch". PROVEN: 12/12 sampled
+    # AuctionCreated txs distributed through this strategy.
+    "0x05d552391067389ee44fec3924157ed33f976000": "lbp",                # 12/40k
+    # `UniversalRouterStrategy`. NB this is the strategy contract, NOT Uniswap's
+    # Universal Router itself (that is 0x88767899..0904) — do not conflate them.
+    "0x1242c9439d589cae85e121b1f79f2af51e91dcee": "universal-router",   # 96/40k
     # Seen live on v3.0.0, not yet in any published deployment table.
     "0x9f67b864b565966dfcc2e0c6ba2483b2d5ff4b00": "strat-9f67b8",
     "0x544ef36801e90ee56bcd699ed51a63cfceac8ec9": "strat-544ef3",
+    "0xce57498d3474dcc244dfb6710ffbe6d4441cd2b2": "strat-ce5749",       # 3/40k, unverified
 }
 
 # Live census, 40k blocks ending at block 31,247,303:
