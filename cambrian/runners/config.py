@@ -54,6 +54,55 @@ SEEN_FILE = os.getenv("RH_SEEN_FILE", "runners_seen.json")
 PONS_FACTORY = "0xA5aAb3F0c6EeadF30Ef1D3Eb997108E976351feB"          # start 8991118
 PONS_FACTORY_LEGACY = "0x0c37a24F5D23A486FA692d1500881d698B1F77a4"   # start 8600612
 PONS_LOCKER = "0x736D76699C26D0d966744cAe304C000d471f7F35"
+PONS_LOCKER_LEGACY = "0x31ca5E101941A93A7DD6d0497928700625CF54B5"
+
+# --- Pons v2: a SEPARATE protocol with its own factory -----------------------
+# Caught by auditing docs.ponsfamily.com/v2 against what we had. Everything above
+# is Pons **v1**. Pons v2 is a different deployment with a different factory, a
+# different TokenLaunched signature, and a different venue — and we were not
+# watching it at all. Live it is ~31% of Pons launches (16 vs 35 over the same
+# 12k blocks), so a third of Pons was invisible. Same bug class as watching only
+# one of the two Liquidity Launcher deployments.
+#
+#   TokenLaunched(address indexed token, address indexed curve,
+#                 address indexed deployer, address pairToken,
+#                 uint256 launchConfigId, uint256 graduationThreshold)
+# Field order verified by decoding live logs: topic2 is the CURVE (v1's topic2 is
+# the deployer — do not carry the v1 layout across).
+EVT_PONS_V2_TOKEN_LAUNCHED = "0x8d4aad4953d0ca700d468f3753aa14432d1b35b43ec6409f051fb6aa43a89607"
+EVT_PONS_V2_CURVE_BUY = "0xec36bf571f136799e8dc0b0b8bea4b04d8bd3d43de838aab0d5fc21d4cbfc455"
+EVT_PONS_V2_CURVE_SELL = "0x8113d738abdcb6b38357e9d53a54a7157861a09031b453651f0fe7fe151f59df"
+EVT_PONS_V2_CURVE_COMPLETED = "0xa0a0c0fe2202393c1af7f6919ecd56c835ac1395aa519b430721ea8135e51acc"
+EVT_PONS_V2_POOL_GRADUATED = "0x81a7c110f940ddc349867d8a19797e914313a4bfbc7c32f756b186e29342ac85"
+
+# v2 runs a bonding curve per token (its own contract, address in topic2), then
+# graduates into a **Uniswap v4** pool behind the pons meme hook with liquidity
+# locked permanently. So v2 trades on the CURVE pre-graduation and on v4 after —
+# neither is the v3 path v1 uses. Trade history lives on the curve, not a pool.
+PONS_V2 = {
+    "factory": "0x7eD598BcEf8bd9Edd8C97A195C6d13f40801EC7e",
+    "meme_hook": "0xE5e702641Ea86F4ae6cC3cDaeD2B886f976Be044",
+    "fee_escrow": "0xd3AFEB2a57f70eF218Aa82451c51B2fb0416Ac9e",
+    "buyback_vault": "0x42df2a798f82289E177311362e8f5ccC45c1219c",
+    "launch_locker": "0x267444D099b10fB5Ed7c3Cc7B7c767AdcA574952",
+    "launch_and_buy": "0xe33E9E479dF8802cb0866d5d05258bEc4cF62948",
+    "launch_deployer": "0x3711ceA4feaDE896C913C68F01Eda97Cb06D1A42",
+    "graduation_executor": "0xC7819B64A1dAECD7eC19856d026cb14EfBd89046",
+    "graduation_guard": "0xf5695117b99B6f6401e67d4195BD653628176C6C",
+}
+
+# v2 pairs against approved ERC-20s **or native ETH (the zero address)** — NOT
+# always WETH. Sampled live: two launches paired against 0x000..0 and one against
+# a custom ERC-20. A WETH-only filter silently drops those, which is exactly how
+# a "no launches found" bug looks.
+#
+# The docs describe a snipe tax opening at 99% and decaying to zero over the
+# first 5 seconds. MEASURED, it is not active on current launches: buys landing
+# in the launch block itself paid 1.00% fee and 0.00% tax across every sampled
+# launch (launchConfigId 0). It is a per-launch-config parameter though, so read
+# the fee/tax off `CurveBuy` rather than assuming either the doc's 99% or the
+# observed 1%.
+PONS_V2_FEE_BPS_OBSERVED = 100
 EVT_PONS_TOKEN_DEPLOYED = "0x1461370115e1c2be79cb529f8cfcbd11316e789d9c6099fc83417b0b4c48c62a"
 EVT_PONS_TOKEN_LAUNCHED = "0xdb51ea9ad51ab453a65a4cb7e60c3cb378c9501bb002609f8f97778fb6c4235a"
 
@@ -124,6 +173,15 @@ LAUNCHPADS: dict[str, dict[str, str]] = {
         "start_block": "8991118",
         "amm": "uniswap-v3",        # Pons launches into Uniswap V3 vs WETH
     },
+    "pons-v2": {
+        # Pons v2 — a distinct factory from `pons` above, ~31% of Pons launches.
+        # `amm` is the POST-graduation venue; pre-graduation it trades on the
+        # per-token bonding curve whose address arrives in topic2 of the event.
+        "address": "0x7eD598BcEf8bd9Edd8C97A195C6d13f40801EC7e",
+        "created_topic0": EVT_PONS_V2_TOKEN_LAUNCHED,
+        "start_block": "0",         # docs publish no start block for v2
+        "amm": "uniswap-v4",
+    },
     "flap": {
         # CHAIN-VERIFIED as the factory behind the '7777' tokens. It is a
         # TransparentUpgradeableProxy whose implementation (0x7bc20c2c..fa06) is
@@ -169,6 +227,10 @@ ZERO_ADDR = "0x0000000000000000000000000000000000000000"
 
 PAD_BY_HOOK: dict[str, str] = {
     "0x4e3468951d49f2eea976ed0d6e75ffcb44a9a544": "bankr",
+    # Pons v2's meme hook, published in docs.ponsfamily.com/v2. Every graduated
+    # v2 pool sits behind it, so it is an authoritative pad identity. It was
+    # already showing up unnamed in our v4 hook census before the docs named it.
+    "0xe5e702641ea86f4ae6cc3cdaed2b886f976be044": "pons-v2",
     # 0x75a54357.. is a distinct unnamed HOOKED pad (~23 launches) — NOT flap (flap
     # is hookless, IDed by the 7777 suffix). Name it once traced.
 }

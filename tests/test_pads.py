@@ -236,3 +236,52 @@ def test_flap_tax_ceiling_is_the_owners_three_percent_rule():
     from cambrian.runners.flap_tax import MAX_TAX_BPS
     assert FLAP_MAX_TAX_BPS == MAX_TAX_BPS == 300
     assert FLAP_TAX_HELPER.lower() == "0xb10bd2672ae63735d677164a54b573a016f0203c"
+
+
+# --- Pons v2 is a separate protocol from Pons v1 -----------------------------
+# Found by auditing docs.ponsfamily.com/v2 against config: v2 has its own factory
+# and its own TokenLaunched, and we were watching only v1 — missing ~31% of Pons.
+
+def test_pons_v2_is_watched_as_its_own_pad():
+    from cambrian.runners.config import LAUNCHPADS, PONS_V2
+    pad = LAUNCHPADS["pons-v2"]
+    assert pad["address"].lower() == PONS_V2["factory"].lower()
+    assert pad["created_topic0"].startswith("0x") and len(pad["created_topic0"]) == 66
+
+
+def test_pons_v1_and_v2_are_different_factories_and_different_events():
+    # The whole point of the finding: same brand, different deployment. Collapsing
+    # them loses a third of Pons launches.
+    from cambrian.runners.config import (LAUNCHPADS, EVT_PONS_TOKEN_LAUNCHED,
+                                         EVT_PONS_V2_TOKEN_LAUNCHED)
+    assert LAUNCHPADS["pons"]["address"].lower() != LAUNCHPADS["pons-v2"]["address"].lower()
+    assert EVT_PONS_TOKEN_LAUNCHED != EVT_PONS_V2_TOKEN_LAUNCHED
+
+
+def test_pons_v2_token_launched_matches_keccak_of_the_documented_signature():
+    from cambrian.runners.config import EVT_PONS_V2_TOKEN_LAUNCHED
+    sig = b"TokenLaunched(address,address,address,address,uint256,uint256)"
+    assert EVT_PONS_V2_TOKEN_LAUNCHED == "0x" + _keccak(sig).hex()
+
+
+def test_pons_v2_curve_events_match_keccak():
+    from cambrian.runners.config import (EVT_PONS_V2_CURVE_BUY, EVT_PONS_V2_CURVE_SELL)
+    assert EVT_PONS_V2_CURVE_BUY == "0x" + _keccak(
+        b"CurveBuy(address,address,uint256,uint256,uint256,uint256)").hex()
+    assert EVT_PONS_V2_CURVE_SELL == "0x" + _keccak(
+        b"CurveSell(address,address,uint256,uint256,uint256,uint256)").hex()
+
+
+def test_pons_v2_meme_hook_identifies_the_pad():
+    # A graduated v2 pool sits behind this hook, and hook match outranks suffix.
+    from cambrian.runners.config import PONS_V2
+    assert pad_of("0x1111111111111111111111111111111111111111",
+                  PONS_V2["meme_hook"]) == "pons-v2"
+
+
+def test_every_watched_pad_has_a_launch_event():
+    # Fail-closed guard: a pad with a blank created_topic0 is silently skipped by
+    # discover_fresh, which is how pons and flap went unwatched for so long.
+    from cambrian.runners.config import LAUNCHPADS
+    for name, pad in LAUNCHPADS.items():
+        assert pad.get("created_topic0"), name

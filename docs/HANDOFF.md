@@ -158,6 +158,11 @@ pons  0xA5aAb3F0c6EeadF30Ef1D3Eb997108E976351feB   ~105 launches / 40k blocks
                     uint256,uint256,uint256,uint256,uint256)
         0xdb51ea9ad51ab453a65a4cb7e60c3cb378c9501bb002609f8f97778fb6c4235a
 
+pons-v2 0x7eD598BcEf8bd9Edd8C97A195C6d13f40801EC7e  ~31% of all Pons launches
+      TokenLaunched(address,address,address,address,uint256,uint256)
+        0x8d4aad4953d0ca700d468f3753aa14432d1b35b43ec6409f051fb6aa43a89607
+      meme hook 0xE5e702641Ea86F4ae6cC3cDaeD2B886f976Be044  (graduated v4 pools)
+
 flap  0x26605f322f7fF986f381bB9A6e3f5DAb0bEaEb09   ~403 launches / 40k blocks
       TransparentUpgradeableProxy -> impl 0x7bc20c2c..fa06, named `Portal`
       launch    0x504e7f360b2e5fe33cbaaae4c593bc55305328341bf79009e43e0e3b7f699603
@@ -214,6 +219,37 @@ Sign convention: `decode_v2_swap` folds V2's four unsigned legs into v3's signed
 pool-perspective form (`in - out`), so `aggregate_swaps` works with invert=False
 like v3. Only v4 inverts. A test pins this — get it wrong and every V2 buy reads
 as a sell, which is exactly the bug that once hit v4.
+
+### Pons v1 vs v2 — they are DIFFERENT protocols
+
+Found by auditing `docs.ponsfamily.com/v2` against config. Everything this file
+said about "pons" is **v1**. Pons **v2** is a separate deployment: different
+factory, different `TokenLaunched` signature, different venue. We were watching
+only v1, so ~31% of Pons launches were invisible (16 v2 vs 35 v1 over the same
+12k blocks). Same bug class as watching one of the two Liquidity Launchers.
+
+| | v1 | v2 |
+| --- | --- | --- |
+| factory | `0xA5aAb3F0..1feB` | `0x7eD598Bc..EC7e` |
+| topic2 of TokenLaunched | deployer | **curve** |
+| venue | Uniswap **v3** pool at launch | bonding curve → **v4** at graduation |
+| pair asset | WETH | native ETH (`0x0`) **or approved ERC-20** |
+
+Three traps in v2 specifically:
+
+- **Do not reuse the v1 field layout.** v1's topic2 is the deployer; v2's is the
+  per-token bonding-curve contract. Trade history lives on that curve, not a pool.
+- **Pair asset is not always WETH.** Sampled live: two launches against
+  `0x000..0` (native ETH) and one against a custom ERC-20. A WETH-only filter
+  drops them silently, which looks exactly like "no launches found".
+- **The docs' 99% snipe tax is not active.** They describe a snipe tax opening at
+  99% and decaying to zero over 5 seconds. Measured across every sampled launch
+  (`launchConfigId` 0), buys landing in the launch block itself paid **1.00% fee,
+  0.00% tax**. It is a per-launch-config parameter, so read fee/tax off `CurveBuy`
+  rather than trusting either the doc's 99% or the observed 1%.
+
+Everything else in Pons's docs matched what we already had exactly: both factory
+addresses, both start blocks, the locker, and the v1 `TokenLaunched` topic0.
 
 ### The tax gate — owner's hard rule: never above 3%
 
