@@ -49,6 +49,11 @@ BRAIN = os.getenv("RH_BRAIN", "math").lower()
 # and still rejects sniped and wallet-farmed ones.
 CONF_MIN = float(os.getenv("RH_CONF_MIN", "0.60"))
 AGREE_MIN = int(os.getenv("RH_AGREE_MIN", "2"))
+# A failing sell quote IS the rug signal. Tolerate this many consecutive failures
+# (transient API blips) before declaring a position unsellable and writing it to 0.
+RUG_FAILS = int(os.getenv("RH_RUG_FAILS", "3"))
+# Exit if a held pool's liquidity collapses to this fraction of its entry depth.
+LIQ_COLLAPSE = float(os.getenv("RH_LIQ_COLLAPSE", "0.35"))
 RUNGS = [(2.0, 0.50), (3.0, 0.25), (5.0, 0.15)]
 STATE_FILE = os.getenv("RH_STATE", os.path.expanduser("~/cambrian_state.json"))
 TRADES_FILE = os.getenv("RH_TRADES", os.path.expanduser("~/cambrian_trades.jsonl"))
@@ -595,7 +600,9 @@ def open_paper(token, symb, pad, agent, reason, ctx=None):
     BOOK[token] = {"token": token, "sym": symb, "pad": pad, "agent": agent,
                    "tokens": tokens, "cost": usd_in, "entry": entry,
                    "stop": entry * (1 - STOP_PCT), "tp": entry * TP_MULT,
-                   "peak": entry, "rungs": [], "banked": 0.0, "flow_at": 0,
+                   "peak": entry, "rungs": [], "banked": 0.0, "flow_at": 0, "liq_at": 0,
+                   "fails": 0, "unsellable": False,
+                   "liq0": ((ctx or {}).get("feat", {}) or {}).get("liq"),
                    "opened": time.time(), "reason": reason,
                    "ctx": (ctx or {}), "feat": (ctx or {}).get("feat", {})}
     BLOTTER.append({"t": now_hms(), "side": "BUY", "token": token, "sym": symb,
@@ -643,6 +650,23 @@ def close_paper(token, value, why):
 
 
 MARKED = [0.0]
+
+
+def pool_liquidity(p):
+    """Current depth of a held position's pool. An LP pull shows up here long
+    before anything else, and it is the failure mode that a contract-level
+    honeypot check cannot see."""
+    c = p.get("ctx") or {}
+    pool, ver, q0 = c.get("pool"), c.get("ver"), c.get("q0")
+    if not pool:
+        return None
+    try:
+        if ver == "v4":
+            return v4liq(pool, q0)
+        bal = int(rpc("eth_call", [{"to": WETH, "data": "0x70a08231" + "0" * 24 + pool[2:]}, "latest"]), 16)
+        return bal / 1e18 * WETH_USD * 2
+    except Exception:
+        return None
 
 
 def live_flow(p):
@@ -695,7 +719,19 @@ def exit_decision(p, px):
         if net is not None and net < 0 and mult > 1.0:
             return "close", 1.0, "flow reversed"
 
-    # 5. time stop — a quiet pool is dead capital
+    # 5. liquidity pulled out from under us — exit at any price, immediately
+    if time.time() - p.get("liq_at", 0) > 20:
+        p["liq_at"] = time.time()
+        liq = pool_liquidity(p)
+        if liq is not None:
+            base = p.get("liq0")
+            if base is None:
+                p["liq0"] = base = max(liq, 1.0)
+            p["liq"] = liq
+            if liq < base * LIQ_COLLAPSE:
+                return "close", 1.0, "liquidity pulled (%.0f%% of entry)" % (100 * liq / base)
+
+    # 6. time stop — a quiet pool is dead capital
     if (time.time() - p["opened"]) / 60 > MAX_HOLD_MIN and not p["rungs"]:
         return "close", 1.0, "time stop %dm" % MAX_HOLD_MIN
     return None, 0.0, ""
@@ -711,8 +747,22 @@ def mark_and_exit():
         return
     vals = list(POOL.map(lambda kv: sell_value(kv[0], kv[1]["tokens"]), items))
     for (token, p), val in zip(items, vals):
-        if val is None or token not in BOOK:
+        if token not in BOOK:
             continue
+        if val is None:
+            # Cannot get a sell quote. That is the honeypot / pulled-liquidity
+            # signature. Never skip — skipping preserves the last good mark and
+            # makes a rug render as a permanent winner.
+            p["fails"] = p.get("fails", 0) + 1
+            p["value"] = 0.0
+            p["mark"] = 0.0
+            p["upnl"] = -p["cost"]
+            p["unsellable"] = True
+            if p["fails"] >= RUG_FAILS:
+                close_paper(token, 0.0, "unsellable / rug")
+            continue
+        p["fails"] = 0
+        p["unsellable"] = False
         px = val / p["tokens"] if p["tokens"] else 0
         p["mark"] = px
         p["value"] = val
@@ -743,7 +793,8 @@ def publish(block):
                     "chg": round(100 * ((p.get("mark", p["entry"]) / p["entry"]) - 1), 1),
                     "opened": int(p["opened"]), "mc": (round(p["mc"]) if p.get("mc") else None),
                     "peak_mult": round(max(p.get("peak", p["entry"]) / p["entry"], 1.0), 2),
-                    "rungs": len(p.get("rungs") or []), "banked": round(p.get("banked", 0.0), 2)}
+                    "rungs": len(p.get("rungs") or []), "banked": round(p.get("banked", 0.0), 2),
+                    "unsellable": bool(p.get("unsellable"))}
                    for p in pos],
         closed=[{"token": c["token"], "sym": c["sym"], "pad": c["pad"],
                  "cost": round(c["cost"], 2), "exit_value": c["exit_value"],
@@ -798,7 +849,9 @@ def scan_and_trade():
         if liq is None or liq < MIN_LIQ or m["gross"] < MIN_GROSS:
             return None
         pad, verified = pad_and_verify(tok, hook, txh)
-        sellable = True if verified else honeypot_ok(tok)
+        # Check every candidate, verified pad or not: pad verification proves the
+        # CONTRACT is standard, it does not prove the liquidity stays.
+        sellable = honeypot_ok(tok)
         fo = fanout(tok, life, pool)
         symb = symbol(tok)
         sup, _d = supply(tok)
