@@ -118,13 +118,22 @@ def v2_pool_swap_metrics(client: ChainClient, pair: str, *, from_block: str,
 
 
 def v2_pool_depth_usd(client: ChainClient, pair: str, *, weth_is_token0: bool,
-                      weth_usd: float) -> float | None:
-    """Exact quote-side depth for a V2 pair (reserves, not an estimate)."""
-    from .uniswap_v2 import liquidity_usd_from_reserves, read_reserves
+                      weth_usd: float, quote_token: str | None = None) -> float | None:
+    """Quote-side depth for a V2 pair, checked against what it really holds.
+
+    `getReserves()` alone is not proof of assets here: flap's pairs report virtual
+    reserves while the assets sit in the Portal. Passing `quote_token` adds one
+    `balanceOf` and caps the answer at the real balance, so a pre-graduation shell
+    reads as 0 depth instead of a healthy pool.
+    """
+    from .uniswap_v2 import (liquidity_usd_from_reserves, read_real_backing,
+                             read_reserves)
     try:
-        return liquidity_usd_from_reserves(read_reserves(client, pair),
-                                           quote_is_token0=weth_is_token0,
-                                           quote_price_usd=weth_usd)
+        quote = quote_token or rcfg.CONTRACTS["weth"]
+        return liquidity_usd_from_reserves(
+            read_reserves(client, pair), quote_is_token0=weth_is_token0,
+            quote_price_usd=weth_usd,
+            real_backing=read_real_backing(client, pair, quote))
     except Exception:
         return None
 
