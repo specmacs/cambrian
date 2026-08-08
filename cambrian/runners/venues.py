@@ -247,6 +247,31 @@ def round_trip(v: Venue, quote_in: int) -> dict | None:
 
 # --- the gate ---------------------------------------------------------------
 
+def is_stock_paired(v: Venue) -> bool:
+    """Is this launch denominated in a canonical Robinhood Stock Token?
+
+    Registry membership only. A launch paired against an impostor ERC-20 named
+    "AAPL" would otherwise inherit the looser stock tax ceiling while its quote
+    asset is worthless — the docs warn explicitly that matching tickers prove
+    nothing.
+    """
+    from .stock_tokens import is_stock_token
+    return is_stock_token(v.quote_token)
+
+
+def max_tax_for(v: Venue) -> int:
+    """The tax ceiling that applies to this venue.
+
+    Stock-paired Pons launches are a category the desk WANTS, and they run ~5%
+    creator tax, which the standard 3% rule would reject wholesale — roughly 60%
+    of Pons v2 launches are stock-paired, so that is most of the pad. They get
+    their own ceiling rather than a blanket loosening: a 5% limit applied
+    everywhere would also wave through half of flap.
+    """
+    from .flap_tax import MAX_TAX_BPS
+    return rcfg.STOCK_PAIRED_MAX_TAX_BPS if is_stock_paired(v) else MAX_TAX_BPS
+
+
 def tradeable(v: Venue, *, max_tax_bps: int | None = None,
               require_backing: bool = False) -> dict:
     """Should the desk touch this at all? Returns {ok, reasons}.
@@ -255,8 +280,7 @@ def tradeable(v: Venue, *, max_tax_bps: int | None = None,
     first because it is a certain loss rather than a risk — a token can be
     perfectly liquid, perfectly sellable, and still hand back 10% on exit.
     """
-    from .flap_tax import MAX_TAX_BPS
-    limit = MAX_TAX_BPS if max_tax_bps is None else max_tax_bps
+    limit = max_tax_for(v) if max_tax_bps is None else max_tax_bps
     reasons: list[str] = []
     if v.tax_bps is not None and v.tax_bps > limit:
         reasons.append(f"tax {v.tax_bps / 100:.2g}% > {limit / 100:.0f}%")

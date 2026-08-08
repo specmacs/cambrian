@@ -204,6 +204,26 @@ def _load_base_pools(client, dexes=None):
     return pools, errors
 
 
+
+def cmd_sweep(args: argparse.Namespace) -> int:
+    """One pass over every launchpad: discover, price, gate, size, rank."""
+    from .chain import ChainClient
+    from .runners import config as rcfg
+    from .runners.scanner import format_sweep, sweep
+
+    client = ChainClient()
+    latest = client.block_number()
+    result = sweep(client, from_block=max(latest - args.blocks, 0), to_block=latest,
+                   quote_price_usd=args.weth_usd or rcfg.WETH_USD,
+                   bankroll_usd=args.bankroll)
+    print(format_sweep(result, limit=args.n))
+    if args.json:
+        print(json.dumps(result["rows"], indent=2, default=str))
+    # Non-zero when the scan was incomplete: a partial sweep must not read as a
+    # quiet market to whatever is calling this.
+    return 1 if result["failed_chunks"] else 0
+
+
 def cmd_scan_base(args: argparse.Namespace) -> int:
     from .feeds.cambrian_api import CambrianClient, CambrianError
     from . import base_config
@@ -767,6 +787,17 @@ def build_parser() -> argparse.ArgumentParser:
     sb.add_argument("--raw", action="store_true",
                     help="print the real column names from one DEX (to confirm ALIASES)")
     sb.set_defaults(func=cmd_scan_base)
+
+    sw = sub.add_parser("sweep",
+                        help="scan every launchpad: discover, price, gate, size")
+    sw.add_argument("--blocks", type=int, default=1200,
+                    help="how far back to scan (default 1200 ~ 2 min)")
+    sw.add_argument("--bankroll", type=float, default=None,
+                    help="account size in USD for position sizing")
+    sw.add_argument("--weth-usd", type=float, default=None, dest="weth_usd")
+    sw.add_argument("-n", type=int, default=25, help="max rows to show")
+    sw.add_argument("--json", action="store_true", help="also emit raw rows as JSON")
+    sw.set_defaults(func=cmd_sweep)
 
     fd = sub.add_parser("field",
                         help="best APY across the whole field (LP + lending), ranked")

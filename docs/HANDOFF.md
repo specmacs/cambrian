@@ -300,6 +300,50 @@ slippage, so size the entry off curve depth separately.
 
 (These are QUOTES, not fills. The desk has no signing path — nothing was traded.)
 
+### Stock-paired launches — priced properly, and apeable
+
+~60% of Pons v2 launches are paired against a **Robinhood Stock Token** (GME,
+SPY, AAPL, TSLA, SPCX, COIN, NVDA, MU, CRCL, PLTR ...) rather than ETH. Two
+consequences, both handled in `runners/stock_tokens.py`:
+
+**The quote asset is not worth the ETH price.** A SPY-quoted launch is
+denominated in a ~$773 asset, a GME-quoted one in ~$19. Since sizing is a
+fraction of market cap, valuing either at the ETH price mis-sizes every ticket.
+Prices come from Robinhood's public API, mid of bid/ask, **times the
+corporate-action multiplier** — a live 4.0 on CRWD means one token represents
+four post-split shares, so skipping it prices the token at a quarter of its
+worth. An unknown quote asset returns None and BLOCKS, rather than silently
+falling back to ETH.
+
+```
+GET https://api.robinhood.com/rhj/assets            96 tokens on chain 4663
+GET https://api.robinhood.com/rhj/prices/{symbol}   60 req/s, 15s cache
+```
+
+**They run ~5% creator tax, and the owner wants them traded.** So stock-paired
+launches get `STOCK_PAIRED_MAX_TAX_BPS` (500) instead of the 3% house rule.
+Deliberately not a blanket raise — 5% everywhere would wave through half of flap,
+which is exactly the flow the 3% rule exists to exclude.
+
+⚠️ **Canonical membership only.** Robinhood's docs are explicit: a token with a
+matching ticker but a different address is NOT a stock token. Anyone can deploy
+an ERC-20 called AAPL and pair a launch against it; that launch would look
+stock-backed while its quote asset is worthless — and would inherit the looser
+tax ceiling. `is_stock_token()` checks the registry, never the name.
+
+### The sweep — one command that does the whole job
+
+```
+RH_RPC_URL=... python -m cambrian sweep --blocks 1200 --bankroll 1000
+```
+
+`runners/scanner.py` discovers across every pad, resolves each token to a venue,
+prices its quote asset, gates it, sizes it, and ranks it. Blocked rows are shown
+WITH their reason: a scanner that prints only what passed makes a broken gate
+look like a quiet market, which is how pons and flap sat unwatched for weeks.
+Exit code is non-zero when any log chunk failed, so a partial scan cannot be
+mistaken for a quiet one.
+
 ### The tax gate — owner's hard rule: never above 3%
 
 Enforced in `runners/flap_tax.py` and wired into `agent_safety`, where it outranks

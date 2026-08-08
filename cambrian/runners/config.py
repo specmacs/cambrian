@@ -443,3 +443,22 @@ class RunnerPolicy:
 
 
 RUNNER = RunnerPolicy()
+
+# --- Robinhood Stock Tokens as quote assets ----------------------------------
+# ~60% of Pons v2 launches are paired against a tokenized stock (GME, SPY, AAPL,
+# TSLA, SPCX, ...) rather than ETH. Two consequences the desk must respect:
+#
+# 1. Those quote assets are NOT worth the ETH price. A SPY-quoted launch is
+#    denominated in a ~$773 asset, a GME-quoted one in ~$19. Sizing is a fraction
+#    of market cap, so mispricing the quote asset mis-sizes every ticket.
+#    runners/stock_tokens.py resolves the real USD price from Robinhood's public
+#    registry + price API, with the corporate-action multiplier applied.
+# 2. They run a HIGHER creator tax than the 3% house rule allows — about 5%. The
+#    owner wants these traded, so stock-paired launches get their own ceiling.
+#    Deliberately not a blanket raise: 5% everywhere would also wave through half
+#    of flap, which is the flow the 3% rule exists to keep out.
+#
+# Canonical membership is registry-only. Robinhood's docs are explicit that a
+# token with a matching ticker but a different address is NOT a stock token, so
+# never identify one by name.
+STOCK_PAIRED_MAX_TAX_BPS = int(os.getenv("RH_STOCK_MAX_TAX_BPS", "500"))

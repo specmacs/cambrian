@@ -156,3 +156,137 @@ def test_plan_entry_explains_every_refusal():
     for v in (_curve(pricing_reserves=None), _curve(tax_bps=5000)):
         plan = S.plan_entry(v, quote_price_usd=3000.0)
         assert plan["ok"] is False and plan["reasons"]
+
+
+# --- the sweep --------------------------------------------------------------
+
+class _FakeClient:
+    """Replays a fixed log set, and errors on any range wider than the cap."""
+    def __init__(self, per_call=None, cap=1500, fail_all=False):
+        self.per_call = per_call or {}
+        self.cap, self.fail_all, self.calls = cap, fail_all, []
+
+    def get_logs(self, *, address=None, topics=None, from_block=None, to_block=None):
+        lo, hi = int(from_block, 16), int(to_block, 16)
+        self.calls.append((lo, hi))
+        if hi - lo > self.cap or self.fail_all:
+            raise RuntimeError("requested logs from too many blocks")
+        return self.per_call.get((address or "").lower(), [])
+
+    def eth_call(self, to, data):
+        return "0x"
+
+
+def test_chunked_logs_splits_to_respect_the_node_cap():
+    # A single 10k-block request errors on this RPC; the scanner must never issue
+    # one, or it silently reports zero launches.
+    from cambrian.runners.scanner import chunked_logs
+    c = _FakeClient(cap=1500)
+    logs, failed = chunked_logs(c, address="0xa", topics=["0xt"],
+                                from_block=0, to_block=10_000, span=1500)
+    assert failed == 0
+    assert all(hi - lo <= 1500 for lo, hi in c.calls)
+    assert len(c.calls) == 7
+
+
+def test_chunked_logs_reports_failures_instead_of_hiding_them():
+    # A swallowed failure is indistinguishable from a quiet market.
+    from cambrian.runners.scanner import chunked_logs
+    c = _FakeClient(fail_all=True)
+    logs, failed = chunked_logs(c, address="0xa", topics=["0xt"],
+                                from_block=0, to_block=3000, span=1500)
+    # 0-1500 and 1501-3000: two chunks, both failing, neither hidden
+    assert logs == [] and failed == 2
+
+
+def test_sweep_surfaces_incomplete_scans_in_its_summary():
+    from cambrian.runners.scanner import format_sweep
+    txt = format_sweep({"rows": [], "scanned_blocks": 3000, "found": 0,
+                        "tradeable": 0, "failed_chunks": 2})
+    assert "CHUNKS FAILED" in txt
+
+
+def test_sweep_keeps_blocked_rows_with_their_reasons():
+    # Showing only passes makes a broken gate look like a quiet market.
+    from cambrian.runners.scanner import format_sweep
+    txt = format_sweep({"rows": [{"pad": "flap", "token": "0xdead", "ok": False,
+                                  "reasons": ["tax 10% > 3%"], "market_cap_usd": 5200,
+                                  "size_usd": None, "tax_bps": 1000}],
+                        "scanned_blocks": 1500, "found": 1, "tradeable": 0,
+                        "failed_chunks": 0})
+    assert "tax 10% > 3%" in txt and "flap" in txt
+
+
+# --- stock-token quote assets -----------------------------------------------
+
+def _stub_registry(monkeypatch, mapping):
+    from cambrian.runners import stock_tokens as ST
+    ST._registry = {k.lower(): v for k, v in mapping.items()}
+    ST._registry_at = 1e18          # far future: never refetch during a test
+    return ST
+
+
+def test_stock_token_identity_is_registry_membership_not_ticker(monkeypatch):
+    # RH's docs: a token with a matching ticker but a different address is NOT a
+    # stock token. An impostor "AAPL" must not inherit the looser tax ceiling.
+    ST = _stub_registry(monkeypatch, {
+        "0xaaa": {"symbol": "AAPL", "name": "Apple", "multiplier": 1.0}})
+    assert ST.is_stock_token("0xAAA") is True
+    assert ST.is_stock_token("0xbbb") is False
+
+
+def test_stock_paired_launches_get_the_higher_tax_ceiling(monkeypatch):
+    from cambrian.runners import config as rcfg
+    from cambrian.runners.flap_tax import MAX_TAX_BPS
+    _stub_registry(monkeypatch, {"0xspy": {"symbol": "SPY", "name": "S&P",
+                                           "multiplier": 1.0}})
+    stock = _curve(quote_token="0xspy", tax_bps=500)
+    eth = _curve(quote_token=V.NATIVE_ETH, tax_bps=500)
+    assert V.max_tax_for(stock) == rcfg.STOCK_PAIRED_MAX_TAX_BPS
+    assert V.max_tax_for(eth) == MAX_TAX_BPS
+    # 5% is exactly the observed stock-pair rate: apeable there, blocked elsewhere
+    assert V.tradeable(stock)["ok"] is True
+    assert V.tradeable(eth)["ok"] is False
+
+
+def test_stock_ceiling_does_not_leak_to_flap(monkeypatch):
+    # A blanket 5% would wave through half of flap, which is the flow the 3% rule
+    # exists to keep out.
+    _stub_registry(monkeypatch, {"0xspy": {"symbol": "SPY", "multiplier": 1.0}})
+    flap = _curve(kind=V.FLAP, quote_token="0xweth", tax_bps=500)
+    assert V.tradeable(flap)["ok"] is False
+
+
+def test_quote_price_resolves_each_asset_class(monkeypatch):
+    ST = _stub_registry(monkeypatch, {"0xspy": {"symbol": "SPY", "multiplier": 1.0}})
+    monkeypatch.setattr(ST, "usd_price", lambda a, **k: 773.34)
+    assert ST.quote_price_usd(V.NATIVE_ETH, weth_usd=3000.0) == 3000.0
+    assert ST.quote_price_usd("0xWETH", weth_usd=3000.0, weth="0xweth") == 3000.0
+    assert ST.quote_price_usd("0xUSDG", weth_usd=3000.0, usdg="0xusdg") == 1.0
+    assert ST.quote_price_usd("0xspy", weth_usd=3000.0) == 773.34
+
+
+def test_unknown_quote_asset_blocks_rather_than_defaulting_to_eth(monkeypatch):
+    # Sizing is a fraction of market cap, so silently substituting the ETH price
+    # for an unknown quote asset would mis-size every ticket against it.
+    ST = _stub_registry(monkeypatch, {})
+    assert ST.quote_price_usd("0xmystery", weth_usd=3000.0) is None
+
+
+def test_corporate_action_multiplier_is_applied(monkeypatch):
+    # A live 4.0 multiplier (CRWD): one token represents four post-split shares,
+    # so ignoring it prices the token at a quarter of its worth.
+    from cambrian.runners import stock_tokens as ST
+    _stub_registry(monkeypatch, {"0xcrwd": {"symbol": "CRWD", "multiplier": 4.0}})
+    ST._prices["CRWD"] = (100.0, 1e18)      # cached mid, far-future timestamp
+    assert ST.usd_price("0xcrwd", now=1e18) == 400.0
+
+
+def test_stock_price_uses_the_mid_not_one_side(monkeypatch):
+    # GME quoted 19.08/19.99 live; taking a side would bias every market cap.
+    from cambrian.runners import stock_tokens as ST
+    _stub_registry(monkeypatch, {"0xgme": {"symbol": "GME", "multiplier": 1.0}})
+    ST._prices.pop("GME", None)
+    monkeypatch.setattr(ST, "_get", lambda url, timeout=10.0: {
+        "quotes": [{"bid": "19.08", "ask": "19.99"}]})
+    assert ST.usd_price("0xgme") == (19.08 + 19.99) / 2
