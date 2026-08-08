@@ -41,10 +41,14 @@ TRAIL_ARM = float(os.getenv("RH_TRAIL_ARM", "1.35"))
 TRAIL_GIVE = float(os.getenv("RH_TRAIL_GIVE", "0.22"))
 FLOW_EXIT = os.getenv("RH_FLOW_EXIT", "1") not in ("0", "false")
 MAX_HOLD_MIN = float(os.getenv("RH_MAX_HOLD_MIN", "45"))
-# The deterministic score is a CHEAP PRE-FILTER, not the decision. Anything alive
-# and not a honeypot goes to the model — that is the whole point of having a PM.
-# Raise this only to cut inference spend, never to "improve" selection.
-PM_MIN_CONF = float(os.getenv("RH_PM_MIN_CONF", "0.20"))
+# Who decides: "math" (instant, backtestable), "llm" (judgment, ~1-3s per call),
+# "hybrid" (math must pass AND the model confirms).
+BRAIN = os.getenv("RH_BRAIN", "math").lower()
+# Calibrated against real observed launches. agree>=3 never fired because momentum
+# needs 75%+ buys to clear 0.5; at >=2 the gate selects clean, accumulating pools
+# and still rejects sniped and wallet-farmed ones.
+CONF_MIN = float(os.getenv("RH_CONF_MIN", "0.60"))
+AGREE_MIN = int(os.getenv("RH_AGREE_MIN", "2"))
 RUNGS = [(2.0, 0.50), (3.0, 0.25), (5.0, 0.15)]
 STATE_FILE = os.getenv("RH_STATE", os.path.expanduser("~/cambrian_state.json"))
 TRADES_FILE = os.getenv("RH_TRADES", os.path.expanduser("~/cambrian_trades.jsonl"))
@@ -398,18 +402,15 @@ def confluence(sig, verified, sellable):
     agree = sum(1 for v in sig.values() if v >= 0.5)
     if not (verified or sellable is True):
         return score, agree, "BLOCKED"
-    if score >= 0.6 and agree >= 3:
+    if score >= CONF_MIN and agree >= AGREE_MIN:
         return score, agree, "STRONG"
-    if score >= 0.4 and agree >= 2:
+    if score >= CONF_MIN * 0.65 and agree >= max(AGREE_MIN - 1, 1):
         return score, agree, "watch"
     return score, agree, "weak"
 
 
 SYS = ("You are the PM of an automated memecoin desk on Robinhood Chain. Analysts "
-       "scored a fresh launch that passed the honeypot gate. THE CALL IS YOURS — the "
-       "scores are inputs, not a verdict, and a low score is not automatically a "
-       "pass. Most fresh launches are skips; buy only when real money is flowing "
-       "in and the launch is not bot-sniped or wallet-farmed. If a "
+       "scored a fresh launch that passed the honeypot gate. Decide. Be strict. If a "
        "desk_track_record is given, weigh it: it is this desk's own realised base "
        "rates on comparable setups, not theory. "
        'Reply ONLY JSON: {"decision":"buy"|"skip","confidence":0..1,"reason":"<=8 words"}.')
@@ -462,7 +463,7 @@ WALLETS = load_wallets()
 
 # ---- paper book -------------------------------------------------------------
 STATE = {"block": 0, "updated": "starting...", "err": "", "mode": "PAPER",
-         "model": LLM_MODEL if LLM_KEY else "confluence only", "size": SIZE_USD,
+         "model": (LLM_MODEL if (LLM_KEY and BRAIN != "math") else "math"), "brain": BRAIN, "size": SIZE_USD,
          "equity": 0.0, "realized": 0.0, "unrealized": 0.0, "wins": 0, "losses": 0,
          "positions": [], "closed": [], "blotter": [], "scouting": [], "trace": [], "marked": None, "now": 0, "scan_ms": None, "memory": {},
          "wallets": len(WALLETS), "eth": WETH_USD, "agents": [
@@ -616,6 +617,7 @@ def trim_paper(token, frac, why):
     p["tokens"] -= qty
     p["cost"] -= cost_part
     p["banked"] = p.get("banked", 0.0) + val
+    p["realised"] = p.get("realised", 0.0) + (val - cost_part)
     BLOTTER.append({"t": now_hms(), "side": "SELL", "token": token, "sym": p["sym"],
                     "pad": p["pad"], "agent": p["agent"], "usd": round(val, 2),
                     "pnl": round(val - cost_part, 2)})
@@ -634,7 +636,7 @@ def close_paper(token, value, why):
     REALIZED[0] += pnl
     CLOSED.append({**p, "exit_value": round(value, 2), "pnl": round(pnl, 2),
                    "why": why, "closed": time.time()})
-    record_outcome(p, pnl + p.get("banked", 0.0), why)
+    record_outcome(p, pnl + p.get("realised", 0.0), why)   # profit, not proceeds
     BLOTTER.append({"t": now_hms(), "side": "SELL", "token": token, "sym": p["sym"],
                     "pad": p["pad"], "agent": p["agent"], "usd": round(value, 2),
                     "pnl": round(pnl, 2)})
@@ -811,7 +813,7 @@ def scan_and_trade():
                "farm": ag_farm(fo), "mom": ag_mom(m["buys"], m["sells"])}
         conf, agree, tier = confluence(sig, verified, sellable)
         return {"pad": pad, "verified": verified, "token": tok, "sym": symb,
-                "conf": conf, "tier": tier, "net": round(m["net"]), "liq": round(liq),
+                "conf": conf, "agree": agree, "tier": tier, "net": round(m["net"]), "liq": round(liq),
                 "mc": round(sup * px) if (sup and px) else None,
                 "_m": m, "_fo": fo,
                 "_ctx": {"pool": pool, "ver": ver, "q0": q0,
@@ -823,22 +825,26 @@ def scan_and_trade():
     # decisions stay serial: the PM is the only place order matters, and it keeps
     # LLM spend predictable instead of firing a burst of parallel calls.
     for r in scouting:
-        # judge everything that survived the safety gate and shows any life —
-        # BLOCKED means honeypot/unsellable and is never negotiable.
-        if r["tier"] != "BLOCKED" and r["conf"] >= PM_MIN_CONF and r["token"] not in SEEN:
+        if r["tier"] == "STRONG" and r["token"] not in SEEN:
             m, fo = r["_m"], r["_fo"]
-            facts = {"ticker": r["sym"], "pad": r["pad"],
-                     "pad_verified": r["verified"], "net_flow_usd": r["net"],
-                     "gross_volume_usd": round(m["gross"]), "liquidity_usd": r["liq"],
-                     "market_cap_usd": r["mc"], "sniper_share": round(m["snipe"], 2),
-                     "transfer_fanout": fo, "buys": m["buys"], "sells": m["sells"],
-                     "buy_ratio": round(m["buys"] / max(m["buys"] + m["sells"], 1), 2),
-                     "confluence_score": r["conf"], "confluence_tier": r["tier"]}
-            mb = memory_brief()
-            if mb:
-                facts["desk_track_record"] = mb
-            v = pm(facts)
             SEEN.add(r["token"])
+            if BRAIN == "math":
+                # No model call: the gate already cleared it. Microseconds, not
+                # seconds — and every decision here is replayable for backtesting.
+                v = {"decision": "buy", "confidence": r["conf"],
+                     "reason": "confluence %.2f, %d signals" % (r["conf"], r.get("agree", 0))}
+            else:
+                facts = {"ticker": r["sym"], "pad": r["pad"], "pad_verified": r["verified"],
+                         "net_flow_usd": r["net"], "gross_volume_usd": round(m["gross"]),
+                         "liquidity_usd": r["liq"], "market_cap_usd": r["mc"],
+                         "sniper_share": round(m["snipe"], 2), "transfer_fanout": fo,
+                         "buys": m["buys"], "sells": m["sells"],
+                         "buy_ratio": round(m["buys"] / max(m["buys"] + m["sells"], 1), 2),
+                         "confluence_score": r["conf"]}
+                mb = memory_brief()
+                if mb:
+                    facts["desk_track_record"] = mb
+                v = pm(facts)
             TRACE.append({"t": now_hms(), "agent": "A · Sniper", "sym": r["sym"],
                           "token": r["token"], "pad": r["pad"], "decision": v["decision"],
                           "conf": r["conf"], "net": r["net"], "liq": r["liq"],
