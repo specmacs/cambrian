@@ -17,6 +17,7 @@ import os
 import sys
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import requests
@@ -27,7 +28,9 @@ LLM_MODEL = os.getenv("RH_LLM_MODEL", "claude-opus-4.7")
 LLM_KEY = (sys.argv[1] if len(sys.argv) > 1 else os.getenv("RH_LLM_KEY", "")).strip()
 PORT = int(os.getenv("RH_PORT", "8787"))
 INTERVAL = int(os.getenv("RH_INTERVAL", "20"))
-MARK_SECS = int(os.getenv("RH_MARK_SECS", "8"))
+MARK_SECS = float(os.getenv("RH_MARK_SECS", "2"))      # book re-price cadence
+FLASH_RPS = float(os.getenv("RH_FLASH_RPS", "5"))      # Flash limit: 5 req/s/endpoint
+POOL = ThreadPoolExecutor(max_workers=12)
 BLOCKS = int(os.getenv("RH_BLOCKS", "6000"))
 ENRICH = int(os.getenv("RH_ENRICH", "14"))
 SIZE_USD = float(os.getenv("RH_SIZE", "50"))
@@ -155,6 +158,22 @@ def txto(h):
 
 
 SYM_CACHE = {}
+SUPPLY_CACHE = {}
+
+
+def supply(token):
+    """(totalSupply, decimals) — immutable, so cache forever. Powers market cap."""
+    t = token.lower()
+    if t in SUPPLY_CACHE:
+        return SUPPLY_CACHE[t]
+    try:
+        ts = int(rpc("eth_call", [{"to": token, "data": "0x18160ddd"}, "latest"]), 16)
+        dc = int(rpc("eth_call", [{"to": token, "data": "0x313ce567"}, "latest"]), 16)
+        out = (ts / (10 ** dc) if dc <= 36 else None, dc)
+    except Exception:
+        out = (None, 18)
+    SUPPLY_CACHE[t] = out
+    return out
 
 
 def symbol(token):
@@ -233,6 +252,32 @@ def v4liq(pid, q0):
     return res / 1e18 * WETH_USD * 2
 
 
+class _Bucket:
+    """Token bucket. Parallelism is only useful if we stay under Flash's documented
+    5 req/s per endpoint — past that we get 429s and everything slows down."""
+
+    def __init__(self, rps):
+        self.rps = rps
+        self.allow = rps
+        self.t = time.time()
+        self.lk = threading.Lock()
+
+    def take(self):
+        while True:
+            with self.lk:
+                now = time.time()
+                self.allow = min(self.rps, self.allow + (now - self.t) * self.rps)
+                self.t = now
+                if self.allow >= 1:
+                    self.allow -= 1
+                    return
+                wait = (1 - self.allow) / self.rps
+            time.sleep(wait)
+
+
+QUOTE_BUCKET = _Bucket(FLASH_RPS)
+
+
 def fquote(target, contra, qty, side, quick=False):
     """quick=True reuses Flash's recently-computed quote (fast, for ENTRY). Never
     use it to VALUE a position — a cached quote freezes mark-to-market."""
@@ -241,6 +286,7 @@ def fquote(target, contra, qty, side, quick=False):
             "qty": str(qty), "orderType": "market", "maxSlippage": "0.2"}
     if quick:
         body["quickTrade"] = True
+    QUOTE_BUCKET.take()
     return requests.post(FLASH_BASE + "/quote", json=body, timeout=40,
                          headers={"content-type": "application/json",
                                   "x-definitive-api-key": FLASH_KEY}).json()
@@ -397,7 +443,7 @@ WALLETS = load_wallets()
 STATE = {"block": 0, "updated": "starting...", "err": "", "mode": "PAPER",
          "model": LLM_MODEL if LLM_KEY else "confluence only", "size": SIZE_USD,
          "equity": 0.0, "realized": 0.0, "unrealized": 0.0, "wins": 0, "losses": 0,
-         "positions": [], "closed": [], "blotter": [], "scouting": [], "trace": [], "marked": None, "now": 0,
+         "positions": [], "closed": [], "blotter": [], "scouting": [], "trace": [], "marked": None, "now": 0, "scan_ms": None,
          "wallets": len(WALLETS), "eth": WETH_USD, "agents": [
              {"id": "sniper", "name": "A · Sniper", "desc": "fresh launches", "on": True},
              {"id": "volume", "name": "B · Volume", "desc": "all-RH momentum", "on": False},
@@ -447,16 +493,23 @@ MARKED = [0.0]
 
 
 def mark_and_exit():
-    """Re-price every open position against a FRESH sell quote. Runs on its own
-    fast cadence so P&L doesn't sit frozen behind a slow discovery sweep."""
-    for token, p in list(BOOK.items()):
-        val = sell_value(token, p["tokens"])
+    """Re-price the whole book CONCURRENTLY against fresh sell quotes, then honour
+    stops/targets. Parallel because marking 8 positions one-at-a-time costs 8
+    round trips of latency; together it costs one."""
+    items = list(BOOK.items())
+    if not items:
+        MARKED[0] = time.time()
+        return
+    vals = list(POOL.map(lambda kv: sell_value(kv[0], kv[1]["tokens"]), items))
+    for (token, p), val in zip(items, vals):
         if val is None:
             continue
         px = val / p["tokens"] if p["tokens"] else 0
         p["mark"] = px
         p["value"] = val
         p["upnl"] = val - p["cost"]
+        sup, _d = supply(token)
+        p["mc"] = (sup * px) if sup else None
         if px <= p["stop"]:
             close_paper(token, val, "stop")
         elif px >= p["tp"]:
@@ -478,7 +531,7 @@ def publish(block):
                     "value": round(p.get("value", p["cost"]), 2),
                     "upnl": round(p.get("upnl", 0.0), 2),
                     "chg": round(100 * ((p.get("mark", p["entry"]) / p["entry"]) - 1), 1),
-                    "opened": int(p["opened"])} for p in pos],
+                    "opened": int(p["opened"]), "mc": (round(p["mc"]) if p.get("mc") else None)} for p in pos],
         closed=[{"token": c["token"], "sym": c["sym"], "pad": c["pad"],
                  "cost": round(c["cost"], 2), "exit_value": c["exit_value"],
                  "pnl": c["pnl"], "why": c["why"]} for c in CLOSED[-30:]][::-1],
@@ -487,6 +540,7 @@ def publish(block):
 
 
 def scan_and_trade():
+    _t0 = time.time()
     refresh_weth_price()
     block = int(rpc("eth_blockNumber", []), 16)
     now = bts("latest")
@@ -509,10 +563,13 @@ def scan_and_trade():
         tok = A(tp[2]) if w0 else A(tp[1])
         hits.append(("v3", tok, A(data[64:128]), "-", int(lg["blockNumber"], 16), w0, lg.get("transactionHash")))
     hits.sort(key=lambda h: -h[4])
-    scouting = []
-    for ver, tok, pool, hook, blk, q0, txh in hits[:ENRICH]:
+
+    def enrich(h):
+        """All the RPC/quote work for one candidate. Run in parallel across the
+        sweep — this is the difference between a scan taking minutes and seconds."""
+        ver, tok, pool, hook, blk, q0, txh = h
         if tok in BOOK:
-            continue
+            return None
         life = hex(max(blk - 1, 0))
         try:
             if ver == "v4":
@@ -523,31 +580,51 @@ def scan_and_trade():
                 bal = int(rpc("eth_call", [{"to": WETH, "data": "0x70a08231" + "0" * 24 + pool[2:]}, "latest"]), 16)
                 liq = bal / 1e18 * WETH_USD * 2
         except Exception:
-            continue
+            return None
         if liq is None or liq < MIN_LIQ or m["gross"] < MIN_GROSS:
-            continue
+            return None
         pad, verified = pad_and_verify(tok, hook, txh)
         sellable = True if verified else honeypot_ok(tok)
         fo = fanout(tok, life, pool)
+        symb = symbol(tok)
+        sup, _d = supply(tok)
+        px = None
+        try:
+            if sup:
+                one = sell_value(tok, max(sup * 1e-9, 1))     # tiny probe for unit price
+                px = (one / max(sup * 1e-9, 1)) if one else None
+        except Exception:
+            px = None
         sig = {"flow": ag_flow(m["net"], m["gross"]), "sniper": ag_sniper(m["snipe"]),
                "farm": ag_farm(fo), "mom": ag_mom(m["buys"], m["sells"])}
         conf, agree, tier = confluence(sig, verified, sellable)
-        symb = symbol(tok)
-        scouting.append({"pad": pad, "verified": verified, "token": tok, "sym": symb,
-                         "conf": conf, "tier": tier, "net": round(m["net"]),
-                         "liq": round(liq)})
-        if tier == "STRONG" and tok not in SEEN:
-            v = pm({"ticker": symb, "pad": pad, "net_flow_usd": round(m["net"]),
-                    "liquidity_usd": round(liq), "sniper_share": round(m["snipe"], 2),
-                    "fanout": fo, "buys": m["buys"], "sells": m["sells"], "confluence": conf})
-            SEEN.add(tok)
-            TRACE.append({"t": now_hms(), "agent": "A · Sniper", "sym": symb, "token": tok,
-                          "pad": pad, "decision": v["decision"], "conf": conf,
-                          "net": round(m["net"]), "liq": round(liq),
+        return {"pad": pad, "verified": verified, "token": tok, "sym": symb,
+                "conf": conf, "tier": tier, "net": round(m["net"]), "liq": round(liq),
+                "mc": round(sup * px) if (sup and px) else None,
+                "_m": m, "_fo": fo}
+
+    scouting = [r for r in POOL.map(enrich, hits[:ENRICH]) if r]
+    # decisions stay serial: the PM is the only place order matters, and it keeps
+    # LLM spend predictable instead of firing a burst of parallel calls.
+    for r in scouting:
+        if r["tier"] == "STRONG" and r["token"] not in SEEN:
+            m, fo = r["_m"], r["_fo"]
+            v = pm({"ticker": r["sym"], "pad": r["pad"], "net_flow_usd": r["net"],
+                    "liquidity_usd": r["liq"], "market_cap_usd": r["mc"],
+                    "sniper_share": round(m["snipe"], 2), "fanout": fo,
+                    "buys": m["buys"], "sells": m["sells"], "confluence": r["conf"]})
+            SEEN.add(r["token"])
+            TRACE.append({"t": now_hms(), "agent": "A · Sniper", "sym": r["sym"],
+                          "token": r["token"], "pad": r["pad"], "decision": v["decision"],
+                          "conf": r["conf"], "net": r["net"], "liq": r["liq"],
                           "reason": v["reason"] or "confluence"})
             if v["decision"] == "buy":
-                open_paper(tok, symb, pad, "sniper", v["reason"] or f"conf {conf}")
+                open_paper(r["token"], r["sym"], r["pad"], "sniper", v["reason"] or "confluence")
+    for r in scouting:
+        r.pop("_m", None)
+        r.pop("_fo", None)
     STATE["scouting"] = scouting[:14]
+    STATE["scan_ms"] = int((time.time() - _t0) * 1000)
     publish(block)
 
 
@@ -779,7 +856,7 @@ animation-duration:.01ms!important}.flash-up{animation:flash-up var(--dur-flash)
  <div class=panes id=v-desk>
   <div class="pane fill">
    <div class=ph><span class=label-micro>Positions</span><span class="tbmeta num" id=posn></span></div>
-   <div class=body><table><thead><tr><th>Instrument</th><th>Pad</th><th>Agent</th><th>Size</th>
+   <div class=body><table><thead><tr><th>Instrument</th><th>Pad</th><th>MC</th><th>Size</th>
     <th>Value</th><th>Δ</th><th>Unreal</th><th>Age</th></tr></thead><tbody id=positions></tbody></table></div>
   </div>
   <div class=pane style="height:38%">
@@ -796,7 +873,7 @@ animation-duration:.01ms!important}.flash-up{animation:flash-up var(--dur-flash)
  <div class=panes id=v-scout style=display:none>
   <div class="pane fill">
    <div class=ph><span class=label-micro>Scouting</span><span class=tbmeta>agent-proposed candidates</span></div>
-   <div class=body><table><thead><tr><th>Instrument</th><th>Pad</th><th>Net flow</th><th>Liquidity</th>
+   <div class=body><table><thead><tr><th>Instrument</th><th>Pad</th><th>MC</th><th>Net flow</th><th>Liquidity</th>
     <th>Confluence</th></tr></thead><tbody id=scoutfull></tbody></table></div>
   </div>
  </div>
@@ -813,7 +890,7 @@ animation-duration:.01ms!important}.flash-up{animation:flash-up var(--dur-flash)
   </div>
  </div>
  <div class=status><span>Block <b id=stblk>—</b></span><span>PM <b id=stpm>—</b></span>
-  <span>Size <b id=stsz>—</b></span><span>ETH <b id=steth>—</b></span><span>Marked <b id=stmk>—</b></span>
+  <span>Size <b id=stsz>—</b></span><span>ETH <b id=steth>—</b></span><span>Marked <b id=stmk>—</b></span><span>Scan <b id=stscan>—</b></span>
   <span class=grow></span><span id=sterr></span><span>Robinhood Chain</span></div>
 </main>
 <aside class=rail>
@@ -852,6 +929,11 @@ function tag(p,v){return `<span class="tag ${v?'ok':''}">${p}</span>`}
 function flash(id,val){const el=document.getElementById(id);if(!el)return;
  const p=PREV[id];if(p!==undefined&&p!==val){el.classList.remove('flash-up','flash-down');void el.offsetWidth;
  el.classList.add(val>p?'flash-up':'flash-down')}PREV[id]=val}
+// flash any cell tagged data-k whose value moved since the last frame
+function flashCells(){document.querySelectorAll('[data-k]').forEach(el=>{
+ const k=el.dataset.k,v=parseFloat(el.dataset.v);if(isNaN(v))return;
+ const p=PREV[k];if(p!==undefined&&p!==v){el.classList.remove('flash-up','flash-down');
+  void el.offsetWidth;el.classList.add(v>p?'flash-up':'flash-down')}PREV[k]=v})}
 document.querySelectorAll('.ni').forEach(n=>n.onclick=()=>{
  document.querySelectorAll('.ni').forEach(x=>x.classList.remove('on'));n.classList.add('on');
  ['desk','scout','wallets'].forEach(v=>document.getElementById('v-'+v).style.display=v==n.dataset.v?'':'none')});
@@ -890,12 +972,13 @@ async function tick(){let d;try{d=await(await fetch('/data')).json()}catch(e){re
  document.getElementById('stsz').textContent='$'+d.size;
  document.getElementById('steth').textContent='$'+(d.eth||0).toLocaleString();
  document.getElementById('stmk').textContent=d.marked==null?'—':d.marked+'s ago';
+ document.getElementById('stscan').textContent=(d.scan_ms!=null)?(d.scan_ms/1000).toFixed(1)+'s':'—';
  document.getElementById('sterr').innerHTML=d.err?`<span class=down>${d.err}</span>`:'';
  document.getElementById('positions').innerHTML=d.positions.length?d.positions.map(p=>
   `<tr data-origin=agent><td>${inst(p.sym,p.token,p.pad)}</td><td>${tag(p.pad,true)}</td>`+
-  `<td class=dim>${p.agent}</td><td class=num>${d$(p.cost)}</td><td class=num>${d$(p.value)}</td>`+
+  `<td class="num faint">${p.mc?d$(p.mc):'—'}</td><td class=num>${d$(p.cost)}</td><td class=num>${d$(p.value)}</td>`+
   `<td class="num ${sgn(p.chg)}">${p.chg>0?'+':''}${p.chg}%</td>`+
-  `<td class="num ${sgn(p.upnl)}">${d$(p.upnl)}</td><td class="num faint age" data-open="${p.opened}"></td></tr>`).join(''):
+  `<td class="num ${sgn(p.upnl)}" data-k="u${p.token}" data-v="${p.upnl}">${d$(p.upnl)}</td><td class="num faint age" data-open="${p.opened}"></td></tr>`).join(''):
   '<tr><td colspan=8 class=empty>No open positions. Agents are scanning.</td></tr>';
  document.getElementById('blotter').innerHTML=d.blotter.length?d.blotter.map(b=>
   `<tr data-origin=agent><td class="num faint">${b.t}</td>`+
@@ -911,9 +994,10 @@ async function tick(){let d;try{d=await(await fetch('/data')).json()}catch(e){re
   '<tr><td colspan=6 class=empty>No closed trades.</td></tr>';
  document.getElementById('scoutfull').innerHTML=d.scouting.length?d.scouting.map(s=>
   `<tr data-origin=agent-proposed><td>${inst(s.sym,s.token,s.pad)}</td><td>${tag(s.pad,s.verified)}</td>`+
+  `<td class="num faint">${s.mc?d$(s.mc):'—'}</td>`+
   `<td class="num ${sgn(s.net)}">${d$(s.net)}</td><td class=num>${d$(s.liq)}</td>`+
   `<td class=num>${s.conf} <span class=faint>${s.tier}</span></td></tr>`).join(''):
-  '<tr><td colspan=5 class=empty>Scanning Robinhood Chain.</td></tr>';
+  '<tr><td colspan=6 class=empty>Scanning Robinhood Chain.</td></tr>';
  // agent rail — reasoning trace
  document.getElementById('trn').textContent=(d.trace||[]).length;
  document.getElementById('trace').innerHTML=(d.trace||[]).length?d.trace.map(x=>
@@ -924,7 +1008,7 @@ async function tick(){let d;try{d=await(await fetch('/data')).json()}catch(e){re
   `<div class=why>${x.reason}</div>`+
   `<div class=meta>conf ${x.conf} · net ${d$(x.net)} · liq ${d$(x.liq)} · ${x.pad}</div></div>`).join(''):
   '<div class=empty>No agent decisions yet.</div>';
- tickAges();
+ tickAges();flashCells();
  document.getElementById('agents').innerHTML=d.agents.map(a=>
   `<div class="ag ${a.on?'on':''}"><span class=s></span>${a.name}<span class="st ${a.on?'':'faint'}">${a.on?'Live':'Idle'}</span></div>`).join('');
 }
@@ -932,7 +1016,7 @@ let SKEW=0;                       // server-vs-browser clock offset
 function tickAges(){const now=Math.floor(Date.now()/1000)+SKEW;
  document.querySelectorAll('.age').forEach(el=>{
   const o=+el.dataset.open;el.textContent=o?dur(now-o):'—'})}
-tick();setInterval(tick,4000);setInterval(tickAges,1000);loadWallets();
+tick();setInterval(tick,1000);setInterval(tickAges,1000);loadWallets();
 </script></body></html>
 """
 
