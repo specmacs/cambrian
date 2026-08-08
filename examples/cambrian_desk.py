@@ -241,6 +241,23 @@ def fquote(target, contra, qty, side):
                                   "x-definitive-api-key": FLASH_KEY}).json()
 
 
+def refresh_weth_price():
+    """Live ETH price from Flash's asset search, so USD figures aren't scaled by a
+    stale constant. Falls back to the current value if the lookup fails."""
+    global WETH_USD
+    try:
+        r = requests.get(FLASH_BASE + "/search", params={"query": WETH, "chain": "robinhood",
+                                                         "limit": 1}, timeout=20,
+                         headers={"x-definitive-api-key": FLASH_KEY})
+        a = (r.json().get("assets") or [])
+        p = float(a[0]["price"]) if a and a[0].get("price") else 0.0
+        if 100 < p < 100000:                      # sanity band
+            WETH_USD = p
+            STATE["eth"] = round(p, 2)
+    except Exception:
+        pass
+
+
 def buy_quote(token, usd):
     try:
         b = fquote(token, WETH, round(usd / WETH_USD, 6), "buy")
@@ -376,7 +393,7 @@ STATE = {"block": 0, "updated": "starting...", "err": "", "mode": "PAPER",
          "model": LLM_MODEL if LLM_KEY else "confluence only", "size": SIZE_USD,
          "equity": 0.0, "realized": 0.0, "unrealized": 0.0, "wins": 0, "losses": 0,
          "positions": [], "closed": [], "blotter": [], "scouting": [],
-         "wallets": len(WALLETS), "agents": [
+         "wallets": len(WALLETS), "eth": WETH_USD, "agents": [
              {"id": "sniper", "name": "A · Sniper", "desc": "fresh launches", "on": True},
              {"id": "volume", "name": "B · Volume", "desc": "all-RH momentum", "on": False},
              {"id": "wallets", "name": "C · Wallets", "desc": "smart-money copy", "on": False},
@@ -457,6 +474,7 @@ def publish(block):
 
 
 def scan_and_trade():
+    refresh_weth_price()
     block = int(rpc("eth_blockNumber", []), 16)
     now = bts("latest")
     frm = hex(max(block - BLOCKS, 0))
@@ -721,7 +739,7 @@ transition:transform .2s cubic-bezier(.2,.9,.3,1.3);z-index:99}
 </div>
 <div class=status><span class=dot></span><b id=stmode>paper</b>
  <span>block <b id=stblk>–</b></span><span>PM <b id=stpm>–</b></span>
- <span>size <b id=stsz>–</b></span><span>ETH <b>$3,000</b></span>
+ <span>size <b id=stsz>–</b></span><span>ETH <b id=steth>–</b></span>
  <span class=sp style=flex:1></span><span id=sterr></span><span>CAMBRIAN · Robinhood Chain</span></div>
 <div class=toast id=toast></div>
 <script>
@@ -781,7 +799,8 @@ async function tick(){let d;try{d=await(await fetch('/data')).json()}catch(e){re
  document.getElementById('cclo').textContent=d.closed.length;
  document.getElementById('cblo').textContent=d.blotter.length;
  document.getElementById('stblk').textContent=d.block;document.getElementById('stpm').textContent=d.model;
- document.getElementById('stsz').textContent='$'+d.size;document.getElementById('stmode').textContent=d.mode.toLowerCase();
+ document.getElementById('stsz').textContent='$'+d.size;
+ document.getElementById('steth').textContent='$'+(d.eth||0).toLocaleString();document.getElementById('stmode').textContent=d.mode.toLowerCase();
  document.getElementById('sterr').innerHTML=d.err?`<span class=neg>${d.err}</span>`:'';
  // positions
  document.getElementById('positions').innerHTML=d.positions.length?d.positions.map(p=>
