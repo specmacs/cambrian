@@ -27,6 +27,7 @@ LLM_MODEL = os.getenv("RH_LLM_MODEL", "claude-opus-4.7")
 LLM_KEY = (sys.argv[1] if len(sys.argv) > 1 else os.getenv("RH_LLM_KEY", "")).strip()
 PORT = int(os.getenv("RH_PORT", "8787"))
 INTERVAL = int(os.getenv("RH_INTERVAL", "20"))
+MARK_SECS = int(os.getenv("RH_MARK_SECS", "8"))
 BLOCKS = int(os.getenv("RH_BLOCKS", "6000"))
 ENRICH = int(os.getenv("RH_ENRICH", "14"))
 SIZE_USD = float(os.getenv("RH_SIZE", "50"))
@@ -232,10 +233,14 @@ def v4liq(pid, q0):
     return res / 1e18 * WETH_USD * 2
 
 
-def fquote(target, contra, qty, side):
+def fquote(target, contra, qty, side, quick=False):
+    """quick=True reuses Flash's recently-computed quote (fast, for ENTRY). Never
+    use it to VALUE a position — a cached quote freezes mark-to-market."""
     body = {"targetChain": "robinhood", "contraChain": "robinhood",
             "targetAsset": target, "contraAsset": contra, "side": side,
-            "qty": str(qty), "orderType": "market", "maxSlippage": "0.2", "quickTrade": True}
+            "qty": str(qty), "orderType": "market", "maxSlippage": "0.2"}
+    if quick:
+        body["quickTrade"] = True
     return requests.post(FLASH_BASE + "/quote", json=body, timeout=40,
                          headers={"content-type": "application/json",
                                   "x-definitive-api-key": FLASH_KEY}).json()
@@ -260,7 +265,7 @@ def refresh_weth_price():
 
 def buy_quote(token, usd):
     try:
-        b = fquote(token, WETH, round(usd / WETH_USD, 6), "buy")
+        b = fquote(token, WETH, round(usd / WETH_USD, 6), "buy", quick=True)
         if "error" in b or not b.get("to"):
             return None, None
         return float(b["to"]["amount"]), float(b["from"].get("notional") or 0)
@@ -392,7 +397,7 @@ WALLETS = load_wallets()
 STATE = {"block": 0, "updated": "starting...", "err": "", "mode": "PAPER",
          "model": LLM_MODEL if LLM_KEY else "confluence only", "size": SIZE_USD,
          "equity": 0.0, "realized": 0.0, "unrealized": 0.0, "wins": 0, "losses": 0,
-         "positions": [], "closed": [], "blotter": [], "scouting": [], "trace": [],
+         "positions": [], "closed": [], "blotter": [], "scouting": [], "trace": [], "marked": None,
          "wallets": len(WALLETS), "eth": WETH_USD, "agents": [
              {"id": "sniper", "name": "A · Sniper", "desc": "fresh launches", "on": True},
              {"id": "volume", "name": "B · Volume", "desc": "all-RH momentum", "on": False},
@@ -438,7 +443,12 @@ def close_paper(token, value, why):
                     "pnl": round(pnl, 2)})
 
 
+MARKED = [0.0]
+
+
 def mark_and_exit():
+    """Re-price every open position against a FRESH sell quote. Runs on its own
+    fast cadence so P&L doesn't sit frozen behind a slow discovery sweep."""
     for token, p in list(BOOK.items()):
         val = sell_value(token, p["tokens"])
         if val is None:
@@ -451,6 +461,7 @@ def mark_and_exit():
             close_paper(token, val, "stop")
         elif px >= p["tp"]:
             close_paper(token, val, "take-profit")
+    MARKED[0] = time.time()
 
 
 def publish(block):
@@ -467,11 +478,12 @@ def publish(block):
                     "value": round(p.get("value", p["cost"]), 2),
                     "upnl": round(p.get("upnl", 0.0), 2),
                     "chg": round(100 * ((p.get("mark", p["entry"]) / p["entry"]) - 1), 1),
-                    "age": round((time.time() - p["opened"]) / 60, 1)} for p in pos],
+                    "age_s": int(time.time() - p["opened"])} for p in pos],
         closed=[{"token": c["token"], "sym": c["sym"], "pad": c["pad"],
                  "cost": round(c["cost"], 2), "exit_value": c["exit_value"],
                  "pnl": c["pnl"], "why": c["why"]} for c in CLOSED[-30:]][::-1],
-        blotter=BLOTTER[-40:][::-1], trace=TRACE[-60:][::-1])
+        blotter=BLOTTER[-40:][::-1], trace=TRACE[-60:][::-1],
+        marked=int(time.time() - MARKED[0]) if MARKED[0] else None)
 
 
 def scan_and_trade():
@@ -536,17 +548,31 @@ def scan_and_trade():
             if v["decision"] == "buy":
                 open_paper(tok, symb, pad, "sniper", v["reason"] or f"conf {conf}")
     STATE["scouting"] = scouting[:14]
-    mark_and_exit()
     publish(block)
 
 
 def worker():
+    """Slow loop: discover + decide (many RPC calls per sweep)."""
     while True:
         try:
             scan_and_trade()
         except Exception as e:
             STATE.update(err=f"scan error: {e}", updated=now_hms())
         time.sleep(INTERVAL)
+
+
+def marker():
+    """Fast loop: mark the book to live prices and honour stops/targets. Runs
+    independently so an open position re-prices every MARK_SECS regardless of how
+    long a discovery sweep takes."""
+    while True:
+        try:
+            if BOOK:
+                mark_and_exit()
+                publish(STATE.get("block", 0))
+        except Exception:
+            pass
+        time.sleep(MARK_SECS)
 
 
 PAGE = r"""<!doctype html><html><head><meta charset=utf-8><title>Cambrian</title>
@@ -787,7 +813,7 @@ animation-duration:.01ms!important}.flash-up{animation:flash-up var(--dur-flash)
   </div>
  </div>
  <div class=status><span>Block <b id=stblk>—</b></span><span>PM <b id=stpm>—</b></span>
-  <span>Size <b id=stsz>—</b></span><span>ETH <b id=steth>—</b></span>
+  <span>Size <b id=stsz>—</b></span><span>ETH <b id=steth>—</b></span><span>Marked <b id=stmk>—</b></span>
   <span class=grow></span><span id=sterr></span><span>Robinhood Chain</span></div>
 </main>
 <aside class=rail>
@@ -801,6 +827,10 @@ const DEX=t=>`https://dexscreener.com/search?q=${t}`,EXP=t=>`https://robinhoodch
 const PADURL={"pools-trade":"https://pools.trade/token/","flap":"https://flap.sh/token/",
 "bankr":"https://bankr.bot/token/","pons":"https://pons.fun/token/"};
 let PREV={};
+function dur(s){if(s==null)return'—';s=Math.max(0,Math.floor(s));
+ if(s<60)return s+'s';
+ if(s<3600){const m=Math.floor(s/60),r=s%60;return m+'m'+String(r).padStart(2,'0')+'s'}
+ const h=Math.floor(s/3600),m=Math.floor((s%3600)/60);return h+'h'+String(m).padStart(2,'0')+'m'}
 const PAL=['instrument','graphite','void','ember','nocturne','daylight'];
 function setTheme(v){if(v==='instrument')document.documentElement.removeAttribute('data-theme');
  else document.documentElement.setAttribute('data-theme',v);
@@ -858,12 +888,13 @@ async function tick(){let d;try{d=await(await fetch('/data')).json()}catch(e){re
  document.getElementById('stpm').textContent=d.model;
  document.getElementById('stsz').textContent='$'+d.size;
  document.getElementById('steth').textContent='$'+(d.eth||0).toLocaleString();
+ document.getElementById('stmk').textContent=d.marked==null?'—':d.marked+'s ago';
  document.getElementById('sterr').innerHTML=d.err?`<span class=down>${d.err}</span>`:'';
  document.getElementById('positions').innerHTML=d.positions.length?d.positions.map(p=>
   `<tr data-origin=agent><td>${inst(p.sym,p.token,p.pad)}</td><td>${tag(p.pad,true)}</td>`+
   `<td class=dim>${p.agent}</td><td class=num>${d$(p.cost)}</td><td class=num>${d$(p.value)}</td>`+
   `<td class="num ${sgn(p.chg)}">${p.chg>0?'+':''}${p.chg}%</td>`+
-  `<td class="num ${sgn(p.upnl)}">${d$(p.upnl)}</td><td class="num faint">${p.age}m</td></tr>`).join(''):
+  `<td class="num ${sgn(p.upnl)}">${d$(p.upnl)}</td><td class="num faint">${dur(p.age_s)}</td></tr>`).join(''):
   '<tr><td colspan=8 class=empty>No open positions. Agents are scanning.</td></tr>';
  document.getElementById('blotter').innerHTML=d.blotter.length?d.blotter.map(b=>
   `<tr data-origin=agent><td class="num faint">${b.t}</td>`+
@@ -941,6 +972,7 @@ class H(BaseHTTPRequestHandler):
 
 def main():
     threading.Thread(target=worker, daemon=True).start()
+    threading.Thread(target=marker, daemon=True).start()
     print(f"\n  ◆ CAMBRIAN desk (paper) running  ->  http://localhost:{PORT}")
     print(f"    PM {STATE['model']}  ·  ${SIZE_USD}/trade  ·  stop -{STOP_PCT:.0%}  tp {TP_MULT}x  ·  "
           f"{len(WALLETS)} wallets tracked   (Ctrl+C to stop)\n")
