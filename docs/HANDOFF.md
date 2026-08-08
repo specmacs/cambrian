@@ -181,14 +181,37 @@ Live check after wiring: `discover_fresh` returned **18 launches in 1,500 blocks
 (~2.5 min) — 14 flap, 4 pons**. Before, it returned zero for both, because a
 blank `created_topic0` makes it skip the pad entirely (fail closed).
 
-⚠️ **flap launches create NO Uniswap pool — 0 of 177 sampled**, neither v3 nor v4.
-flap runs its own bonding curve inside the pad and only graduates to a pool later.
-Pons, by contrast, opens a v3 pool in the very same tx (18 of 18 sampled). This
-matters more than it looks: flap is the **highest-volume launch source on the
-chain** (~177 per 16 min vs pools.trade 53 and Pons 18), and none of it is
-priceable or sellable through our v3/v4 quote path at launch. Treat flap
-discovery as a watchlist feed, not a buyable feed, until the graduation event is
-found — that is now the biggest open trading gap.
+✅ **flap trades on Uniswap V2 — corrected.** An earlier pass here claimed flap
+launches "create no pool and are not buyable at launch". That was wrong, and it
+was wrong for an instructive reason: we only ever scanned v3 and v4. flap launches
+into **Uniswap V2**, which this project had never looked at.
+
+```
+V2 Factory   0x0d1ebb179cdbca88d74c923c4255cb2b17474afd   640 pairs / 40k blocks
+PairCreated  0x0d3648bd0f6ba80134a33ba9275ac585d9d315f0ad8355cddefde31afa28d0e9
+Swap         0xd78ad95fa46c994b6551d0da85fc275fe613ce37657fb8d5e3d130840159d822
+Sync         0x1c411e9a96e071241c2f21f7726b17ae89e3cab4c78be50e062b03a9fffbbad1
+```
+
+Verified live: **186 of 186** flap `TokenCreated` events created a V2 pair *in the
+same transaction*. Every sampled pair was seeded with exactly **1.9190 WETH**
+(the `seedWeth` field of `TokenCurveSetV2`), and **7 of 8** sampled pairs had real
+swaps within minutes. So the chain's highest-volume launch source is tradable from
+block zero — the desk simply could not see it.
+
+The documented graduation event `LaunchedToDEX(address,address,uint256,uint256)`
+(`0x6e4f4763..ff7d`) has **zero** occurrences anywhere on this chain across 200k
+blocks. On Robinhood Chain flap does not run the bonding-curve-then-graduate path
+its generic docs describe; the pair exists at launch.
+
+**Adding Uniswap V2 support is now the highest-value work item** — quoting,
+liquidity and honeypot checks all need a V2 path (`getReserves`, constant-product
+math) alongside the existing v3/v4 ones.
+
+⚠️ **flap supports TAX TOKENS at 1%, 3%, 5% or 10%.** A 10% tax presents as
+slippage and quietly destroys P&L, so tax must be read before sizing. Taxed tokens
+use implementation `0x7777C874..3333` (`TOKEN_TAXED_V3`) vs `0x88882688..2222`
+for standard ones.
 
 Known tokens: FRONG (pools.trade flagship)
 `0x6245e67affA44a23077f0Ea7f981a8DC743a0c47`.

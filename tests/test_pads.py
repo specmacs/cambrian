@@ -193,3 +193,43 @@ def test_independent_pads_do_not_reuse_the_pools_trade_launchers():
                  POOLS_TRADE["launcher_v3_0_0"].lower()}
     for name in ("pons", "flap"):
         assert LAUNCHPADS[name]["address"].lower() not in launchers, name
+
+
+# --- Uniswap V2: where flap tokens actually trade ----------------------------
+
+def test_flap_launch_signatures_match_keccak_of_the_documented_signatures():
+    # Signatures published by docs.flap.sh, proven against the live topic0s.
+    from cambrian.runners.config import EVT_FLAP_LAUNCH, EVT_FLAP_CURVE
+    assert EVT_FLAP_LAUNCH == "0x" + _keccak(
+        b"TokenCreated(uint256,address,uint256,address,string,string,string)").hex()
+    assert EVT_FLAP_CURVE == "0x" + _keccak(
+        b"TokenCurveSetV2(address,uint256,uint256,uint256)").hex()
+
+
+def test_v2_topic0s_match_keccak():
+    from cambrian.runners.config import (EVT_V2_PAIR_CREATED, EVT_V2_SWAP, EVT_V2_SYNC)
+    assert EVT_V2_PAIR_CREATED == "0x" + _keccak(
+        b"PairCreated(address,address,address,uint256)").hex()
+    assert EVT_V2_SWAP == "0x" + _keccak(
+        b"Swap(address,uint256,uint256,uint256,uint256,address)").hex()
+    assert EVT_V2_SYNC == "0x" + _keccak(b"Sync(uint112,uint112)").hex()
+
+
+def test_v2_factory_is_not_confused_with_v3_or_v4():
+    # flap trades on V2. Scanning only v3/v4 is what made us wrongly conclude flap
+    # tokens were unbuyable, so keep the three venues distinct.
+    from cambrian.runners.config import V2_FACTORY, CONTRACTS
+    assert V2_FACTORY.lower() not in {CONTRACTS["v3_factory"].lower(),
+                                      CONTRACTS["pool_manager"].lower()}
+
+
+def test_flap_portal_matches_the_configured_launchpad():
+    # The docs-published Portal must be the same contract we discover launches from.
+    from cambrian.runners.config import FLAP_PORTAL, LAUNCHPADS
+    assert FLAP_PORTAL.lower() == LAUNCHPADS["flap"]["address"].lower()
+
+
+def test_flap_tax_rates_are_known_so_sizing_can_account_for_them():
+    # A 10% tax reads as slippage and silently destroys P&L if ignored.
+    from cambrian.runners.config import FLAP_TAX_RATES_BPS
+    assert max(FLAP_TAX_RATES_BPS) == 1000

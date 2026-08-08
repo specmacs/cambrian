@@ -57,15 +57,51 @@ PONS_LOCKER = "0x736D76699C26D0d966744cAe304C000d471f7F35"
 EVT_PONS_TOKEN_DEPLOYED = "0x1461370115e1c2be79cb529f8cfcbd11316e789d9c6099fc83417b0b4c48c62a"
 EVT_PONS_TOKEN_LAUNCHED = "0xdb51ea9ad51ab453a65a4cb7e60c3cb378c9501bb002609f8f97778fb6c4235a"
 
-# flap's launch event carries the metadata inline, so name/symbol need no extra
-# eth_call: (uint256 timestamp, address creator, uint256 launchId, address token,
-# ...offsets..., string name, string symbol, string ipfsCid). It is unindexed, so
-# it is matched on emitter+topic0 only — still unforgeable, since only the pad can
-# emit at the pad's address. ~403 firings / 40k blocks. The signature text is not
-# recovered yet, so this topic0 is chain-observed rather than keccak-proven.
+# flap's Portal emits these. Both signatures come from flap's official docs
+# (docs.flap.sh) and are keccak-PROVEN against the live topic0s. All params are
+# unindexed, so they match on emitter+topic0 — still unforgeable, since only the
+# Portal can emit at the Portal's address. ~403 launches / 40k blocks.
+#   TokenCreated(uint256 ts, address creator, uint256 nonce, address token,
+#                string name, string symbol, string meta)
+# `meta` is an IPFS CID, so name/symbol/metadata all arrive with the launch and
+# need no extra eth_call.
 EVT_FLAP_LAUNCH = "0x504e7f360b2e5fe33cbaaae4c593bc55305328341bf79009e43e0e3b7f699603"
-# Companion, same count, same tx: (address token, uint256, uint256, uint256).
-EVT_FLAP_LIQUIDITY = "0x71a10912a55f73d3cced0d1515c2b33c396c80342522bad0e295ccbede556f37"
+#   TokenCurveSetV2(address token, uint256 seedWeth, uint256, uint256)
+# Fires in the same tx. `seedWeth` is the WETH seeded into the pair — observed at
+# a constant 1.9190 WETH across every sampled launch.
+EVT_FLAP_CURVE = "0x71a10912a55f73d3cced0d1515c2b33c396c80342522bad0e295ccbede556f37"
+EVT_FLAP_LIQUIDITY = EVT_FLAP_CURVE       # back-compat alias, pre-docs name
+# Documented graduation event, LaunchedToDEX(address,address,uint256,uint256).
+# ZERO occurrences anywhere on this chain across 200k blocks — on Robinhood Chain
+# flap does not run the bonding-curve-then-graduate path; it opens the V2 pair at
+# launch (see below). Kept so a future session does not re-derive it.
+EVT_FLAP_LAUNCHED_TO_DEX = "0x6e4f47630b8745b8cacbd44f42a8a33e7eea7cc08ef22fc7630f4f385784ff7d"
+
+FLAP_PORTAL = "0x26605f322f7fF986f381bB9A6e3f5DAb0bEaEb09"          # docs-confirmed
+FLAP_VAULT_PORTAL = "0xe9F7AB7DE8FB8756acbB6a1cd13316a43308197B"
+FLAP_TOKEN_IMPL = "0x88882688a067FE97E11C2185b996286e53132222"       # TOKEN_V2_PERMIT
+FLAP_TAX_TOKEN_V3_IMPL = "0x7777C8743C88B3aff3cf262135beF2c8b2e83333"  # TOKEN_TAXED_V3
+
+# --- Uniswap V2 on RH: where flap tokens actually trade ----------------------
+# CHAIN-VERIFIED and it overturns an earlier conclusion in this repo. We reported
+# that flap launches "create no pool and are not buyable at launch" — that was an
+# artefact of only ever scanning v3 and v4. flap launches into Uniswap **V2**:
+# in a 10k-block window, 186 of 186 flap TokenCreated events created a V2 pair IN
+# THE SAME TX. Every sampled pair was seeded with 1.9190 WETH, and 7 of 8 sampled
+# pairs had real swaps within minutes. flap is the highest-volume launch source on
+# the chain, so a desk that ignores V2 ignores most of the market.
+V2_FACTORY = "0x0d1ebb179cdbca88d74c923c4255cb2b17474afd"   # 640 pairs / 40k blocks
+# Two other V2-style factories also emit, far smaller; unidentified for now.
+V2_FACTORIES_OTHER = ("0x8bceaa40b9acdfaedf85adf4ff01f5ad6517937f",   # 15 / 40k
+                      "0xfc2e4da3edb2e18100473339c763705d263d20a9")   # 6 / 40k
+EVT_V2_PAIR_CREATED = "0x0d3648bd0f6ba80134a33ba9275ac585d9d315f0ad8355cddefde31afa28d0e9"
+EVT_V2_SWAP = "0xd78ad95fa46c994b6551d0da85fc275fe613ce37657fb8d5e3d130840159d822"
+EVT_V2_SYNC = "0x1c411e9a96e071241c2f21f7726b17ae89e3cab4c78be50e062b03a9fffbbad1"
+
+# flap supports TAX TOKENS at 1%, 3%, 5% or 10% (docs.flap.sh). A 10% tax is a
+# silent P&L killer and looks like slippage, so tax must be read before sizing —
+# see FLAP_TAX_TOKEN_V3_IMPL to spot a taxed token by implementation.
+FLAP_TAX_RATES_BPS = (100, 300, 500, 1000)
 
 # name -> {address, created_topic0, start_block, amm}
 # `created_topic0` is left blank on purpose: discover_fresh SKIPS a pad without
