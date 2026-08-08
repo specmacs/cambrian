@@ -1,0 +1,196 @@
+/* ===========================================================================
+   Agentic Trading Terminal — design tokens
+   Single source of truth. Never hardcode a value that exists here.
+   Pairs with DESIGN.md.
+   =========================================================================== */
+
+:root {
+  /* --- Surfaces ---------------------------------------------------------- */
+  --bg:              #0B0E14;
+  --surface:         #12161F;
+  --surface-raised:  #1A1F2B;
+  --border:          #232936;
+  --border-strong:   #333B4D;
+
+  /* --- Text -------------------------------------------------------------- */
+  --text:            #E6E9EF;
+  --text-dim:        #8B94A7;
+  --text-faint:      #5A6376;
+
+  /* --- Semantic: market direction ---------------------------------------- */
+  --up:              #2ED3A7;
+  --down:            #FF6B7A;
+
+  /* --- Semantic: actor & state ------------------------------------------- */
+  --agent:           #8A7BFF;   /* RESERVED. Agent provenance only. */
+  --pending:         #F2B544;
+  --focus:           #4DA6FF;   /* Focus rings only. */
+
+  /* --- Opacity ladder ---------------------------------------------------- */
+  --o-hover:    0.04;
+  --o-selected: 0.08;
+  --o-chip:     0.16;
+  --o-disabled: 0.40;
+
+  /* Derived fills — prefer these over ad-hoc color-mix at call sites */
+  --fill-hover:     color-mix(in oklab, var(--text)  4%, transparent);
+  --fill-selected:  color-mix(in oklab, var(--text)  8%, transparent);
+  --fill-up:        color-mix(in oklab, var(--up)   16%, transparent);
+  --fill-down:      color-mix(in oklab, var(--down) 16%, transparent);
+  --fill-agent:     color-mix(in oklab, var(--agent) 16%, transparent);
+  --fill-pending:   color-mix(in oklab, var(--pending) 16%, transparent);
+
+  /* --- Type families ----------------------------------------------------- */
+  --font-ui:   "Geist Sans", ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-mono: "Commit Mono", "Geist Mono", ui-monospace, SFMono-Regular, monospace;
+
+  /* --- Type scale: size / line-height ------------------------------------ */
+  --t-micro:  10px;  --lh-micro:  14px;   /* uppercase, 0.08em tracking */
+  --t-xs:     11px;  --lh-xs:     16px;
+  --t-sm:     12px;  --lh-sm:     18px;
+  --t-base:   13px;  --lh-base:   20px;
+  --t-md:     15px;  --lh-md:     22px;
+  --t-lg:     20px;  --lh-lg:     26px;
+  --t-xl:     28px;  --lh-xl:     32px;   /* -0.02em tracking */
+
+  --tracking-micro: 0.08em;
+  --tracking-tight: -0.02em;
+
+  --w-body:  400;
+  --w-ui:    500;
+  --w-emph:  600;   /* ceiling — never 700 */
+
+  /* --- Space: 4px base --------------------------------------------------- */
+  --s-1:  4px;
+  --s-2:  8px;
+  --s-3: 12px;
+  --s-4: 16px;
+  --s-6: 24px;
+  --s-8: 32px;
+
+  /* --- Row heights ------------------------------------------------------- */
+  --row-dense:   28px;
+  --row-default: 32px;
+  --row-comfy:   40px;
+
+  /* --- Radii — hard ceiling of 4px --------------------------------------- */
+  --r-sm: 2px;
+  --r-md: 4px;
+
+  /* --- Structure --------------------------------------------------------- */
+  --hairline: 1px;
+  --gutter:   2px;   /* provenance edge width */
+  --rail-w: 320px;   /* agent rail */
+  --nav-w:   48px;
+
+  /* --- Motion ------------------------------------------------------------ */
+  --dur-fast:  120ms;
+  --dur-enter: 160ms;
+  --dur-flash: 400ms;
+  --ease: cubic-bezier(0.2, 0, 0, 1);
+
+  /* --- Overlay shadow — the ONLY permitted shadow ------------------------- */
+  --shadow-overlay: 0 8px 32px rgba(0, 0, 0, 0.5);
+}
+
+/* ===========================================================================
+   Base
+   =========================================================================== */
+
+html {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-ui);
+  font-size: var(--t-base);
+  line-height: var(--lh-base);
+  font-weight: var(--w-body);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Every numeric surface. Tabular figures are non-negotiable: columns of
+   numbers must not reflow as digits change. */
+.num,
+input[type="number"],
+td.num, th.num {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
+  text-align: right;
+}
+
+.label-micro {
+  font-size: var(--t-micro);
+  line-height: var(--lh-micro);
+  letter-spacing: var(--tracking-micro);
+  text-transform: uppercase;
+  color: var(--text-dim);
+  font-weight: var(--w-ui);
+}
+
+.value-hero {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--t-xl);
+  line-height: var(--lh-xl);
+  letter-spacing: var(--tracking-tight);
+  font-weight: var(--w-ui);
+}
+
+.up   { color: var(--up); }
+.down { color: var(--down); }
+
+/* ===========================================================================
+   Signature: provenance gutter
+   =========================================================================== */
+
+.row {
+  position: relative;
+  height: var(--row-dense);
+  padding-left: calc(var(--gutter) + var(--s-3));
+  border-bottom: var(--hairline) solid var(--border);
+  transition: background var(--dur-fast) var(--ease);
+}
+.row:hover { background: var(--fill-hover); }
+.row[aria-selected="true"] { background: var(--fill-selected); }
+
+.row::before {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: var(--gutter);
+  background: transparent;   /* human-initiated = default = unmarked */
+}
+
+.row[data-origin="agent"]::before            { background: var(--agent); }
+.row[data-origin="agent-proposed"]::before   { background: color-mix(in oklab, var(--agent) 40%, transparent); }
+.row[data-origin="pending"]::before          { background: var(--pending); }
+
+/* ===========================================================================
+   Focus — visible on every interactive element
+   =========================================================================== */
+
+:where(a, button, input, select, textarea, [tabindex]):focus-visible {
+  outline: var(--hairline) solid var(--focus);
+  outline-offset: 1px;
+  border-color: var(--focus);
+}
+
+/* ===========================================================================
+   Value flash — the one animation traders rely on
+   =========================================================================== */
+
+@keyframes flash-up   { from { background: var(--fill-up);   } to { background: transparent; } }
+@keyframes flash-down { from { background: var(--fill-down); } to { background: transparent; } }
+
+.flash-up   { animation: flash-up   var(--dur-flash) var(--ease); }
+.flash-down { animation: flash-down var(--dur-flash) var(--ease); }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+  }
+  /* Keep the flash — it carries information, not decoration. */
+  .flash-up   { animation: flash-up   var(--dur-flash) var(--ease) !important; }
+  .flash-down { animation: flash-down var(--dur-flash) var(--ease) !important; }
+}

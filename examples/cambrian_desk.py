@@ -392,7 +392,7 @@ WALLETS = load_wallets()
 STATE = {"block": 0, "updated": "starting...", "err": "", "mode": "PAPER",
          "model": LLM_MODEL if LLM_KEY else "confluence only", "size": SIZE_USD,
          "equity": 0.0, "realized": 0.0, "unrealized": 0.0, "wins": 0, "losses": 0,
-         "positions": [], "closed": [], "blotter": [], "scouting": [],
+         "positions": [], "closed": [], "blotter": [], "scouting": [], "trace": [],
          "wallets": len(WALLETS), "eth": WETH_USD, "agents": [
              {"id": "sniper", "name": "A · Sniper", "desc": "fresh launches", "on": True},
              {"id": "volume", "name": "B · Volume", "desc": "all-RH momentum", "on": False},
@@ -401,6 +401,7 @@ STATE = {"block": 0, "updated": "starting...", "err": "", "mode": "PAPER",
 BOOK = {}
 CLOSED = []
 BLOTTER = []
+TRACE = []
 SEEN = set()
 REALIZED = [0.0]
 
@@ -470,7 +471,7 @@ def publish(block):
         closed=[{"token": c["token"], "sym": c["sym"], "pad": c["pad"],
                  "cost": round(c["cost"], 2), "exit_value": c["exit_value"],
                  "pnl": c["pnl"], "why": c["why"]} for c in CLOSED[-30:]][::-1],
-        blotter=BLOTTER[-40:][::-1])
+        blotter=BLOTTER[-40:][::-1], trace=TRACE[-60:][::-1])
 
 
 def scan_and_trade():
@@ -528,6 +529,10 @@ def scan_and_trade():
                     "liquidity_usd": round(liq), "sniper_share": round(m["snipe"], 2),
                     "fanout": fo, "buys": m["buys"], "sells": m["sells"], "confluence": conf})
             SEEN.add(tok)
+            TRACE.append({"t": now_hms(), "agent": "A · Sniper", "sym": symb, "token": tok,
+                          "pad": pad, "decision": v["decision"], "conf": conf,
+                          "net": round(m["net"]), "liq": round(liq),
+                          "reason": v["reason"] or "confluence"})
             if v["decision"] == "buy":
                 open_paper(tok, symb, pad, "sniper", v["reason"] or f"conf {conf}")
     STATE["scouting"] = scouting[:14]
@@ -544,311 +549,317 @@ def worker():
         time.sleep(INTERVAL)
 
 
-PAGE = r"""<!doctype html><html><head><meta charset=utf-8><title>CAMBRIAN</title>
+PAGE = r"""<!doctype html><html><head><meta charset=utf-8><title>Cambrian</title>
+<link rel=icon href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAEX0lEQVR4nO1XTWgdVRT+vjt3Xt5fkzaJpY0KXWVXKHRh6ca4UxBcRaugSLPKJtLiH21hMgupBhTaugoJ/rWbuhHpxoUY1yW4EEoDaVxUY4uan0cy782be+9xMe8lL3Hey49KNz0wDNx7fr4599wz3wEesbD9unQyk4/PSaFwGHkAeFhDHIaMAGnnrxnqH05VG20BmPlIw4Ut4i2TYMEkWCgZXAKAdC/bLis4AOisxeHhc4X+/sP5VaxuWe9BD8bGrlsAFSeu5Cl1sBG4DAAjI9Pl0dHLOsvuvv0lvjU5GXXMwLNBoAHA79FjVVbvIbZziN1847kbIZr/K7pzKdU2MBZiLASsEwBiLoxVUZ1H7O5u2tm5iNG9g/bgxdYYHTMAoOQp7xBIKOWlFeEctNZIEtvd+GqSjYOVjXdZa92bJASVAgRwzsJTHgylnBWoDQBaa61AYKy1IGAgMMYYDWG1DWgAqBljqmLFiLNaAE0AzloN0GYZZBahiFAg1L7vU+ELKgyC9rjRarDsHfoAAJTKmU0n2gBAgX3XtOYgaI9TYRBwn+pczhcRimTfkHZHkOYhzfHqjamJXzfXFEREfzIOxQZ8rRVFRANYJrnU1H115O1lks3rkSkdAaTZcDoIAnVrYMB7cXHRzsyMK5Lmwqis9/amOpUVRCTN8LB4QRBIU3fu/vqO/tv1gRahhGHoTgIIw9BdufKg67eHK++99EbthROnazhxuobnX6kOLT5YujQxsXKgVZdkp262uwxsl2PHCl1RLB8eP6mxvl4RAMjnS6dMvXhKbPQlgJWji4sdOuK/BABAnMgfldVqn0lIAEjqNSfORc45t1dn+wEAAlopKqq0vSpF5WR/vnZRA/+vPAbwGMC+KheAcU6cuMZfkOJEYHYy+q8AEOQT3T2FlkaUV6aOcrQW7TmjewZQrfbEwqXLcz+b5ypL+WcAoHTA/nT0WPz98vLaGgD8PjCwYwtuyi4QCwHh7OwsAOGZMzPxU0f6Lnw9lf/m9kyRt2eK/Par4ndPHul9JwyfXm3VbfcL3iMAWoAyOzmZAJShoSH3g4juO4xSVwHoKgDdfSiKiL55MyWzTV0ym4S0yg5HICBYfG30/UNJjbo/323ml67bkK9XProozvcaWhaOpDl7durA6Ohl/Wetov28GIltqRMX6AhAkRLHiRHKm4zdyz5hIkRaojvTAN51rq6BHADASt0HUlLqoM/7tAYxNMFCUq8nuXxX2ziZGyIkqQiI5ynPB5nfTkqz7baTUoGz1pGKIHdPyRQkEXE1AMY55yEdK7aQUlJtDBvkxtCxhZQ25i4r4jQE9R0B/BiGBgAY1656peLn2vfFWkMQ8DwtRiuWbU+tCaBJy4mcA1JSSl2Zdjmd2gHwtC+Jp+ibeK01RscM3LhxrQKgkrXHjYuj6uIQAwAbXzc1dX4LKd2NtCsOBkGQeWbj4+NCUiKNq90ePgOAyGItBQcEQZB5tcMwbDsfPlL5G10VQXSowDsrAAAAAElFTkSuQmCC">
 <link rel=preconnect href="https://fonts.googleapis.com"><link rel=preconnect href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700;800&family=Geist+Mono:wght@400;500;600;700&family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&family=Inter+Tight:wght@400;500;600;700;800&display=swap" rel=stylesheet>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500;600&display=swap" rel=stylesheet>
 <style>
-/* ── THEMES ── cycle with the button in the nav (or press T). Persists. ── */
-:root{--ui:"Geist Mono";--mono:"Geist Mono";
---bg:#000000;--pnl:#08080a;--pnl2:#0e0e11;--rail:#050506;--bd:#18181c;--bd2:#121215;
---tx:#f0f0f2;--mut:#8a8a94;--dim:#4d4d57;--gr:#00ff9d;--rd:#ff3b5c;--cy:#4dd8ff;--am:#ffc043;
---pu:#b98bff;--grad:linear-gradient(135deg,#00ff9d,#4dd8ff)}
-[data-t="carbon"]{--ui:"Geist";--mono:"Geist Mono";
---bg:#0c0c0d;--pnl:#131315;--pnl2:#1a1a1d;--rail:#0f0f11;--bd:#232326;--bd2:#1b1b1e;
---tx:#ededf0;--mut:#96969e;--dim:#5a5a63;--gr:#4ade80;--rd:#f87171;--cy:#60c8f8;--am:#fbbf24;
---pu:#a78bfa;--grad:linear-gradient(135deg,#4ade80,#60c8f8)}
-[data-t="midnight"]{--ui:"Space Grotesk";--mono:"JetBrains Mono";
---bg:#060911;--pnl:#0b1020;--pnl2:#111829;--rail:#080c17;--bd:#1a2440;--bd2:#141c33;
---tx:#e4ecfb;--mut:#8296bd;--dim:#4a5b80;--gr:#2fe3a3;--rd:#ff5470;--cy:#4cc9ff;--am:#ffb340;
---pu:#a78bfa;--grad:linear-gradient(135deg,#2fe3a3,#4cc9ff)}
-[data-t="phosphor"]{--ui:"IBM Plex Mono";--mono:"IBM Plex Mono";
---bg:#050705;--pnl:#0a0f0a;--pnl2:#0f160f;--rail:#070b07;--bd:#16211a;--bd2:#111a14;
---tx:#d6f5e0;--mut:#6f9d84;--dim:#3f5f4d;--gr:#00e676;--rd:#ff5252;--cy:#64d8cb;--am:#ffca28;
---pu:#9ccc65;--grad:linear-gradient(135deg,#00e676,#64d8cb)}
-[data-t="slate"]{--ui:"Inter Tight";--mono:"JetBrains Mono";
---bg:#0f1115;--pnl:#171a21;--pnl2:#1e222b;--rail:#12151a;--bd:#272c37;--bd2:#1f232c;
---tx:#e9edf5;--mut:#98a2b8;--dim:#5b6478;--gr:#34d399;--rd:#fb7185;--cy:#38bdf8;--am:#fbbf24;
---pu:#a78bfa;--grad:linear-gradient(135deg,#34d399,#38bdf8)}
+/* ── tokens ─────────────────────────────────────────────────────────────── */
+:root{
+--bg:#0B0E14;--surface:#12161F;--surface-raised:#1A1F2B;--border:#232936;--border-strong:#333B4D;
+--text:#E6E9EF;--text-dim:#8B94A7;--text-faint:#5A6376;
+--up:#2ED3A7;--down:#FF6B7A;--agent:#8A7BFF;--pending:#F2B544;--focus:#4DA6FF;
+--fill-hover:color-mix(in oklab,var(--text) 4%,transparent);
+--fill-selected:color-mix(in oklab,var(--text) 8%,transparent);
+--fill-up:color-mix(in oklab,var(--up) 16%,transparent);
+--fill-down:color-mix(in oklab,var(--down) 16%,transparent);
+--fill-agent:color-mix(in oklab,var(--agent) 16%,transparent);
+--fill-pending:color-mix(in oklab,var(--pending) 16%,transparent);
+--font-ui:"Geist",ui-sans-serif,system-ui,-apple-system,sans-serif;
+--font-mono:"Commit Mono","Geist Mono",ui-monospace,SFMono-Regular,monospace;
+--t-micro:10px;--lh-micro:14px;--t-xs:11px;--lh-xs:16px;--t-sm:12px;--lh-sm:18px;
+--t-base:13px;--lh-base:20px;--t-md:15px;--lh-md:22px;--t-lg:20px;--lh-lg:26px;
+--t-xl:28px;--lh-xl:32px;--tracking-micro:.08em;--tracking-tight:-.02em;
+--w-body:400;--w-ui:500;--w-emph:600;
+--s-1:4px;--s-2:8px;--s-3:12px;--s-4:16px;--s-6:24px;--s-8:32px;
+--row-dense:28px;--row-default:32px;--row-comfy:40px;
+--r-sm:2px;--r-md:4px;--hairline:1px;--gutter:2px;--rail-w:320px;--nav-w:48px;
+--dur-fast:120ms;--dur-enter:160ms;--dur-flash:400ms;--ease:cubic-bezier(.2,0,0,1);
+--shadow-overlay:0 8px 32px rgba(0,0,0,.5)}
 *{box-sizing:border-box;margin:0}
-::-webkit-scrollbar{width:7px;height:7px}::-webkit-scrollbar-thumb{background:#1e1e2a;border-radius:4px}
+::-webkit-scrollbar{width:8px;height:8px}::-webkit-scrollbar-thumb{background:var(--border)}
 ::-webkit-scrollbar-track{background:transparent}
-body{background:var(--bg);color:var(--tx);height:100vh;overflow:hidden;display:flex;flex-direction:column;
-font:500 12.5px/1.4 var(--ui),-apple-system,"Segoe UI",Roboto,Arial,sans-serif;
--webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale;letter-spacing:-.01em}
-.m,th,.n,.eqn{font-family:var(--mono),ui-monospace,Menlo,Consolas,monospace;
-font-variant-numeric:tabular-nums;font-feature-settings:"tnum" 1,"zero" 1}
-/* top nav */
-nav{display:flex;align-items:center;gap:22px;padding:0 16px;height:48px;background:var(--pnl);
-border-bottom:1px solid var(--bd);flex-shrink:0}
-.brand{display:flex;align-items:center;gap:8px;padding-right:8px}
-.gem{width:24px;height:24px;border-radius:7px;background:var(--grad);display:grid;place-items:center;
-color:#04241a;font-weight:800;font-size:13px}
-.brand b{font-size:13px;letter-spacing:.24em;font-weight:800}
-.nv{font-size:12.5px;font-weight:600;color:var(--mut);cursor:pointer;padding:15px 2px;
-border-bottom:2px solid transparent;margin-bottom:-1px}
-.nv:hover{color:var(--tx)}.nv.on{color:var(--tx);border-bottom-color:var(--gr)}
-.sp{flex:1}
-.pill{font-size:9.5px;font-weight:800;letter-spacing:.12em;padding:4px 9px;border-radius:5px;
-background:rgba(90,200,250,.1);color:var(--cy);border:1px solid rgba(90,200,250,.25)}
-.eqn{font-size:14px;font-weight:700}
-.btn{background:var(--grad);color:#04241a;border:0;padding:7px 15px;border-radius:8px;
-font:800 11.5px "Inter Tight";cursor:pointer;letter-spacing:.02em}
-.btn:hover{filter:brightness(1.12)}
-/* 3-col shell */
-.shell{flex:1;display:grid;grid-template-columns:282px 1fr 300px;overflow:hidden}
-.rail{background:var(--rail);border-right:1px solid var(--bd);overflow-y:auto}
-.rail.r{border-right:0;border-left:1px solid var(--bd)}
-.rh{padding:11px 14px;font-size:10px;letter-spacing:.14em;text-transform:uppercase;color:var(--dim);
-font-weight:700;border-bottom:1px solid var(--bd2);position:sticky;top:0;background:var(--rail);z-index:2;
-display:flex;align-items:center;gap:7px}
-.rh .c{margin-left:auto;color:var(--dim)}
-center{display:block;overflow-y:auto;background:var(--bg)}
-/* kpi strip */
-.kpis{display:grid;grid-template-columns:repeat(5,1fr);border-bottom:1px solid var(--bd)}
-.kpi{padding:11px 16px;border-right:1px solid var(--bd2)}
+html,body{height:100%}
+body{background:var(--bg);color:var(--text);font-family:var(--font-ui);font-size:var(--t-base);
+line-height:var(--lh-base);font-weight:var(--w-body);-webkit-font-smoothing:antialiased;
+display:flex;overflow:hidden}
+.num{font-family:var(--font-mono);font-variant-numeric:tabular-nums;font-feature-settings:"tnum" 1}
+.label-micro{font-size:var(--t-micro);line-height:var(--lh-micro);letter-spacing:var(--tracking-micro);
+text-transform:uppercase;color:var(--text-dim);font-weight:var(--w-ui)}
+.up{color:var(--up)}.down{color:var(--down)}.dim{color:var(--text-dim)}.faint{color:var(--text-faint)}
+/* ── nav rail ───────────────────────────────────────────────────────────── */
+nav{width:var(--nav-w);flex-shrink:0;background:var(--surface);border-right:var(--hairline) solid var(--border);
+display:flex;flex-direction:column;align-items:center;padding-top:var(--s-2)}
+.mark{width:28px;height:28px;border-radius:var(--r-sm);margin-bottom:var(--s-4);display:block}
+.ni{width:32px;height:32px;border-radius:var(--r-sm);display:grid;place-items:center;color:var(--text-faint);
+cursor:pointer;margin-bottom:var(--s-1);font-size:15px;transition:color var(--dur-fast) var(--ease),background var(--dur-fast) var(--ease)}
+.ni:hover{color:var(--text);background:var(--fill-hover)}
+.ni.on{color:var(--text);background:var(--fill-selected)}
+/* ── main column ────────────────────────────────────────────────────────── */
+main{flex:1;min-width:0;display:flex;flex-direction:column}
+.topbar{height:var(--row-comfy);flex-shrink:0;display:flex;align-items:center;gap:var(--s-4);
+padding:0 var(--s-4);border-bottom:var(--hairline) solid var(--border);background:var(--surface)}
+.wordmark{font-size:var(--t-sm);font-weight:var(--w-ui);letter-spacing:.18em;text-transform:uppercase}
+.chip{height:18px;display:inline-flex;align-items:center;padding:0 var(--s-2);border-radius:var(--r-sm);
+font-size:var(--t-xs);font-weight:var(--w-ui);background:var(--fill-agent);color:var(--agent)}
+.chip.pending{background:var(--fill-pending);color:var(--pending)}
+.sep{color:var(--text-faint)}
+.tbmeta{font-size:var(--t-xs);color:var(--text-dim)}
+.tbmeta b{color:var(--text);font-weight:var(--w-ui)}
+.grow{flex:1}
+.btn{height:28px;padding:0 var(--s-3);border-radius:var(--r-sm);font-family:var(--font-ui);
+font-size:var(--t-sm);font-weight:var(--w-ui);cursor:pointer;border:var(--hairline) solid var(--border);
+background:transparent;color:var(--text-dim);transition:color var(--dur-fast) var(--ease)}
+.btn:hover{color:var(--text);border-color:var(--border-strong)}
+.btn.primary{background:var(--text);color:var(--bg);border-color:var(--text)}
+/* ── kpi strip ──────────────────────────────────────────────────────────── */
+.kpis{display:flex;flex-shrink:0;border-bottom:var(--hairline) solid var(--border);background:var(--surface)}
+.kpi{padding:var(--s-2) var(--s-4);border-right:var(--hairline) solid var(--border);min-width:132px}
 .kpi:last-child{border-right:0}
-.kpi .l{font-size:9px;letter-spacing:.13em;color:var(--dim);text-transform:uppercase;font-weight:700}
-.kpi .n{font-size:19px;font-weight:700;margin-top:3px}
-/* tabs */
-.tabs{display:flex;gap:20px;padding:0 16px;border-bottom:1px solid var(--bd);background:var(--pnl)}
-.tb{font-size:12px;font-weight:600;color:var(--mut);cursor:pointer;padding:11px 1px;
-border-bottom:2px solid transparent;margin-bottom:-1px}
-.tb:hover{color:var(--tx)}.tb.on{color:var(--tx);border-bottom-color:var(--gr)}
-.tb .c{color:var(--dim);font-weight:500;margin-left:5px}
-.pane{display:none}.pane.on{display:block}
-/* tables */
+.kpi .v{font-family:var(--font-mono);font-variant-numeric:tabular-nums;font-size:var(--t-md);
+line-height:var(--lh-md);font-weight:var(--w-ui);margin-top:2px}
+.kpi.hero .v{font-size:var(--t-xl);line-height:var(--lh-xl);letter-spacing:var(--tracking-tight)}
+/* ── panes ──────────────────────────────────────────────────────────────── */
+.panes{flex:1;display:flex;flex-direction:column;min-height:0}
+.pane{display:flex;flex-direction:column;min-height:0;border-bottom:var(--hairline) solid var(--border)}
+.pane.fill{flex:1}
+.ph{height:var(--row-default);flex-shrink:0;display:flex;align-items:center;gap:var(--s-4);
+padding:0 var(--s-4);border-bottom:var(--hairline) solid var(--border);background:var(--surface)}
+.tab{font-size:var(--t-sm);font-weight:var(--w-ui);color:var(--text-faint);cursor:pointer;
+padding:var(--s-1) 0;border-bottom:var(--hairline) solid transparent;margin-bottom:-1px}
+.tab:hover{color:var(--text-dim)}.tab.on{color:var(--text);border-bottom-color:var(--text)}
+.tab .c{color:var(--text-faint);margin-left:var(--s-1);font-family:var(--font-mono)}
+.body{flex:1;overflow-y:auto;min-height:0}
+.view{display:none}.view.on{display:block}
+/* ── tables ─────────────────────────────────────────────────────────────── */
 table{width:100%;border-collapse:collapse}
-th{font-size:9px;letter-spacing:.13em;text-transform:uppercase;color:var(--dim);text-align:right;
-padding:8px 14px;font-weight:700;border-bottom:1px solid var(--bd2);white-space:nowrap}
-th:first-child,td:first-child{text-align:left}
-td{padding:7px 14px;border-bottom:1px solid var(--bd2);text-align:right;font-size:12.5px;white-space:nowrap}
-tbody tr{transition:background .1s}tbody tr:hover{background:var(--pnl2)}
-tr.buy{background:rgba(61,220,132,.045)}tr.sell{background:rgba(255,77,109,.045)}
-@keyframes fl{0%{background:rgba(61,220,132,.2)}100%{background:transparent}}
-tr.new{animation:fl 1.5s ease-out}
-/* token cell */
-.tk{display:flex;align-items:center;gap:8px}
-.av{width:22px;height:22px;border-radius:6px;display:grid;place-items:center;font-size:9.5px;
-font-weight:800;color:#0b0b0f;flex-shrink:0;letter-spacing:-.03em}
-.sym{font-weight:700;font-size:12.5px;cursor:pointer}.sym:hover{color:var(--gr)}
-.lks{display:flex;gap:4px;opacity:0;transition:opacity .12s}
-tr:hover .lks,.card:hover .lks{opacity:1}
-.lk{font-size:8.5px;font-weight:700;color:var(--dim);text-decoration:none;border:1px solid var(--bd);
-padding:1px 5px;border-radius:4px;letter-spacing:.04em}
-.lk:hover{color:var(--cy);border-color:var(--cy)}
-.pos{color:var(--gr)}.neg{color:var(--rd)}.dim{color:var(--dim)}.mut{color:var(--mut)}
-.tag{font-size:9.5px;font-weight:700;padding:2px 7px;border-radius:5px;background:rgba(139,147,167,.1);color:var(--mut)}
-.tag.v{background:rgba(90,200,250,.1);color:var(--cy)}
-.sc{font-size:9.5px;font-weight:800;padding:2px 7px;border-radius:5px}
-.sc-STRONG{background:rgba(61,220,132,.14);color:var(--gr)}
-.sc-watch{background:rgba(255,179,64,.12);color:var(--am)}
-.sc-weak{color:var(--dim)}.sc-BLOCKED{background:rgba(255,77,109,.14);color:var(--rd)}
-/* rail feed cards */
-.card{padding:10px 14px;border-bottom:1px solid var(--bd2);cursor:default}
-.card:hover{background:var(--pnl2)}
-.ch{display:flex;align-items:center;gap:6px;font-size:11.5px;margin-bottom:7px}
-.ch .who{font-weight:700;color:var(--pu)}
-.ch .act{font-weight:700}.ch .t{margin-left:auto;color:var(--dim);font-size:10.5px}
-.mini{display:flex;align-items:center;gap:9px;padding:8px 10px;background:var(--pnl);
-border:1px solid var(--bd);border-radius:9px}
-.mini .nm{font-weight:700;font-size:12px}
-.mini .sub{font-size:10px;color:var(--dim);margin-top:1px}
-.mini .amt{margin-left:auto;font-weight:700;font-size:12.5px}
-/* right rail scout cards */
-.scard{padding:11px 14px;border-bottom:1px solid var(--bd2)}
-.scard:hover{background:var(--pnl2)}
-.sct{display:flex;align-items:center;gap:8px;margin-bottom:8px}
-.sct .nm{font-weight:700;font-size:13px;cursor:pointer}.sct .nm:hover{color:var(--gr)}
-.grid4{display:grid;grid-template-columns:1fr 1fr;gap:6px 10px}
-.st .l{font-size:8.5px;letter-spacing:.1em;color:var(--dim);text-transform:uppercase;font-weight:700}
-.st .v{font-size:11.5px;font-weight:600;margin-top:1px}
-.empty{color:var(--dim);text-align:center;padding:30px 14px;font-size:11.5px}
-/* status bar */
-.status{display:flex;align-items:center;gap:16px;height:30px;padding:0 14px;background:var(--pnl);
-border-top:1px solid var(--bd);font-size:10.5px;color:var(--dim);flex-shrink:0}
-.status b{color:var(--mut);font-weight:600}
-.dot{width:6px;height:6px;border-radius:50%;background:var(--gr);animation:p 2s infinite}
-@keyframes p{0%{box-shadow:0 0 0 0 rgba(61,220,132,.5)}70%{box-shadow:0 0 0 6px rgba(61,220,132,0)}100%{box-shadow:0 0 0 0 rgba(61,220,132,0)}}
-.agl{display:flex;align-items:center;gap:7px;padding:7px 14px;font-size:11px;color:var(--mut);
-border-bottom:1px solid var(--bd2)}
-.agl .st2{width:6px;height:6px;border-radius:50%;background:var(--dim)}
-.agl.on .st2{background:var(--gr);box-shadow:0 0 5px rgba(61,220,132,.7)}
-.agl.on{color:var(--tx)}.agl small{margin-left:auto;color:var(--dim);font-size:9.5px;letter-spacing:.06em}
-.wv{padding:16px;max-width:620px}
-textarea{width:100%;height:220px;background:var(--pnl);border:1px solid var(--bd);border-radius:10px;
-color:var(--tx);padding:12px;font-family:"JetBrains Mono",monospace;font-size:11.5px;resize:vertical}
-.hint{color:var(--dim);font-size:11px;margin:8px 0}
-.toast{position:fixed;bottom:44px;left:50%;transform:translateX(-50%) translateY(70px);background:var(--gr);
-color:#04241a;font-weight:700;padding:8px 16px;border-radius:8px;font-size:11.5px;
-transition:transform .2s cubic-bezier(.2,.9,.3,1.3);z-index:99}
-.toast.on{transform:translateX(-50%) translateY(0)}
+thead th{position:sticky;top:0;z-index:1;background:var(--bg);font-size:var(--t-micro);
+line-height:var(--lh-micro);letter-spacing:var(--tracking-micro);text-transform:uppercase;
+color:var(--text-dim);font-weight:var(--w-ui);text-align:right;padding:var(--s-2) var(--s-3);
+border-bottom:var(--hairline) solid var(--border);white-space:nowrap}
+thead th:first-child{text-align:left;padding-left:calc(var(--gutter) + var(--s-3))}
+tbody td{height:var(--row-dense);padding:0 var(--s-3);text-align:right;white-space:nowrap;
+border-bottom:var(--hairline) solid var(--border);font-size:var(--t-base)}
+tbody td:first-child{text-align:left;padding-left:calc(var(--gutter) + var(--s-3))}
+tbody tr{position:relative;transition:background var(--dur-fast) var(--ease)}
+tbody tr:hover{background:var(--fill-hover)}
+tbody tr td:first-child::before{content:"";position:absolute;left:0;top:0;bottom:0;width:var(--gutter);background:transparent}
+tr[data-origin="agent"] td:first-child::before{background:var(--agent)}
+tr[data-origin="agent-proposed"] td:first-child::before{background:color-mix(in oklab,var(--agent) 40%,transparent)}
+tr[data-origin="pending"] td:first-child::before{background:var(--pending)}
+@keyframes flash-up{from{background:var(--fill-up)}to{background:transparent}}
+@keyframes flash-down{from{background:var(--fill-down)}to{background:transparent}}
+.flash-up{animation:flash-up var(--dur-flash) var(--ease)}
+.flash-down{animation:flash-down var(--dur-flash) var(--ease)}
+.sym{font-weight:var(--w-ui);cursor:pointer}
+.sym:hover{color:var(--focus)}
+.lk{font-size:var(--t-micro);letter-spacing:.04em;color:var(--text-faint);text-decoration:none;
+border:var(--hairline) solid var(--border);border-radius:var(--r-sm);padding:0 var(--s-1);margin-left:var(--s-1)}
+.lk:hover{color:var(--focus);border-color:var(--focus)}
+.lks{opacity:0;transition:opacity var(--dur-fast) var(--ease)}
+tr:hover .lks{opacity:1}
+.tag{height:18px;display:inline-flex;align-items:center;padding:0 var(--s-2);border-radius:var(--r-sm);
+font-size:var(--t-xs);font-weight:var(--w-ui);background:var(--fill-hover);color:var(--text-dim)}
+.tag.ok{background:color-mix(in oklab,var(--up) 16%,transparent);color:var(--up)}
+.empty{padding:var(--s-6) var(--s-4);color:var(--text-faint);font-size:var(--t-sm)}
+/* ── agent rail ─────────────────────────────────────────────────────────── */
+.rail{width:var(--rail-w);flex-shrink:0;border-left:var(--hairline) solid var(--border);
+background:var(--surface);display:flex;flex-direction:column}
+.rh{height:var(--row-comfy);flex-shrink:0;display:flex;align-items:center;gap:var(--s-2);
+padding:0 var(--s-4);border-bottom:var(--hairline) solid var(--border)}
+.dot{width:6px;height:6px;border-radius:50%;background:var(--agent)}
+.trace{flex:1;overflow-y:auto;min-height:0}
+@keyframes enter{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+.tr{padding:var(--s-2) var(--s-4) var(--s-2) calc(var(--s-4) - var(--gutter));
+border-bottom:var(--hairline) solid var(--border);border-left:var(--gutter) solid var(--agent);
+animation:enter var(--dur-enter) var(--ease)}
+.tr.skip{border-left-color:color-mix(in oklab,var(--agent) 40%,transparent)}
+.tr .h{display:flex;align-items:baseline;gap:var(--s-2);margin-bottom:2px}
+.tr .who{font-size:var(--t-xs);color:var(--agent);font-weight:var(--w-ui)}
+.tr .act{font-size:var(--t-sm);font-weight:var(--w-ui)}
+.tr .t{margin-left:auto;font-family:var(--font-mono);font-size:var(--t-micro);color:var(--text-faint)}
+.tr .why{font-size:var(--t-xs);line-height:var(--lh-xs);color:var(--text-dim)}
+.tr .meta{font-family:var(--font-mono);font-size:var(--t-micro);color:var(--text-faint);margin-top:2px}
+.agents{flex-shrink:0;border-top:var(--hairline) solid var(--border)}
+.ag{height:var(--row-default);display:flex;align-items:center;gap:var(--s-2);padding:0 var(--s-4);
+font-size:var(--t-sm);color:var(--text-faint)}
+.ag .s{width:6px;height:6px;border-radius:50%;background:var(--border-strong)}
+.ag.on{color:var(--text)}.ag.on .s{background:var(--agent)}
+.ag .st{margin-left:auto;font-size:var(--t-micro);letter-spacing:var(--tracking-micro);text-transform:uppercase}
+/* ── wallets ────────────────────────────────────────────────────────────── */
+.wv{padding:var(--s-4);max-width:640px}
+textarea{width:100%;height:240px;background:var(--surface-raised);border:var(--hairline) solid var(--border);
+border-radius:var(--r-sm);color:var(--text);padding:var(--s-3);font-family:var(--font-mono);
+font-size:var(--t-sm);resize:vertical}
+:where(a,button,input,textarea,[tabindex]):focus-visible{outline:var(--hairline) solid var(--focus);
+outline-offset:1px;border-color:var(--focus)}
+.status{height:var(--row-default);flex-shrink:0;display:flex;align-items:center;gap:var(--s-4);
+padding:0 var(--s-4);border-top:var(--hairline) solid var(--border);background:var(--surface);
+font-size:var(--t-xs);color:var(--text-faint)}
+.status b{color:var(--text-dim);font-weight:var(--w-ui);font-family:var(--font-mono)}
+@media (prefers-reduced-motion:reduce){*,*::before,*::after{transition-duration:.01ms!important;
+animation-duration:.01ms!important}.flash-up{animation:flash-up var(--dur-flash) var(--ease)!important}
+.flash-down{animation:flash-down var(--dur-flash) var(--ease)!important}}
 </style></head><body>
 <nav>
- <div class=brand><div class=gem>◆</div><b>CAMBRIAN</b></div>
- <span class="nv on" data-v=desk>Desk</span>
- <span class=nv data-v=scout>Scouting</span>
- <span class=nv data-v=wallets>Wallets</span>
- <span class=sp></span>
- <span class=pill id=mode>PAPER</span>
- <span class=pill id=themeBtn style="cursor:pointer;background:transparent;border-color:var(--bd);color:var(--mut)"
-  title="cycle theme (T)">◐ VOID</span>
- <span class="eqn m" id=eqTop>$0.00</span>
- <button class=btn onclick="alert('Wallet connect (Privy) arrives with LIVE mode. The paper desk needs no wallet.')">Connect</button>
+ <img class=mark src="data:image/png;base64,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" alt=Cambrian>
+ <div class="ni on" data-v=desk title="Desk (1)">▤</div>
+ <div class=ni data-v=scout title="Scouting (2)">◎</div>
+ <div class=ni data-v=wallets title="Wallets (3)">◈</div>
 </nav>
-<div class=shell>
- <div class=rail>
-  <div class=rh>Agent activity<span class=c id=actc></span></div>
-  <div id=feed></div>
-  <div class=rh style="border-top:1px solid var(--bd)">Agents</div>
-  <div id=agents></div>
+<main>
+ <div class=topbar>
+  <span class=wordmark>Cambrian</span>
+  <span class=chip id=mode>Paper</span>
+  <span class=tbmeta id=meta></span>
+  <span class=grow></span>
+  <span class=tbmeta>Equity</span>
+  <span class="num" id=eqTop style="font-size:var(--t-md);font-weight:var(--w-ui)">$0.00</span>
+  <button class="btn primary" onclick="alert('Wallet connect (Privy) arrives with live mode. Paper needs no wallet.')">Connect</button>
  </div>
- <center>
-  <div class=kpis>
-   <div class=kpi><div class=l>Equity</div><div class="n m" id=eq>$0</div></div>
-   <div class=kpi><div class=l>Realized</div><div class="n m" id=real>$0</div></div>
-   <div class=kpi><div class=l>Unrealized</div><div class="n m" id=unreal>$0</div></div>
-   <div class=kpi><div class=l>Open</div><div class="n m" id=open>0</div></div>
-   <div class=kpi><div class=l>Win rate</div><div class="n m" id=wr>–</div></div>
-  </div>
-  <div id=v-desk>
-   <div class=tabs><span class="tb on" data-t=pos>Positions<span class=c id=cpos></span></span>
-    <span class=tb data-t=clo>Closed<span class=c id=cclo></span></span>
-    <span class=tb data-t=blo>Blotter<span class=c id=cblo></span></span></div>
-   <div class="pane on" id=p-pos><table><thead><tr><th>Token</th><th>Pad</th><th>Agent</th>
-    <th>Size</th><th>Value</th><th>Δ%</th><th>uPnL</th><th>Age</th></tr></thead>
-    <tbody id=positions></tbody></table></div>
-   <div class=pane id=p-clo><table><thead><tr><th>Token</th><th>Pad</th><th>Cost</th><th>Exit</th>
-    <th>PnL</th><th>Exit reason</th></tr></thead><tbody id=closed></tbody></table></div>
-   <div class=pane id=p-blo><table><thead><tr><th>Time</th><th></th><th>Token</th><th>Agent</th>
-    <th>USD</th><th>PnL</th></tr></thead><tbody id=blotter></tbody></table></div>
-  </div>
-  <div id=v-scout style=display:none>
-   <table><thead><tr><th>Token</th><th>Pad</th><th>Net flow</th><th>Liquidity</th><th>Confluence</th></tr></thead>
-    <tbody id=scoutfull></tbody></table></div>
-  <div id=v-wallets style=display:none><div class=wv>
-   <div class=hint>Wallets for <b>Agent C</b> to copy-trade. One address per line. Saved to
-    <span class=m>~/cambrian_wallets.json</span>.</div>
-   <textarea id=wtext placeholder="0xabc…&#10;0xdef…"></textarea>
-   <button class=btn style="margin-top:10px" onclick=saveWallets()>Save wallets</button>
-   <div class=hint id=wcount></div></div></div>
- </center>
- <div class="rail r">
-  <div class=rh>Hunting<span class=c id=scc></span></div>
-  <div id=scout></div>
+ <div class=kpis>
+  <div class="kpi hero"><div class=label-micro>Equity P&L</div><div class=v id=eq>$0.00</div></div>
+  <div class=kpi><div class=label-micro>Realized</div><div class=v id=real>$0.00</div></div>
+  <div class=kpi><div class=label-micro>Unrealized</div><div class=v id=unreal>$0.00</div></div>
+  <div class=kpi><div class=label-micro>Open</div><div class=v id=open>0</div></div>
+  <div class=kpi><div class=label-micro>Win rate</div><div class=v id=wr>—</div></div>
+  <div class=kpi><div class=label-micro>Scouting</div><div class=v id=scn>0</div></div>
  </div>
-</div>
-<div class=status><span class=dot></span><b id=stmode>paper</b>
- <span>block <b id=stblk>–</b></span><span>PM <b id=stpm>–</b></span>
- <span>size <b id=stsz>–</b></span><span>ETH <b id=steth>–</b></span>
- <span class=sp style=flex:1></span><span id=sterr></span><span>CAMBRIAN · Robinhood Chain</span></div>
-<div class=toast id=toast></div>
+ <div class=panes id=v-desk>
+  <div class="pane fill">
+   <div class=ph><span class=label-micro>Positions</span><span class="tbmeta num" id=posn></span></div>
+   <div class=body><table><thead><tr><th>Instrument</th><th>Pad</th><th>Agent</th><th>Size</th>
+    <th>Value</th><th>Δ</th><th>Unreal</th><th>Age</th></tr></thead><tbody id=positions></tbody></table></div>
+  </div>
+  <div class=pane style="height:38%">
+   <div class=ph><span class="tab on" data-t=blo>Fills<span class="c num" id=cblo></span></span>
+    <span class=tab data-t=clo>Closed<span class="c num" id=cclo></span></span></div>
+   <div class=body>
+    <div class="view on" id=p-blo><table><thead><tr><th>Time</th><th>Side</th><th>Instrument</th>
+     <th>Agent</th><th>Notional</th><th>P&L</th></tr></thead><tbody id=blotter></tbody></table></div>
+    <div class=view id=p-clo><table><thead><tr><th>Instrument</th><th>Pad</th><th>Cost</th><th>Exit</th>
+     <th>P&L</th><th>Reason</th></tr></thead><tbody id=closed></tbody></table></div>
+   </div>
+  </div>
+ </div>
+ <div class=panes id=v-scout style=display:none>
+  <div class="pane fill">
+   <div class=ph><span class=label-micro>Scouting</span><span class=tbmeta>agent-proposed candidates</span></div>
+   <div class=body><table><thead><tr><th>Instrument</th><th>Pad</th><th>Net flow</th><th>Liquidity</th>
+    <th>Confluence</th></tr></thead><tbody id=scoutfull></tbody></table></div>
+  </div>
+ </div>
+ <div class=panes id=v-wallets style=display:none>
+  <div class="pane fill"><div class=ph><span class=label-micro>Wallet tracker</span>
+   <span class=tbmeta>agent C feed</span></div>
+   <div class=body><div class=wv>
+    <div class=tbmeta style="margin-bottom:var(--s-2)">One address per line. Agent C copy-trades these once enabled.</div>
+    <textarea id=wtext placeholder="0x…"></textarea>
+    <div style="margin-top:var(--s-2);display:flex;gap:var(--s-2);align-items:center">
+     <button class="btn primary" onclick=saveWallets()>Save</button>
+     <span class=tbmeta id=wcount></span></div>
+   </div></div>
+  </div>
+ </div>
+ <div class=status><span>Block <b id=stblk>—</b></span><span>PM <b id=stpm>—</b></span>
+  <span>Size <b id=stsz>—</b></span><span>ETH <b id=steth>—</b></span>
+  <span class=grow></span><span id=sterr></span><span>Robinhood Chain</span></div>
+</main>
+<aside class=rail>
+ <div class=rh><span class=dot></span><span class=label-micro style=color:var(--agent)>Agent trace</span>
+  <span class=grow></span><span class="tbmeta num" id=trn></span></div>
+ <div class=trace id=trace></div>
+ <div class=agents id=agents></div>
+</aside>
 <script>
 const DEX=t=>`https://dexscreener.com/search?q=${t}`,EXP=t=>`https://robinhoodchain.blockscout.com/address/${t}`;
 const PADURL={"pools-trade":"https://pools.trade/token/","flap":"https://flap.sh/token/",
- "bankr":"https://bankr.bot/token/","pons":"https://pons.fun/token/"};
-const AVC=['#3ddc84','#5ac8fa','#a78bfa','#ffb340','#ff4d6d','#4ade80','#38bdf8','#f472b6'];
-let SEEN=new Set(),FIRST=true;
+"bankr":"https://bankr.bot/token/","pons":"https://pons.fun/token/"};
+let PREV={};
 function d$(n){const s=n<0?'-':'',a=Math.abs(n);
  return s+'$'+(a>=1e6?(a/1e6).toFixed(2)+'M':a>=1e3?(a/1e3).toFixed(1)+'K':a.toFixed(2))}
-function cls(n){return n>0?'pos':n<0?'neg':'dim'}
-function hash(s){let h=0;for(let i=0;i<s.length;i++)h=(h*31+s.charCodeAt(i))|0;return Math.abs(h)}
-function av(sym,addr){const c=AVC[hash(addr)%AVC.length];
- return `<div class=av style="background:${c}">${(sym||'?').replace(/[^A-Za-z0-9]/g,'').slice(0,2).toUpperCase()}</div>`}
-function toast(m){const t=document.getElementById('toast');t.textContent=m;t.classList.add('on');
- clearTimeout(t._h);t._h=setTimeout(()=>t.classList.remove('on'),1300)}
-function copy(a){navigator.clipboard.writeText(a).then(()=>toast('copied '+a.slice(0,12)+'…'))}
-function lks(addr,pad){const p=(pad||'').replace('?','');
- return `<span class=lks><a class=lk href="${DEX(addr)}" target=_blank>DEX</a>`+
- (PADURL[p]?`<a class=lk href="${PADURL[p]+addr}" target=_blank>PAD</a>`:'')+
- `<a class=lk href="${EXP(addr)}" target=_blank>SCAN</a></span>`}
-function tkc(sym,addr,pad){return `<div class=tk>${av(sym,addr)}<span class=sym title="${addr} — click to copy" `+
- `onclick="copy('${addr}')">${sym||'?'}</span>${lks(addr,pad)}</div>`}
-function tag(p,v){return `<span class="tag ${v?'v':''}">${p}${v?' ✓':''}</span>`}
-document.querySelectorAll('.nv').forEach(n=>n.onclick=()=>{
- document.querySelectorAll('.nv').forEach(x=>x.classList.remove('on'));n.classList.add('on');
+function sgn(n){return n>0?'up':n<0?'down':'faint'}
+function lks(a,pad){const p=(pad||'').replace('?','');
+ return `<span class=lks><a class=lk href="${DEX(a)}" target=_blank>DEX</a>`+
+ (PADURL[p]?`<a class=lk href="${PADURL[p]+a}" target=_blank>PAD</a>`:'')+
+ `<a class=lk href="${EXP(a)}" target=_blank>SCAN</a></span>`}
+function inst(sym,addr,pad){return `<span class=sym title="${addr} — click to copy" `+
+ `onclick="navigator.clipboard.writeText('${addr}')">${sym||'—'}</span>${lks(addr,pad)}`}
+function tag(p,v){return `<span class="tag ${v?'ok':''}">${p}</span>`}
+function flash(id,val){const el=document.getElementById(id);if(!el)return;
+ const p=PREV[id];if(p!==undefined&&p!==val){el.classList.remove('flash-up','flash-down');void el.offsetWidth;
+ el.classList.add(val>p?'flash-up':'flash-down')}PREV[id]=val}
+document.querySelectorAll('.ni').forEach(n=>n.onclick=()=>{
+ document.querySelectorAll('.ni').forEach(x=>x.classList.remove('on'));n.classList.add('on');
  ['desk','scout','wallets'].forEach(v=>document.getElementById('v-'+v).style.display=v==n.dataset.v?'':'none')});
-document.querySelectorAll('.tb').forEach(t=>t.onclick=()=>{
- document.querySelectorAll('.tb').forEach(x=>x.classList.remove('on'));t.classList.add('on');
- document.querySelectorAll('.pane').forEach(p=>p.classList.remove('on'));
+document.querySelectorAll('.tab').forEach(t=>t.onclick=()=>{
+ document.querySelectorAll('.tab').forEach(x=>x.classList.remove('on'));t.classList.add('on');
+ document.querySelectorAll('.view').forEach(v=>v.classList.remove('on'));
  document.getElementById('p-'+t.dataset.t).classList.add('on')});
-const THEMES=[['void','VOID'],['carbon','CARBON'],['midnight','MIDNIGHT'],['phosphor','PHOSPHOR'],['slate','SLATE']];
-let ti=THEMES.findIndex(t=>t[0]==(localStorage.cambrianTheme||'void'));if(ti<0)ti=0;
-function setTheme(i){ti=(i+THEMES.length)%THEMES.length;const[v,n]=THEMES[ti];
- if(v=='void')document.documentElement.removeAttribute('data-t');else document.documentElement.setAttribute('data-t',v);
- localStorage.cambrianTheme=v;document.getElementById('themeBtn').textContent='◐ '+n}
-setTheme(ti);
-document.getElementById('themeBtn').onclick=()=>setTheme(ti+1);
 document.addEventListener('keydown',e=>{if(e.target.tagName=='TEXTAREA')return;
- if(e.key.toLowerCase()=='t'){setTheme(ti+1);return}
- const k={'1':'desk','2':'scout','3':'wallets'}[e.key];if(k)document.querySelector(`.nv[data-v=${k}]`).click()});
+ const k={'1':'desk','2':'scout','3':'wallets'}[e.key];
+ if(k)document.querySelector(`.ni[data-v=${k}]`).click()});
 async function saveWallets(){
  const l=document.getElementById('wtext').value.split('\n').map(s=>s.trim()).filter(s=>/^0x[a-fA-F0-9]{40}$/.test(s));
  const d=await(await fetch('/wallets',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(l)})).json();
- document.getElementById('wcount').textContent=`${d.count} wallets tracked`;toast(`saved ${d.count} wallets`)}
+ document.getElementById('wcount').textContent=`${d.count} tracked`}
 async function loadWallets(){const d=await(await fetch('/wallets')).json();
  document.getElementById('wtext').value=d.wallets.join('\n');
- document.getElementById('wcount').textContent=`${d.count} wallets tracked`}
+ document.getElementById('wcount').textContent=`${d.count} tracked`}
 async function tick(){let d;try{d=await(await fetch('/data')).json()}catch(e){return}
- const eq=document.getElementById('eqTop');eq.textContent=d$(d.equity);eq.className='eqn m '+cls(d.equity);
- document.getElementById('eq').innerHTML=`<span class=${cls(d.equity)}>${d$(d.equity)}</span>`;
- document.getElementById('real').innerHTML=`<span class=${cls(d.realized)}>${d$(d.realized)}</span>`;
- document.getElementById('unreal').innerHTML=`<span class=${cls(d.unrealized)}>${d$(d.unrealized)}</span>`;
+ document.getElementById('meta').innerHTML=`<b>${d.mode}</b> <span class=sep>·</span> ${d.updated}`;
+ const et=document.getElementById('eqTop');et.textContent=d$(d.equity);et.className='num '+sgn(d.equity);
+ const eq=document.getElementById('eq');eq.textContent=d$(d.equity);eq.className='v '+sgn(d.equity);
+ flash('eq',d.equity);
+ const rl=document.getElementById('real');rl.textContent=d$(d.realized);rl.className='v '+sgn(d.realized);
+ const ur=document.getElementById('unreal');ur.textContent=d$(d.unrealized);ur.className='v '+sgn(d.unrealized);
+ flash('unreal',d.unrealized);
  document.getElementById('open').textContent=d.positions.length;
- const t=d.wins+d.losses;document.getElementById('wr').textContent=t?Math.round(100*d.wins/t)+'%':'–';
- document.getElementById('cpos').textContent=d.positions.length;
- document.getElementById('cclo').textContent=d.closed.length;
+ const t=d.wins+d.losses;document.getElementById('wr').textContent=t?Math.round(100*d.wins/t)+'%':'—';
+ document.getElementById('scn').textContent=d.scouting.length;
+ document.getElementById('posn').textContent=d.positions.length;
  document.getElementById('cblo').textContent=d.blotter.length;
- document.getElementById('stblk').textContent=d.block;document.getElementById('stpm').textContent=d.model;
+ document.getElementById('cclo').textContent=d.closed.length;
+ document.getElementById('stblk').textContent=d.block;
+ document.getElementById('stpm').textContent=d.model;
  document.getElementById('stsz').textContent='$'+d.size;
- document.getElementById('steth').textContent='$'+(d.eth||0).toLocaleString();document.getElementById('stmode').textContent=d.mode.toLowerCase();
- document.getElementById('sterr').innerHTML=d.err?`<span class=neg>${d.err}</span>`:'';
- // positions
+ document.getElementById('steth').textContent='$'+(d.eth||0).toLocaleString();
+ document.getElementById('sterr').innerHTML=d.err?`<span class=down>${d.err}</span>`:'';
  document.getElementById('positions').innerHTML=d.positions.length?d.positions.map(p=>
-  `<tr><td>${tkc(p.sym,p.token,p.pad)}</td><td>${tag(p.pad,true)}</td><td class=dim>${p.agent}</td>`+
-  `<td class=m>${d$(p.cost)}</td><td class=m>${d$(p.value)}</td>`+
-  `<td class="m ${cls(p.chg)}">${p.chg>0?'+':''}${p.chg}%</td>`+
-  `<td class="m ${cls(p.upnl)}">${d$(p.upnl)}</td><td class="m dim">${p.age}m</td></tr>`).join(''):
-  '<tr><td colspan=8 class=empty>flat — agents are hunting</td></tr>';
- document.getElementById('closed').innerHTML=d.closed.length?d.closed.map(c=>
-  `<tr><td>${tkc(c.sym,c.token,c.pad)}</td><td>${tag(c.pad,true)}</td><td class=m>${d$(c.cost)}</td>`+
-  `<td class=m>${d$(c.exit_value)}</td><td class="m ${cls(c.pnl)}">${d$(c.pnl)}</td>`+
-  `<td class=dim>${c.why}</td></tr>`).join(''):'<tr><td colspan=6 class=empty>no closed trades</td></tr>';
+  `<tr data-origin=agent><td>${inst(p.sym,p.token,p.pad)}</td><td>${tag(p.pad,true)}</td>`+
+  `<td class=dim>${p.agent}</td><td class=num>${d$(p.cost)}</td><td class=num>${d$(p.value)}</td>`+
+  `<td class="num ${sgn(p.chg)}">${p.chg>0?'+':''}${p.chg}%</td>`+
+  `<td class="num ${sgn(p.upnl)}">${d$(p.upnl)}</td><td class="num faint">${p.age}m</td></tr>`).join(''):
+  '<tr><td colspan=8 class=empty>No open positions. Agents are scanning.</td></tr>';
  document.getElementById('blotter').innerHTML=d.blotter.length?d.blotter.map(b=>
-  `<tr class=${b.side=='BUY'?'buy':'sell'}><td class="m dim">${b.t}</td>`+
-  `<td class="${b.side=='BUY'?'pos':'neg'}" style=font-weight:800>${b.side}</td>`+
-  `<td>${tkc(b.sym,b.token,b.pad)}</td><td class=dim>${b.agent}</td><td class=m>${d$(b.usd)}</td>`+
-  `<td class="m ${b.pnl==null?'dim':cls(b.pnl)}">${b.pnl==null?'—':d$(b.pnl)}</td></tr>`).join(''):
-  '<tr><td colspan=6 class=empty>no trades yet</td></tr>';
- // left rail: agent activity feed (from blotter)
- document.getElementById('actc').textContent=d.blotter.length;
- document.getElementById('feed').innerHTML=d.blotter.length?d.blotter.slice(0,18).map(b=>
-  `<div class=card><div class=ch><span class=who>${b.agent}</span>`+
-  `<span class="act ${b.side=='BUY'?'pos':'neg'}">${b.side=='BUY'?'bought':'sold'}</span>`+
-  `<span class=m>${d$(b.usd)}</span><span class=t>${b.t}</span></div>`+
-  `<div class=mini>${av(b.sym,b.token)}<div><div class=nm>${b.sym||'?'}</div>`+
-  `<div class=sub>${b.pad}</div></div><span class="amt m ${b.pnl==null?'':cls(b.pnl)}">`+
-  `${b.pnl==null?d$(b.usd):(b.pnl>0?'+':'')+d$(b.pnl)}</span></div></div>`).join(''):
-  '<div class=empty>no agent activity yet</div>';
- document.getElementById('agents').innerHTML=d.agents.map(a=>
-  `<div class="agl ${a.on?'on':''}"><span class=st2></span>${a.name}<small>${a.on?'LIVE':'SOON'}</small></div>`).join('');
- // right rail: hunting
- document.getElementById('scc').textContent=d.scouting.length;
- const sc=d.scouting.map(s=>{const isnew=!SEEN.has(s.token)&&!FIRST;SEEN.add(s.token);
-  return `<div class="scard ${isnew?'new':''}"><div class=sct>${av(s.sym,s.token)}`+
-  `<span class=nm onclick="copy('${s.token}')" title="${s.token}">${s.sym||'?'}</span>`+
-  `<span style=margin-left:auto><span class="sc sc-${s.tier}">${s.tier}</span></span></div>`+
-  `<div class=grid4><div class=st><div class=l>Net flow</div><div class="v m ${cls(s.net)}">${d$(s.net)}</div></div>`+
-  `<div class=st><div class=l>Liquidity</div><div class="v m">${d$(s.liq)}</div></div>`+
-  `<div class=st><div class=l>Pad</div><div class=v>${tag(s.pad,s.verified)}</div></div>`+
-  `<div class=st><div class=l>Confluence</div><div class="v m">${s.conf}</div></div></div>`+
-  `<div style=margin-top:7px>${lks(s.token,s.pad)}</div></div>`}).join('');
- document.getElementById('scout').innerHTML=sc||'<div class=empty>scanning Robinhood Chain…</div>';
+  `<tr data-origin=agent><td class="num faint">${b.t}</td>`+
+  `<td class="${b.side=='BUY'?'up':'down'}">${b.side=='BUY'?'Buy':'Sell'}</td>`+
+  `<td>${inst(b.sym,b.token,b.pad)}</td><td class=dim>${b.agent}</td>`+
+  `<td class=num>${d$(b.usd)}</td>`+
+  `<td class="num ${b.pnl==null?'faint':sgn(b.pnl)}">${b.pnl==null?'—':d$(b.pnl)}</td></tr>`).join(''):
+  '<tr><td colspan=6 class=empty>No fills.</td></tr>';
+ document.getElementById('closed').innerHTML=d.closed.length?d.closed.map(c=>
+  `<tr data-origin=agent><td>${inst(c.sym,c.token,c.pad)}</td><td>${tag(c.pad,true)}</td>`+
+  `<td class=num>${d$(c.cost)}</td><td class=num>${d$(c.exit_value)}</td>`+
+  `<td class="num ${sgn(c.pnl)}">${d$(c.pnl)}</td><td class=dim>${c.why}</td></tr>`).join(''):
+  '<tr><td colspan=6 class=empty>No closed trades.</td></tr>';
  document.getElementById('scoutfull').innerHTML=d.scouting.length?d.scouting.map(s=>
-  `<tr><td>${tkc(s.sym,s.token,s.pad)}</td><td>${tag(s.pad,s.verified)}</td>`+
-  `<td class="m ${cls(s.net)}">${d$(s.net)}</td><td class=m>${d$(s.liq)}</td>`+
-  `<td><span class="sc sc-${s.tier}">${s.conf} ${s.tier}</span></td></tr>`).join(''):
-  '<tr><td colspan=5 class=empty>scanning…</td></tr>';
- FIRST=false;
+  `<tr data-origin=agent-proposed><td>${inst(s.sym,s.token,s.pad)}</td><td>${tag(s.pad,s.verified)}</td>`+
+  `<td class="num ${sgn(s.net)}">${d$(s.net)}</td><td class=num>${d$(s.liq)}</td>`+
+  `<td class=num>${s.conf} <span class=faint>${s.tier}</span></td></tr>`).join(''):
+  '<tr><td colspan=5 class=empty>Scanning Robinhood Chain.</td></tr>';
+ // agent rail — reasoning trace
+ document.getElementById('trn').textContent=(d.trace||[]).length;
+ document.getElementById('trace').innerHTML=(d.trace||[]).length?d.trace.map(x=>
+  `<div class="tr ${x.decision=='buy'?'':'skip'}"><div class=h>`+
+  `<span class=who>${x.agent}</span>`+
+  `<span class="act ${x.decision=='buy'?'up':'dim'}">${x.decision=='buy'?'Bought':'Passed'} ${x.sym}</span>`+
+  `<span class=t>${x.t}</span></div>`+
+  `<div class=why>${x.reason}</div>`+
+  `<div class=meta>conf ${x.conf} · net ${d$(x.net)} · liq ${d$(x.liq)} · ${x.pad}</div></div>`).join(''):
+  '<div class=empty>No agent decisions yet.</div>';
+ document.getElementById('agents').innerHTML=d.agents.map(a=>
+  `<div class="ag ${a.on?'on':''}"><span class=s></span>${a.name}<span class="st ${a.on?'':'faint'}">${a.on?'Live':'Idle'}</span></div>`).join('');
 }
 tick();setInterval(tick,4000);loadWallets();
 </script></body></html>
