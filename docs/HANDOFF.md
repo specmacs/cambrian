@@ -278,11 +278,27 @@ Getters, all verified live and pinned by selector tests: `getReserves`,
 `readyToGraduate`, `graduated`, `graduationThreshold`.
 
 ⚠️ **v2 creator taxes are high too.** Live curves carried `creatorTaxBps` of 500,
-600 and 1000 on top of the 1% protocol fee — 12–22% ROUND TRIP before any price
-move. A live check priced a buy and an immediate sell back at **78.7%** and
-**85.9%** of the input. The 3% gate blocked 2 of 2 sampled curves. Small sample,
-but it says the same thing flap does: **the tax, not the chart, decides whether a
-launch is worth touching.** Use `round_trip_cost_bps()` when sizing.
+600, 700 and 1000 on top of the 1% protocol fee — 12–22% ROUND TRIP before any
+price move, charged on BOTH legs. Use `round_trip_cost_bps()` when sizing.
+
+**But do not read a round-trip loss as all tax.** Quoting an instant buy→sell on
+three live curves and splitting the cost:
+
+```
+7% tax curve:   tax/fee 15.30%  +  slippage  0.94%  ->  16.10% lost
+0% tax curve:   tax/fee  1.89%  +  slippage 10.64%  ->  12.32% lost
+1% tax curve:   tax/fee  3.86%  +  slippage  5.17%  ->   8.83% lost
+```
+
+The zero-tax curve still lost 12.3%, nearly all of it slippage: 0.1 ETH against a
+curve holding ~4.4 ETH of pricing reserve is a big trade relative to depth, and
+constant product charges for it both ways. The two costs need different tools —
+**tax is fixed** (creator-set, both legs, same at any size; that is what the 3%
+gate is for), **slippage scales with size against depth** (controlled by position
+sizing, and never a reason to reject a token). The gate does nothing about
+slippage, so size the entry off curve depth separately.
+
+(These are QUOTES, not fills. The desk has no signing path — nothing was traded.)
 
 ### The tax gate — owner's hard rule: never above 3%
 
