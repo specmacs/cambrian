@@ -69,12 +69,18 @@ AuctionCreated(address,address,uint256,bytes)      0x7ede475fad18ccf0039f2b956c4
 DistributionInitialized(address,address,uint256)   0x0afd26d7f0833a451173acef122d058906aa7708ceb6f67ea7471a649d88b44b
 ```
 
-**There is no `TokenLaunched` event.** The full event list was read from a clone
-of `Uniswap/liquidity-launcher`, and 111,110 candidate signatures were brute-
-forced against the real topic0s in FRONG's launch tx with no match. When the
-owner's sniper contact said "the token launched event", he meant *the event the
-official pad emits at launch* — which is `TokenCreated` + `TokenDistributed`.
-Do not go hunting for a literal `TokenLaunched` again.
+**The Uniswap launcher has no `TokenLaunched` event.** The full event list was
+read from a clone of `Uniswap/liquidity-launcher`, and 111,110 candidate
+signatures were brute-forced against the real topic0s in FRONG's launch tx with
+no match. On the *official pad* the launch is `TokenCreated` + `TokenDistributed`.
+
+⚠️ **But a literal `TokenLaunched` does exist — on Pons.** An earlier version of
+this file generalised the finding above into "do not go hunting for a literal
+`TokenLaunched` again", which was wrong and nearly buried a real pad. Pons's own
+factory emits one; see *Independent pads* below. The sniper contact's phrase was
+accurate, it just named an event on a pad we had not identified yet. The lesson
+is narrow-scope your negative results: "not in Uniswap's launcher" is not "not on
+this chain".
 
 ### Why this beats what we had
 
@@ -100,16 +106,58 @@ Each pad runs its own strategy + fee-splitter pair.
 
 `pad_of()` ranks: **strategy > hook > deployer > suffix**.
 
-### Pads that do NOT use the launcher
+### Independent pads — SOLVED, both are now watched
 
-**Pons** and **Flap** tokens appear in neither launcher. They run their own
-factories and their launch events are still unknown. `examples/rh_padscan.py`
-exists to find them — clusters unknown `(emitter, topic0)` pairs from recent
-launches. This is the main open hole in verified-only trading.
+**Pons** and **flap** appear in neither launcher; they run their own factories.
+Their launch events used to be the main open hole in verified-only trading. Both
+are now recovered, wired into `LAUNCHPADS`, and pinned by tests.
 
-Known tokens: Pons `0x391e96EE8C17ca09Ee795331C1D10A70b3a1432B`,
-Flap `0x20024E485c0B22b42855589700721b28320A7777`,
-FRONG (pools.trade flagship) `0x6245e67affA44a23077f0Ea7f981a8DC743a0c47`.
+Method that worked (faster than clustering — reuse it for the next pad): take a
+token the pad launched, ask Blockscout `/api/v2/addresses/<token>` for its
+`creation_transaction_hash`, pull that receipt, and read the logs emitted *at the
+creator's own address*. Then brute-force the signature name against the topic0 to
+prove it.
+
+```
+pons  0xA5aAb3F0c6EeadF30Ef1D3Eb997108E976351feB   ~105 launches / 40k blocks
+      Blockscout: `PonsLaunchFactory`, source-verified
+      TokenDeployed(address,address,address,address,uint256,uint256)
+        0x1461370115e1c2be79cb529f8cfcbd11316e789d9c6099fc83417b0b4c48c62a
+      TokenLaunched(address,address,address,address,address,
+                    uint256,uint256,uint256,uint256,uint256)
+        0xdb51ea9ad51ab453a65a4cb7e60c3cb378c9501bb002609f8f97778fb6c4235a
+
+flap  0x26605f322f7fF986f381bB9A6e3f5DAb0bEaEb09   ~403 launches / 40k blocks
+      TransparentUpgradeableProxy -> impl 0x7bc20c2c..fa06, named `Portal`
+      launch    0x504e7f360b2e5fe33cbaaae4c593bc55305328341bf79009e43e0e3b7f699603
+      liquidity 0x71a10912a55f73d3cced0d1515c2b33c396c80342522bad0e295ccbede556f37
+```
+
+Both Pons events fire once per token, in the same tx: topic1 = the new token,
+topic2 = its v3 pool, topic3 = the v3 factory (constant), data word 0 = WETH. On
+`TokenLaunched` the **last data word is the creator's initial buy in wei** —
+observed 0, 0.2e18 and 3.5e18. That is a dev-buy size available at t=0, which is
+real entry signal we did not have before.
+
+flap's event is **unindexed** but carries its metadata inline, so name, symbol and
+the IPFS CID arrive with the launch and need no extra `eth_call`:
+`(uint256 timestamp, address creator, uint256 launchId, address token, …offsets…,
+string name, string symbol, string ipfsCid)`. Matching on emitter+topic0 is still
+unforgeable — only the pad can emit at the pad's address. Its signature *text* is
+not recovered yet, so that topic0 is chain-observed rather than keccak-proven.
+
+Live check after wiring: `discover_fresh` returned **18 launches in 1,500 blocks
+(~2.5 min) — 14 flap, 4 pons**. Before, it returned zero for both, because a
+blank `created_topic0` makes it skip the pad entirely (fail closed).
+
+Known tokens: FRONG (pools.trade flagship)
+`0x6245e67affA44a23077f0Ea7f981a8DC743a0c47`.
+`0x391e96EE8C17ca09Ee795331C1D10A70b3a1432B` is a Pons launch — contract
+`PonsLauncherToken`, but its ticker is **`Higher`**, not "Pons".
+⚠️ `0x20024E485c0B22b42855589700721b28320A7777` was recorded here as "Flap". On
+chain `name()`/`symbol()` return **`Prism Assets`/`PRISM`**. It is a genuine
+flap-factory launch, but it is not a token called Flap — the `7777` suffix was
+doing the labelling, which is precisely what a spoofable suffix should never do.
 
 ### Uniswap gateway — works, indexes 4663
 
@@ -162,6 +210,18 @@ opposite sign from v3's pool-perspective amounts. Verified in v4-core
 uniform sell-skew proved a sign bug was **wrong reasoning** — the owner
 correctly pointed out one $10 buy can be followed by ten $1 sells.
 
+**7. "There is no `TokenLaunched` event" was over-generalised.** True of Uniswap's
+launcher, false of the chain: Pons emits a literal `TokenLaunched`. The old
+wording told the next session not to look, so the claim protected itself. Fixed
+above, with the real signature pinned by a keccak test.
+
+**8. The desk regressed to Google-Fonts `<link>` tags.** `examples/cambrian_desk.py`
+in the repo was an older copy that fetched Geist from `fonts.googleapis.com` —
+the exact fallback-to-Segoe-UI bug the owner rejected twice. Restored from the
+owner's current file: fonts embedded as woff2 data URIs, zero external resources,
+and `--font-mono` now prefers the font that is actually loaded. **The repo copy
+was stale relative to the owner's local file — check that before trusting it.**
+
 ---
 
 ## Exit policy
@@ -213,21 +273,54 @@ required; plain `/v1` is wrong.
 
 ## UI / design
 
-`docs/DESIGN.md` + `docs/tokens.css`. Hard rules:
+**The entire UI lives inside `examples/cambrian_desk.py`** as the `PAGE`
+raw-string — tokens, layout, six palettes, the logo, and the fonts. That one
+file is the whole desk: chain scanning, agents, exit policy, paper engine, web
+server and interface. Copy it anywhere and it renders identically.
+`docs/DESIGN.md` + `docs/tokens.css` are the reference spec; nothing reads them
+at runtime.
 
-- **Violet means agent. Nothing else is ever violet.** 2px violet provenance
-  gutter marks agent-originated rows.
-- Teal = profit, coral = loss.
-- No floating cards. 28px dense rows. 2/4px radii.
-- Fonts must be **loaded**, not just declared — an earlier version named Inter
-  and JetBrains Mono without a `<link>` and fell back to Segoe UI on Windows.
-  Use tabular-nums for all numeric columns.
+**Fonts are embedded, not linked.** Geist and Geist Mono (latin subset) are
+inlined as woff2 data URIs, ~69 KB, two `@font-face` rules because both are
+variable faces spanning weights 400–600. Do NOT replace them with a Google
+Fonts `<link>` — an earlier version did that and fell back to Segoe UI offline,
+which the owner rejected twice. The page now loads **zero** external resources;
+the only outbound URLs are click-through links (DexScreener, Blockscout, the
+pad sites).
+
+**Palettes**: `instrument` is the default (no `data-theme` attribute), plus
+`graphite`, `void`, `ember`, `nocturne`, `daylight`. The owner wanted to *click
+through* them, not pick from a dropdown. He tried `void` and disliked it — do
+not make it the default.
+
+**The logo is inline SVG** in the page (not `assets/logo.svg`, which is just a
+copy), stroked with `var(--text)` and `var(--agent)` so it recolors per theme.
+
+Hard rules:
+
+- **Violet means agent. Nothing else is ever violet.** Each palette defines its
+  own `--agent` hue and `--fill-agent` is its only consumer. A 2px violet
+  provenance gutter marks agent-originated rows.
+- Teal `#2ED3A7` = profit, coral `#FF6B7A` = loss.
+- No floating cards. 28px dense rows. 2px/4px radii (`--r-sm`/`--r-md`).
+- `font-variant-numeric: tabular-nums` on every numeric column, so digits do not
+  jitter as prices tick.
 - Age format is `42s` / `5m12s` / `1h05m`, ticking client-side every second.
-  Never decimal minutes.
-- `examples/cambrian_desk_v3.py` is the preserved pre-redesign snapshot.
+  Never decimal minutes — `5.2` was rejected explicitly.
+- `examples/cambrian_desk_v3.py` is the preserved pre-redesign snapshot. Keep
+  it; the owner asked for a way back.
 
 Contract addresses in the UI link to both the launchpad token page and
 DexScreener, and the ticker must be shown.
+
+### Taste notes from review rounds
+
+The owner is watching agents work, not reading a consumer app — reference
+points were Padre-style pro terminals. "Think PROFESSIONAL AGENT TRADING DESK."
+He is blunt about visual misses and will say so; when he does, fix the actual
+cause rather than adjusting around it. The Segoe UI fallback was diagnosed
+twice before the real cause (fonts declared but never loaded) was found, which
+is exactly why they are embedded now.
 
 ---
 
@@ -250,8 +343,12 @@ it. Import it by slicing the source between `_M = (1 << 64)` and `def rpc(`.
 
 ## Open work
 
-1. **Find Pons's and Flap's launch events** (`examples/rh_padscan.py`). Biggest
-   remaining gap — they are unverifiable today.
+1. ~~Find Pons's and Flap's launch events.~~ **DONE** — both recovered, wired
+   into `LAUNCHPADS`, verified live (18 launches / 2.5 min). Remaining tail:
+   recover flap's launch-event *signature text* (topic0 is chain-observed, not
+   yet keccak-proven), and decode Pons's two unlabelled `uint256`s — both are
+   monotonic counters, one stepping ~3-4 and the other ~5 per launch.
+   Next pads to run the same recipe on: Noxa, bankr, ArrowPad, hood.fun.
 2. **Make verified-only trading the default** — refuse any token not traceable
    to a named strategy or a confirmed pad event. Proposed, not yet confirmed by
    the owner.

@@ -24,6 +24,41 @@ WINDOW_BLOCKS = int(os.getenv("RH_WINDOW_BLOCKS", "3000"))
 # Where the watch loop remembers already-surfaced tokens (so it alerts once).
 SEEN_FILE = os.getenv("RH_SEEN_FILE", "runners_seen.json")
 
+# --- Independent-pad launch events (NOT via Uniswap's Liquidity Launcher) -----
+# Pons and flap run their own factories, so they never appear in TokenCreated /
+# TokenDistributed. These topic0s were recovered from the chain and then pinned
+# by keccak256 of the recovered signature, so they are proven, not inferred.
+#
+# CAUTION — this corrects an earlier conclusion. A previous session brute-forced
+# 111,110 candidate signatures against FRONG's launch tx, found no `TokenLaunched`,
+# and recorded "there is no TokenLaunched event; do not go hunting for it again".
+# That was right about *Uniswap's launcher* and wrong as a general claim: Pons's
+# own factory emits a literal `TokenLaunched`. The sniper contact's phrase was
+# accurate — it just belongs to a pad we had not yet identified.
+#
+# Pons emits BOTH per launch, in the same tx (105 and 106 firings over the same
+# 40k-block window — one each per token):
+#   TokenDeployed(address indexed token, address indexed pool,
+#                 address indexed v3Factory, address quote, uint256, uint256)
+#   TokenLaunched(address indexed token, address indexed pool,
+#                 address indexed v3Factory, address quote, address creator,
+#                 uint256, uint256, uint256, uint256, uint256)
+# topic1 is the new token, topic2 its v3 pool, topic3 the v3 factory (constant),
+# and the first data word is WETH. On TokenLaunched the last data word is the
+# creator's initial buy in wei (observed 0, 0.2e18, 3.5e18) — real entry signal.
+EVT_PONS_TOKEN_DEPLOYED = "0x1461370115e1c2be79cb529f8cfcbd11316e789d9c6099fc83417b0b4c48c62a"
+EVT_PONS_TOKEN_LAUNCHED = "0xdb51ea9ad51ab453a65a4cb7e60c3cb378c9501bb002609f8f97778fb6c4235a"
+
+# flap's launch event carries the metadata inline, so name/symbol need no extra
+# eth_call: (uint256 timestamp, address creator, uint256 launchId, address token,
+# ...offsets..., string name, string symbol, string ipfsCid). It is unindexed, so
+# it is matched on emitter+topic0 only — still unforgeable, since only the pad can
+# emit at the pad's address. ~403 firings / 40k blocks. The signature text is not
+# recovered yet, so this topic0 is chain-observed rather than keccak-proven.
+EVT_FLAP_LAUNCH = "0x504e7f360b2e5fe33cbaaae4c593bc55305328341bf79009e43e0e3b7f699603"
+# Companion, same count, same tx: (address token, uint256, uint256, uint256).
+EVT_FLAP_LIQUIDITY = "0x71a10912a55f73d3cced0d1515c2b33c396c80342522bad0e295ccbede556f37"
+
 # name -> {address, created_topic0, start_block, amm}
 # `created_topic0` is left blank on purpose: discover_fresh SKIPS a pad without
 # it (fail closed), so nothing runs on a guessed event signature. Fill it from
@@ -31,11 +66,25 @@ SEEN_FILE = os.getenv("RH_SEEN_FILE", "runners_seen.json")
 # event), and CONFIRM the address there before trusting it.
 LAUNCHPADS: dict[str, dict[str, str]] = {
     "pons": {
-        # UNVERIFIED — confirm on explorer.rhchain.com before going live.
+        # CHAIN-VERIFIED. Blockscout reports this contract as `PonsLaunchFactory`
+        # (source-verified), and it is the creator of the `PonsLauncherToken`
+        # contracts. `created_topic0` is TokenDeployed — see EVT_PONS_* below.
         "address": "0xA5aAb3F0c6EeadF30Ef1D3Eb997108E976351feB",
-        "created_topic0": "",       # <- fill from the factory's created event
+        "created_topic0": EVT_PONS_TOKEN_DEPLOYED,
         "start_block": "8991118",
         "amm": "uniswap-v3",        # Pons launches into Uniswap V3 vs WETH
+    },
+    "flap": {
+        # CHAIN-VERIFIED as the factory behind the '7777' tokens. It is a
+        # TransparentUpgradeableProxy whose implementation (0x7bc20c2c..fa06) is
+        # named `Portal`; the "flap" label is inherited from PAD_BY_SUFFIX below,
+        # which already had flap='7777' confirmed. What is verified on-chain is
+        # the address + topic0 pair, not the brand name — every ...7777 token
+        # sampled (Prism Assets, flapons, CRASHCAT, Dank) was deployed by it.
+        "address": "0x26605f322f7fF986f381bB9A6e3f5DAb0bEaEb09",
+        "created_topic0": EVT_FLAP_LAUNCH,
+        "start_block": "27174072",  # block of the earliest sampled deployment
+        "amm": "uniswap-v3",
     },
     # Pons legacy factory: 0x0c37a24F5D23A486FA692d1500881d698B1F77a4 (start 8600612)
     # "noxa":  {"address": "0x____", "created_topic0": "", "amm": "uniswap-v3"},
@@ -91,6 +140,12 @@ PAD_BY_SUFFIX: dict[str, str] = {
     "ba3": "bankr",
     "777": "flap",          # confirmed: Flap grinds '7777' token addresses (hookless)
 }
+# Suffixes stay a last-resort HINT and must never gate a buy — anyone can grind a
+# vanity address. flap now has an unforgeable emitter+topic0 in LAUNCHPADS, which
+# supersedes this map for identification. Case in point: 0x20024E..7777 was long
+# recorded as the flagship "Flap" token; reading name()/symbol() on-chain, it is
+# actually 'Prism Assets'/'PRISM'. It IS a flap-factory launch, but the ticker was
+# wrong — which is exactly the failure mode suffix-matching invites.
 
 # --- Verified launch path -------------------------------------------------
 # Addresses and event signatures below come from Uniswap's published repos
@@ -136,8 +191,9 @@ PAD_BY_STRATEGY: dict[str, str] = {
 # Live census, 40k blocks ending at block 31,247,303:
 #   v3.2.0  212 instant-launch-1 | 100 universal-router | 10 instant-launch-2 | 8 lbp
 #   v3.0.0    4 strat-9f67b8 | 1 strat-544ef3 | 1 lbp | 1 pools-trade
-# Pons and Flap tokens appear in NEITHER launcher, so they run their own factories
-# and still need their launch events discovered (examples/rh_padscan.py).
+# Pons and flap tokens appear in NEITHER launcher — they run their own factories.
+# Both launch events are now RECOVERED and wired into LAUNCHPADS above, so
+# discover_fresh covers them: pons ~105 launches / 40k blocks, flap ~403.
 
 # Shared infrastructure that shows up as a launch-tx `to` but is NOT a launchpad —
 # never fingerprint these as a pad (they'd cluster unrelated launches together).

@@ -87,3 +87,61 @@ def test_truly_unfingerprintable_is_none():
     assert pad_of("0xabc0000000000000000000000000000000000abc",
                   "0x0000000000000000000000000000000000000000") is None
     assert pad_of(None, None) is None
+
+
+# --- Independent pads: Pons and flap run their own factories -----------------
+# These pads never appear in Uniswap's TokenCreated/TokenDistributed, so they are
+# discovered via their own factory's emitter+topic0. Only the pad can emit at the
+# pad's own address, so the pair is unforgeable.
+
+def test_independent_pads_have_a_launch_event_so_discover_fresh_runs_them():
+    # discover_fresh SKIPS any pad with a blank created_topic0 (fail closed). A
+    # blank here silently drops the pad's entire launch flow, which is how Pons
+    # and flap went unwatched.
+    from cambrian.runners.config import LAUNCHPADS
+    for name in ("pons", "flap"):
+        pad = LAUNCHPADS[name]
+        assert pad["address"], name
+        topic0 = pad["created_topic0"]
+        assert topic0.startswith("0x") and len(topic0) == 66, name
+
+
+def test_pons_token_deployed_topic0_matches_keccak_of_its_signature():
+    # The topic0 is not copied from a block explorer — it is the keccak256 of the
+    # recovered signature, so a typo cannot survive this test.
+    from cambrian.runners.config import EVT_PONS_TOKEN_DEPLOYED
+    sig = b"TokenDeployed(address,address,address,address,uint256,uint256)"
+    assert EVT_PONS_TOKEN_DEPLOYED == "0x" + _keccak(sig).hex()
+
+
+def test_pons_emits_a_literal_token_launched_event():
+    # Guards a correction: an earlier session concluded "there is no TokenLaunched
+    # event, do not go hunting for it again". True for Uniswap's launcher, false in
+    # general — Pons's own factory emits one, and this pins its exact signature.
+    from cambrian.runners.config import EVT_PONS_TOKEN_LAUNCHED
+    sig = (b"TokenLaunched(address,address,address,address,address,"
+           b"uint256,uint256,uint256,uint256,uint256)")
+    assert EVT_PONS_TOKEN_LAUNCHED == "0x" + _keccak(sig).hex()
+
+
+def test_pons_and_flap_factories_are_distinct_from_the_uniswap_launcher():
+    # Labelling shared Uniswap infrastructure as a pad is the bug that let
+    # unverified contracts through the gate; these must never collide with it.
+    from cambrian.runners.config import LAUNCHPADS, UNI_LAUNCHERS
+    infra = {a.lower() for a in UNI_LAUNCHERS.values()}
+    for name in ("pons", "flap"):
+        assert LAUNCHPADS[name]["address"].lower() not in infra, name
+
+
+def _keccak(data: bytes) -> bytes:
+    """Pure-python keccak256, borrowed from examples/rh_codehash.py.
+
+    No dependency in this project provides it, and the point of these tests is to
+    prove the topic0s independently rather than trust a transcribed constant.
+    """
+    import pathlib
+    src = pathlib.Path(__file__).resolve().parents[1] / "examples" / "rh_codehash.py"
+    text = src.read_text()
+    ns: dict = {}
+    exec(text[text.index("_M = (1 << 64)"):text.index("def rpc(")], ns)
+    return ns["kec"](data)
