@@ -129,6 +129,88 @@ def v2_pool_depth_usd(client: ChainClient, pair: str, *, weth_is_token0: bool,
         return None
 
 
+def discover_new_curves_pons_v2(client: ChainClient, *, factory: str,
+                                from_block: str, to_block: str = "latest") -> list[dict]:
+    """Fresh Pons v2 launches, each with its own bonding curve.
+
+    Unlike every other venue here there is no pool: `pool` carries the CURVE
+    address, and `venue` is "pons-v2-curve" so downstream code prices it off the
+    curve rather than looking for an AMM that does not exist yet.
+
+    No WETH filter — v2 pairs against native ETH, WETH, or any approved ERC-20,
+    and filtering to WETH would silently drop most launches.
+    """
+    from . import config as _c
+    from .pons_v2 import decode_token_launched
+    out: list[dict] = []
+    for log in client.get_logs(address=factory,
+                               topics=[_c.EVT_PONS_V2_TOKEN_LAUNCHED],
+                               from_block=from_block, to_block=to_block):
+        d = decode_token_launched(log)
+        blk = log.get("blockNumber")
+        out.append({
+            "token": d["token"],
+            "pool": d["curve"],              # a curve, not a pool
+            "curve": d["curve"],
+            "deployer": d["deployer"],
+            "quote_token": d["pair_token"],
+            "graduation_threshold": d["graduation_threshold"],
+            "venue": "pons-v2-curve",
+            "weth_is_token0": False,         # not meaningful on a curve
+            "block": int(blk, 16) if isinstance(blk, str) else blk,
+        })
+    return out
+
+
+def quote_decimals(client: ChainClient, quote_token: str) -> int:
+    """Decimals of a curve's quote asset — 18 for native ETH, else read it.
+
+    A live curve paired against a 6-decimal asset would be mispriced by 10^12 if
+    this were assumed to be 18.
+    """
+    from .pons_v2 import NATIVE_ETH
+    if not quote_token or quote_token.lower() == NATIVE_ETH:
+        return 18
+    try:
+        return int(client.erc20_decimals(quote_token))
+    except Exception:
+        return 18
+
+
+def pons_v2_curve_metrics(client: ChainClient, curve: str, *, from_block: str,
+                          to_block: str, quote_price_usd: float,
+                          quote_decimals_: int = 18) -> dict[str, float]:
+    """Volume + buy/sell flow for one bonding curve, from its own trade events."""
+    from . import config as _c
+    from .pons_v2 import curve_flow_metrics, decode_curve_buy, decode_curve_sell
+    buys = [decode_curve_buy(lg) for lg in client.get_logs(
+        address=curve, topics=[_c.EVT_PONS_V2_CURVE_BUY],
+        from_block=from_block, to_block=to_block)]
+    sells = [decode_curve_sell(lg) for lg in client.get_logs(
+        address=curve, topics=[_c.EVT_PONS_V2_CURVE_SELL],
+        from_block=from_block, to_block=to_block)]
+    return curve_flow_metrics(buys, sells, quote_price_usd=quote_price_usd,
+                              quote_decimals=quote_decimals_)
+
+
+def pons_v2_curve_depth_usd(client: ChainClient, curve: str, *,
+                            quote_price_usd: float,
+                            quote_decimals_: int = 18) -> float | None:
+    """Real quote asset held by the curve, in USD.
+
+    Deliberately uses `realQuoteReserve()` and not `getReserves()` — the latter
+    includes a phantom reserve that would make every fresh launch look deep.
+    """
+    from .pons_v2 import read_curve_state, real_liquidity_quote
+    try:
+        real = real_liquidity_quote(read_curve_state(client, curve))
+    except Exception:
+        return None
+    if real is None:
+        return None
+    return real / (10 ** quote_decimals_) * quote_price_usd
+
+
 def discover_fresh(client: ChainClient, *, from_block: str, to_block: str = "latest",
                    launchpads: dict | None = None) -> list[dict[str, Any]]:
     """Return raw creation-event logs across the watched launchpads.
@@ -229,12 +311,21 @@ def enrich(client: ChainClient, hit: dict[str, Any], *, weth_usd: float,
     prior_from = hex(max(latest_block - 2 * window_blocks, 0))
     prior_to = hex(max(latest_block - window_blocks - 1, 0))
 
+    # A Pons v2 token has no pool at all pre-graduation — `pool` is its bonding
+    # curve, priced off the curve's own events and reserves.
+    is_curve = venue == "pons-v2-curve"
+    qdec = quote_decimals(client, hit["quote_token"]) if is_curve else 18
+
     def _swaps(fb, tb):
-        # V2 and V3 have different Swap ABIs and topic0s; decoding a V2 log with
-        # the V3 decoder silently yields garbage rather than failing, so dispatch
-        # on venue instead of trying both.
-        fn = v2_pool_swap_metrics if venue == "v2" else pool_swap_metrics
+        # Each venue has its own event ABI and topic0s; decoding one venue's log
+        # with another's reader silently yields garbage rather than failing, so
+        # dispatch on venue instead of trying them in turn.
         try:
+            if is_curve:
+                return pons_v2_curve_metrics(client, pool, from_block=fb, to_block=tb,
+                                             quote_price_usd=weth_usd,
+                                             quote_decimals_=qdec)
+            fn = v2_pool_swap_metrics if venue == "v2" else pool_swap_metrics
             return fn(client, pool, from_block=fb, to_block=tb,
                       weth_is_token0=weth_is_token0, weth_price_usd=weth_usd)
         except Exception:
@@ -244,12 +335,16 @@ def enrich(client: ChainClient, hit: dict[str, Any], *, weth_usd: float,
     mp = _swaps(prior_from, prior_to)
 
     liquidity_usd = None
-    if venue == "v2":
+    if is_curve:
+        liquidity_usd = pons_v2_curve_depth_usd(client, pool,
+                                                quote_price_usd=weth_usd,
+                                                quote_decimals_=qdec)
+    elif venue == "v2":
         # A V2 pair's reserves ARE its depth — exact, one call, no proxy needed.
         liquidity_usd = v2_pool_depth_usd(client, pool,
                                           weth_is_token0=weth_is_token0,
                                           weth_usd=weth_usd)
-    if liquidity_usd is None:
+    if liquidity_usd is None and not is_curve:
         try:
             weth = rcfg.CONTRACTS["weth"]
             bal = client.erc20_balance_of(weth, pool) / 1e18

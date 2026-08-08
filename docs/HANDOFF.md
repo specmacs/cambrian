@@ -251,6 +251,39 @@ Three traps in v2 specifically:
 Everything else in Pons's docs matched what we already had exactly: both factory
 addresses, both start blocks, the locker, and the v1 `TokenLaunched` topic0.
 
+### Pons v2 curve pricing — BUILT
+
+`cambrian/runners/pons_v2.py` prices v2 tokens pre-graduation, plus
+`feed.discover_new_curves_pons_v2` / `pons_v2_curve_metrics` /
+`pons_v2_curve_depth_usd`, and `enrich` dispatches on `venue == "pons-v2-curve"`.
+There is no pool to quote in that window, so price, depth and flow all come off
+the curve contract and its own `CurveBuy`/`CurveSell` events.
+
+Three things that will bite anyone touching this code:
+
+- **Fees land on opposite sides.** A BUY takes fees off the INPUT before pricing;
+  a SELL prices first and takes them off the OUTPUT. Treating them the same way
+  overstates sell proceeds, and that error only ever shows up as a quietly
+  optimistic P&L.
+- **`getReserves()` is mostly phantom.** It returns PRICING reserves including a
+  virtual quote reserve seeded at launch — a live curve read ~4.36 ETH against
+  `realQuoteReserve() == 0`. Price with it, never report it as liquidity, or every
+  brand-new launch looks deep. Depth uses `realQuoteReserve()`.
+- **Quote assets are not all 18 decimals.** A live curve had a `graduationThreshold`
+  of 8.09e9 — a 6-decimal asset. Assuming 1e18 misprices it by 10^12. `enrich`
+  reads the decimals per curve.
+
+Getters, all verified live and pinned by selector tests: `getReserves`,
+`realQuoteReserve`, `tokenReserve`, `sellableTokens`, `feeBps`, `creatorTaxBps`,
+`readyToGraduate`, `graduated`, `graduationThreshold`.
+
+⚠️ **v2 creator taxes are high too.** Live curves carried `creatorTaxBps` of 500,
+600 and 1000 on top of the 1% protocol fee — 12–22% ROUND TRIP before any price
+move. A live check priced a buy and an immediate sell back at **78.7%** and
+**85.9%** of the input. The 3% gate blocked 2 of 2 sampled curves. Small sample,
+but it says the same thing flap does: **the tax, not the chart, decides whether a
+launch is worth touching.** Use `round_trip_cost_bps()` when sizing.
+
 ### The tax gate — owner's hard rule: never above 3%
 
 Enforced in `runners/flap_tax.py` and wired into `agent_safety`, where it outranks
