@@ -739,7 +739,7 @@ animation-duration:.01ms!important}.flash-up{animation:flash-up var(--dur-flash)
   <span class=grow></span>
   <span class=tbmeta>Equity</span>
   <span class="num" id=eqTop style="font-size:var(--t-md);font-weight:var(--w-ui)">$0.00</span>
-  <select id=theme class=btn title="Palette (T)" style="padding:0 var(--s-2)"><option value=instrument>Instrument</option><option value=graphite>Graphite</option><option value=void>Void</option><option value=ember>Ember</option><option value=nocturne>Nocturne</option><option value=daylight>Daylight</option></select>
+  <button id=theme class=btn title="Palette — click to cycle (T)">Instrument</button>
   <button class="btn primary" onclick="alert('Wallet connect (Privy) arrives with live mode. Paper needs no wallet.')">Connect</button>
  </div>
  <div class=kpis>
@@ -804,9 +804,11 @@ let PREV={};
 const PAL=['instrument','graphite','void','ember','nocturne','daylight'];
 function setTheme(v){if(v==='instrument')document.documentElement.removeAttribute('data-theme');
  else document.documentElement.setAttribute('data-theme',v);
- localStorage.cambrianPalette=v;document.getElementById('theme').value=v}
+ localStorage.cambrianPalette=v;
+ document.getElementById('theme').textContent=v.charAt(0).toUpperCase()+v.slice(1)}
+function nextTheme(){setTheme(PAL[(PAL.indexOf(localStorage.cambrianPalette||'instrument')+1)%PAL.length])}
 setTheme(localStorage.cambrianPalette||'instrument');
-document.getElementById('theme').onchange=e=>setTheme(e.target.value);
+document.getElementById('theme').onclick=nextTheme;
 function d$(n){const s=n<0?'-':'',a=Math.abs(n);
  return s+'$'+(a>=1e6?(a/1e6).toFixed(2)+'M':a>=1e3?(a/1e3).toFixed(1)+'K':a.toFixed(2))}
 function sgn(n){return n>0?'up':n<0?'down':'faint'}
@@ -827,8 +829,8 @@ document.querySelectorAll('.tab').forEach(t=>t.onclick=()=>{
  document.querySelectorAll('.tab').forEach(x=>x.classList.remove('on'));t.classList.add('on');
  document.querySelectorAll('.view').forEach(v=>v.classList.remove('on'));
  document.getElementById('p-'+t.dataset.t).classList.add('on')});
-document.addEventListener('keydown',e=>{if(e.target.tagName=='TEXTAREA'||e.target.tagName=='SELECT')return;
- if(e.key.toLowerCase()==='t'){setTheme(PAL[(PAL.indexOf(localStorage.cambrianPalette||'instrument')+1)%PAL.length]);return}
+document.addEventListener('keydown',e=>{if(e.target.tagName=='TEXTAREA')return;
+ if(e.key.toLowerCase()==='t'){nextTheme();return}
  const k={'1':'desk','2':'scout','3':'wallets'}[e.key];
  if(k)document.querySelector(`.ni[data-v=${k}]`).click()});
 async function saveWallets(){
