@@ -397,7 +397,7 @@ WALLETS = load_wallets()
 STATE = {"block": 0, "updated": "starting...", "err": "", "mode": "PAPER",
          "model": LLM_MODEL if LLM_KEY else "confluence only", "size": SIZE_USD,
          "equity": 0.0, "realized": 0.0, "unrealized": 0.0, "wins": 0, "losses": 0,
-         "positions": [], "closed": [], "blotter": [], "scouting": [], "trace": [], "marked": None,
+         "positions": [], "closed": [], "blotter": [], "scouting": [], "trace": [], "marked": None, "now": 0,
          "wallets": len(WALLETS), "eth": WETH_USD, "agents": [
              {"id": "sniper", "name": "A · Sniper", "desc": "fresh launches", "on": True},
              {"id": "volume", "name": "B · Volume", "desc": "all-RH momentum", "on": False},
@@ -478,11 +478,11 @@ def publish(block):
                     "value": round(p.get("value", p["cost"]), 2),
                     "upnl": round(p.get("upnl", 0.0), 2),
                     "chg": round(100 * ((p.get("mark", p["entry"]) / p["entry"]) - 1), 1),
-                    "age_s": int(time.time() - p["opened"])} for p in pos],
+                    "opened": int(p["opened"])} for p in pos],
         closed=[{"token": c["token"], "sym": c["sym"], "pad": c["pad"],
                  "cost": round(c["cost"], 2), "exit_value": c["exit_value"],
                  "pnl": c["pnl"], "why": c["why"]} for c in CLOSED[-30:]][::-1],
-        blotter=BLOTTER[-40:][::-1], trace=TRACE[-60:][::-1],
+        blotter=BLOTTER[-40:][::-1], trace=TRACE[-60:][::-1], now=int(time.time()),
         marked=int(time.time() - MARKED[0]) if MARKED[0] else None)
 
 
@@ -871,6 +871,7 @@ async function loadWallets(){const d=await(await fetch('/wallets')).json();
  document.getElementById('wtext').value=d.wallets.join('\n');
  document.getElementById('wcount').textContent=`${d.count} tracked`}
 async function tick(){let d;try{d=await(await fetch('/data')).json()}catch(e){return}
+ if(d.now)SKEW=d.now-Math.floor(Date.now()/1000);
  document.getElementById('meta').innerHTML=`<b>${d.mode}</b> <span class=sep>·</span> ${d.updated}`;
  const et=document.getElementById('eqTop');et.textContent=d$(d.equity);et.className='num '+sgn(d.equity);
  const eq=document.getElementById('eq');eq.textContent=d$(d.equity);eq.className='v '+sgn(d.equity);
@@ -894,7 +895,7 @@ async function tick(){let d;try{d=await(await fetch('/data')).json()}catch(e){re
   `<tr data-origin=agent><td>${inst(p.sym,p.token,p.pad)}</td><td>${tag(p.pad,true)}</td>`+
   `<td class=dim>${p.agent}</td><td class=num>${d$(p.cost)}</td><td class=num>${d$(p.value)}</td>`+
   `<td class="num ${sgn(p.chg)}">${p.chg>0?'+':''}${p.chg}%</td>`+
-  `<td class="num ${sgn(p.upnl)}">${d$(p.upnl)}</td><td class="num faint">${dur(p.age_s)}</td></tr>`).join(''):
+  `<td class="num ${sgn(p.upnl)}">${d$(p.upnl)}</td><td class="num faint age" data-open="${p.opened}"></td></tr>`).join(''):
   '<tr><td colspan=8 class=empty>No open positions. Agents are scanning.</td></tr>';
  document.getElementById('blotter').innerHTML=d.blotter.length?d.blotter.map(b=>
   `<tr data-origin=agent><td class="num faint">${b.t}</td>`+
@@ -923,10 +924,15 @@ async function tick(){let d;try{d=await(await fetch('/data')).json()}catch(e){re
   `<div class=why>${x.reason}</div>`+
   `<div class=meta>conf ${x.conf} · net ${d$(x.net)} · liq ${d$(x.liq)} · ${x.pad}</div></div>`).join(''):
   '<div class=empty>No agent decisions yet.</div>';
+ tickAges();
  document.getElementById('agents').innerHTML=d.agents.map(a=>
   `<div class="ag ${a.on?'on':''}"><span class=s></span>${a.name}<span class="st ${a.on?'':'faint'}">${a.on?'Live':'Idle'}</span></div>`).join('');
 }
-tick();setInterval(tick,4000);loadWallets();
+let SKEW=0;                       // server-vs-browser clock offset
+function tickAges(){const now=Math.floor(Date.now()/1000)+SKEW;
+ document.querySelectorAll('.age').forEach(el=>{
+  const o=+el.dataset.open;el.textContent=o?dur(now-o):'—'})}
+tick();setInterval(tick,4000);setInterval(tickAges,1000);loadWallets();
 </script></body></html>
 """
 
