@@ -63,9 +63,15 @@ def test_unnamed_strategy_is_still_a_stable_verified_label():
         == "strat:abc123"
 
 
-def test_pools_trade_identified_by_deployer():
+def test_pools_trade_identified_by_its_strategy():
+    # Chain-verified: FRONG, the pools.trade flagship, was distributed through this
+    # strategy on the v3.0.0 launcher. 0x58daec.. used to carry the "pools-trade"
+    # label on a guess about who deployed FRONG's pools; reading the launch tx
+    # showed it is just a token in that tx, so it must no longer name a pad.
     assert pad_of("0xtok", None,
-                  deployer="0x58daec3116aae6d93017baaea7749052e8a04fa7") == "pools-trade"
+                  strategy="0x60d73b21cdf2ea846ab3d58699bbbb8f29d72491") == "pools-trade"
+    assert pad_of("0xtok", None,
+                  deployer="0x58daec3116aae6d93017baaea7749052e8a04fa7") != "pools-trade"
 
 
 def test_infra_deployers_are_not_labeled_as_pads():

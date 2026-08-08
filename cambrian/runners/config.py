@@ -81,12 +81,11 @@ PAD_BY_DEPLOYER: dict[str, str] = {
     # stamped a trusted name on launches from any pad, including impostors, which
     # is how unverified contracts got through the gate. Pads are told apart by the
     # `strategy` in TokenDistributed instead; see LAUNCHER/STRATEGY below.
-    # Pools.trade (Uniswap Labs' RH pad): launches via Uniswap's canonical CREATE2
-    # deployer (CCA), so the "deployer" is Uniswap infra, not a bespoke factory. It
-    # deployed the pools for $FRONG (the confirmed flagship Pools.trade token), and
-    # on RH Pools.trade IS the Uniswap launchpad, so CCA-deployed ≈ Pools.trade.
-    # Hookless v4, WETH-paired (already covered by discovery).
-    "0x58daec3116aae6d93017baaea7749052e8a04fa7": "pools-trade",
+    # 0x58daec.. was also removed. We had it as "pools-trade" on the theory that it
+    # deployed FRONG's pools. Reading FRONG's actual launch tx on-chain, that tx's
+    # `to` is the v3.0.0 launcher, and 0x58daec.. merely emits an ERC-20 Transfer at
+    # its own address inside that tx — it is a token in the launch, not the pad.
+    # Pools.trade is now identified by its strategy instead (see PAD_BY_STRATEGY).
 }
 PAD_BY_SUFFIX: dict[str, str] = {
     "ba3": "bankr",
@@ -101,7 +100,15 @@ PAD_BY_SUFFIX: dict[str, str] = {
 # Only the launcher can emit logs at the launcher's address, so a token that
 # appears in TokenCreated came from the real launch path BY CONSTRUCTION — an
 # impostor cannot forge membership the way it can forge an address suffix.
-UNI_LAUNCHER = "0x0000fffFbe8efe702c8703ae3477ff5de3d319c0"   # RH v3.2.0, core
+# TWO launcher deployments are live on RH and BOTH still emit. Watching only the
+# newer one silently misses launches — FRONG (the confirmed pools.trade flagship)
+# went through v3.0.0, which is why an earlier scan reported it as "not launched
+# via the launcher" at all. Always iterate the whole dict.
+UNI_LAUNCHERS = {
+    "v3.2.0": "0x0000fffFbe8efe702c8703ae3477ff5de3d319c0",   # 330 dists / 40k blocks
+    "v3.0.0": "0x00004c4ccc709ef590f7c81102c0689f0263d4e9",   # 7 dists / 40k blocks
+}
+UNI_LAUNCHER = UNI_LAUNCHERS["v3.2.0"]                        # back-compat alias
 
 EVT_TOKEN_CREATED = "0x2e2b3f61b70d2d131b2a807371103cc98d51adcaa5e9a8f9c32658ad8426e74e"
 EVT_TOKEN_DISTRIBUTED = "0x67226bacccef969dab310a9e55dc1cf821363658e433fd330344f5cc00c79ac8"
@@ -112,11 +119,25 @@ EVT_AUCTION_CREATED = "0x7ede475fad18ccf0039f2b956c4d43a8b4ed0853de4daaa8ae25299
 # contract roles from the repo; which pad operates which is still being mapped
 # by examples/rh_launcher.py, so these stay descriptive rather than branded.
 PAD_BY_STRATEGY: dict[str, str] = {
+    # CONFIRMED: FRONG (0x6245e6..0c47), the pools.trade flagship, was distributed
+    # through this strategy on the v3.0.0 launcher. Chain-verified, not inferred.
+    "0x60d73b21cdf2ea846ab3d58699bbbb8f29d72491": "pools-trade",
+    # Named from the roles Uniswap publishes for RH. Which brand operates each is
+    # still open, so the labels describe the mechanism rather than claim a pad.
     "0x23f8209572b4a1c2ad88a42749e830791fb027f1": "instant-launch-1",
     "0xad44d55e7f8337c3ce113fbb591486e85be104b2": "instant-launch-2",
     "0x05d552391067389ee44fec3924157ed33f976000": "lbp",
     "0x1242c9439d589cae85e121b1f79f2af51e91dcee": "universal-router",
+    # Seen live on v3.0.0, not yet in any published deployment table.
+    "0x9f67b864b565966dfcc2e0c6ba2483b2d5ff4b00": "strat-9f67b8",
+    "0x544ef36801e90ee56bcd699ed51a63cfceac8ec9": "strat-544ef3",
 }
+
+# Live census, 40k blocks ending at block 31,247,303:
+#   v3.2.0  212 instant-launch-1 | 100 universal-router | 10 instant-launch-2 | 8 lbp
+#   v3.0.0    4 strat-9f67b8 | 1 strat-544ef3 | 1 lbp | 1 pools-trade
+# Pons and Flap tokens appear in NEITHER launcher, so they run their own factories
+# and still need their launch events discovered (examples/rh_padscan.py).
 
 # Shared infrastructure that shows up as a launch-tx `to` but is NOT a launchpad —
 # never fingerprint these as a pad (they'd cluster unrelated launches together).
