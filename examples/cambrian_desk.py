@@ -29,14 +29,21 @@ LLM_KEY = (sys.argv[1] if len(sys.argv) > 1 else os.getenv("RH_LLM_KEY", "")).st
 PORT = int(os.getenv("RH_PORT", "8787"))
 INTERVAL = int(os.getenv("RH_INTERVAL", "20"))
 MARK_SECS = float(os.getenv("RH_MARK_SECS", "2"))      # book re-price cadence
-FLASH_RPS = float(os.getenv("RH_FLASH_RPS", "5"))      # Flash limit: 5 req/s/endpoint
-POOL = ThreadPoolExecutor(max_workers=12)
+FLASH_RPS = float(os.getenv("RH_FLASH_RPS", "0"))      # 0 = auto from key type
+POOL = ThreadPoolExecutor(max_workers=16)
 BLOCKS = int(os.getenv("RH_BLOCKS", "6000"))
 ENRICH = int(os.getenv("RH_ENRICH", "14"))
 SIZE_USD = float(os.getenv("RH_SIZE", "50"))
 STOP_PCT = float(os.getenv("RH_STOP", "0.30"))
 TP_MULT = float(os.getenv("RH_TP", "2.0"))
 MAX_POS = int(os.getenv("RH_MAX_POS", "8"))
+TRAIL_ARM = float(os.getenv("RH_TRAIL_ARM", "1.35"))
+TRAIL_GIVE = float(os.getenv("RH_TRAIL_GIVE", "0.22"))
+FLOW_EXIT = os.getenv("RH_FLOW_EXIT", "1") not in ("0", "false")
+MAX_HOLD_MIN = float(os.getenv("RH_MAX_HOLD_MIN", "45"))
+RUNGS = [(2.0, 0.50), (3.0, 0.25), (5.0, 0.15)]
+STATE_FILE = os.getenv("RH_STATE", os.path.expanduser("~/cambrian_state.json"))
+TRADES_FILE = os.getenv("RH_TRADES", os.path.expanduser("~/cambrian_trades.jsonl"))
 WALLETS_FILE = os.getenv("RH_WALLETS", os.path.expanduser("~/cambrian_wallets.json"))
 WETH_USD = 3000.0
 MIN_LIQ = 5000.0
@@ -55,7 +62,8 @@ TR = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
 EXT = "0x1e2eaeaf"
 SLOT = 6
 FLASH_BASE = "https://flash.definitive.fi/v1"
-FLASH_KEY = "dpka_513a2bd7_57a2_46d2_927b_2a3857fe271b"
+FLASH_KEY = os.getenv("RH_FLASH_KEY", "dpka_513a2bd7_57a2_46d2_927b_2a3857fe271b")
+OWN_KEY = FLASH_KEY != "dpka_513a2bd7_57a2_46d2_927b_2a3857fe271b"
 
 PAD_BY_HOOK = {"0x4e3468951d49f2eea976ed0d6e75ffcb44a9a544": "bankr"}
 PAD_BY_DEPLOYER = {"0x0000ffffbe8efe702c8703ae3477ff5de3d319c0": "pons",
@@ -275,6 +283,10 @@ class _Bucket:
             time.sleep(wait)
 
 
+# Your own key means your own bucket, instead of contending with every developer
+# using the public demo key. Raise RH_FLASH_RPS if Definitive lifted your limit.
+if not FLASH_RPS:
+    FLASH_RPS = 12.0 if OWN_KEY else 4.0
 QUOTE_BUCKET = _Bucket(FLASH_RPS)
 
 
@@ -390,7 +402,9 @@ def confluence(sig, verified, sellable):
 
 
 SYS = ("You are the PM of an automated memecoin desk on Robinhood Chain. Analysts "
-       "scored a fresh launch that passed the honeypot gate. Decide. Be strict. "
+       "scored a fresh launch that passed the honeypot gate. Decide. Be strict. If a "
+       "desk_track_record is given, weigh it: it is this desk's own realised base "
+       "rates on comparable setups, not theory. "
        'Reply ONLY JSON: {"decision":"buy"|"skip","confidence":0..1,"reason":"<=8 words"}.')
 
 
@@ -443,7 +457,7 @@ WALLETS = load_wallets()
 STATE = {"block": 0, "updated": "starting...", "err": "", "mode": "PAPER",
          "model": LLM_MODEL if LLM_KEY else "confluence only", "size": SIZE_USD,
          "equity": 0.0, "realized": 0.0, "unrealized": 0.0, "wins": 0, "losses": 0,
-         "positions": [], "closed": [], "blotter": [], "scouting": [], "trace": [], "marked": None, "now": 0, "scan_ms": None,
+         "positions": [], "closed": [], "blotter": [], "scouting": [], "trace": [], "marked": None, "now": 0, "scan_ms": None, "memory": {},
          "wallets": len(WALLETS), "eth": WETH_USD, "agents": [
              {"id": "sniper", "name": "A · Sniper", "desc": "fresh launches", "on": True},
              {"id": "volume", "name": "B · Volume", "desc": "all-RH momentum", "on": False},
@@ -457,11 +471,113 @@ SEEN = set()
 REALIZED = [0.0]
 
 
+
+# ── memory: every closed trade becomes evidence the agents reason from ────────
+def record_outcome(p, pnl, why):
+    """Append entry FEATURES + realised outcome. This file is the desk's memory;
+    base rates computed from it are fed back to the PM, so the agent learns from
+    its own history instead of judging every launch from scratch."""
+    try:
+        f = dict(p.get("feat") or {})
+        row = {"ts": int(time.time()), "sym": p.get("sym"), "token": p.get("token"),
+               "pad": (p.get("pad") or "?").replace("?", ""), "agent": p.get("agent"),
+               "why": why, "pnl": round(pnl, 2), "win": 1 if pnl > 0 else 0,
+               "held_s": int(time.time() - p.get("opened", time.time())),
+               "conf": f.get("conf"), "fanout": f.get("fanout"),
+               "sniper": f.get("sniper"), "liq": f.get("liq"), "mc": f.get("mc")}
+        with open(TRADES_FILE, "a") as fh:
+            fh.write(json.dumps(row) + "\n")
+    except Exception:
+        pass
+
+
+def _bucket(v, edges):
+    if v is None:
+        return "?"
+    for e in edges:
+        if v < e:
+            return "<%g" % e
+    return ">=%g" % edges[-1]
+
+
+def base_rates():
+    """Win rate + expectancy, overall and sliced by the features the PM can see."""
+    rows = []
+    try:
+        with open(TRADES_FILE) as fh:
+            for line in fh:
+                try:
+                    rows.append(json.loads(line))
+                except Exception:
+                    pass
+    except Exception:
+        return {"n": 0}
+    if not rows:
+        return {"n": 0}
+
+    def agg(rs):
+        n = len(rs)
+        return {"n": n, "win_pct": round(100 * sum(r["win"] for r in rs) / n),
+                "avg_pnl": round(sum(r["pnl"] for r in rs) / n, 2)}
+
+    out = {"n": len(rows), "overall": agg(rows)}
+    for key, fn in (("by_pad", lambda r: r.get("pad") or "?"),
+                    ("by_fanout", lambda r: _bucket(r.get("fanout"), [10, 25, 50])),
+                    ("by_conf", lambda r: _bucket(r.get("conf"), [0.7, 0.85])),
+                    ("by_exit", lambda r: r.get("why") or "?")):
+        g = {}
+        for r in rows:
+            g.setdefault(fn(r), []).append(r)
+        out[key] = {k: agg(v) for k, v in sorted(g.items()) if len(v) >= 2}
+    return out
+
+
+def memory_brief():
+    """Compact, honest track record for the PM prompt. Only surfaces slices with
+    enough samples to mean anything — a 1-trade 'pattern' is noise, not evidence."""
+    br = base_rates()
+    if br.get("n", 0) < 5:
+        return None
+    o = br["overall"]
+    parts = ["overall %d trades, %d%% win, avg $%s" % (o["n"], o["win_pct"], o["avg_pnl"])]
+    for label, key in (("pad", "by_pad"), ("fanout", "by_fanout"), ("confluence", "by_conf")):
+        bits = ["%s: %d%% of %d" % (k, v["win_pct"], v["n"])
+                for k, v in (br.get(key) or {}).items() if v["n"] >= 3]
+        if bits:
+            parts.append(label + " — " + "; ".join(bits[:4]))
+    return " | ".join(parts)
+
+
+# ── persistence: a 24/7 desk must survive a restart ──────────────────────────
+def save_book():
+    try:
+        with open(STATE_FILE, "w") as fh:
+            json.dump({"book": BOOK, "closed": CLOSED[-200:], "realized": REALIZED[0],
+                       "seen": sorted(SEEN)[-3000:], "blotter": BLOTTER[-200:],
+                       "trace": TRACE[-200:]}, fh)
+    except Exception:
+        pass
+
+
+def load_book():
+    try:
+        with open(STATE_FILE) as fh:
+            d = json.load(fh)
+        BOOK.update(d.get("book") or {})
+        CLOSED.extend(d.get("closed") or [])
+        BLOTTER.extend(d.get("blotter") or [])
+        TRACE.extend(d.get("trace") or [])
+        SEEN.update(d.get("seen") or [])
+        REALIZED[0] = float(d.get("realized") or 0.0)
+    except Exception:
+        pass
+
+
 def now_hms():
     return time.strftime("%H:%M:%S")
 
 
-def open_paper(token, symb, pad, agent, reason):
+def open_paper(token, symb, pad, agent, reason, ctx=None):
     if token in BOOK or len(BOOK) >= MAX_POS:
         return
     tokens, usd_in = buy_quote(token, SIZE_USD)
@@ -471,9 +587,36 @@ def open_paper(token, symb, pad, agent, reason):
     BOOK[token] = {"token": token, "sym": symb, "pad": pad, "agent": agent,
                    "tokens": tokens, "cost": usd_in, "entry": entry,
                    "stop": entry * (1 - STOP_PCT), "tp": entry * TP_MULT,
-                   "opened": time.time(), "reason": reason}
+                   "peak": entry, "rungs": [], "banked": 0.0, "flow_at": 0,
+                   "opened": time.time(), "reason": reason,
+                   "ctx": (ctx or {}), "feat": (ctx or {}).get("feat", {})}
     BLOTTER.append({"t": now_hms(), "side": "BUY", "token": token, "sym": symb,
                     "pad": pad, "agent": agent, "usd": round(usd_in, 2), "pnl": None})
+
+
+def trim_paper(token, frac, why):
+    """Sell part of a position (a ladder rung): realise that slice, keep the rest
+    running. Taking money off the table without ending the trade."""
+    p = BOOK.get(token)
+    if not p or frac <= 0 or p["tokens"] <= 0:
+        return
+    qty = min(p["tokens"] * frac, p["tokens"])
+    val = sell_value(token, qty)
+    if val is None or qty <= 0:
+        return
+    cost_part = p["cost"] * (qty / p["tokens"])
+    REALIZED[0] += val - cost_part
+    p["tokens"] -= qty
+    p["cost"] -= cost_part
+    p["banked"] = p.get("banked", 0.0) + val
+    BLOTTER.append({"t": now_hms(), "side": "SELL", "token": token, "sym": p["sym"],
+                    "pad": p["pad"], "agent": p["agent"], "usd": round(val, 2),
+                    "pnl": round(val - cost_part, 2)})
+    TRACE.append({"t": now_hms(), "agent": p["agent"], "sym": p["sym"], "token": token,
+                  "pad": p["pad"], "decision": "trim", "conf": 0, "net": 0, "liq": 0,
+                  "reason": why})
+    if p["tokens"] <= 1e-12:
+        BOOK.pop(token, None)
 
 
 def close_paper(token, value, why):
@@ -484,6 +627,7 @@ def close_paper(token, value, why):
     REALIZED[0] += pnl
     CLOSED.append({**p, "exit_value": round(value, 2), "pnl": round(pnl, 2),
                    "why": why, "closed": time.time()})
+    record_outcome(p, pnl + p.get("banked", 0.0), why)
     BLOTTER.append({"t": now_hms(), "side": "SELL", "token": token, "sym": p["sym"],
                     "pad": p["pad"], "agent": p["agent"], "usd": round(value, 2),
                     "pnl": round(pnl, 2)})
@@ -492,17 +636,73 @@ def close_paper(token, value, why):
 MARKED = [0.0]
 
 
+def live_flow(p):
+    """Net WETH flow for a held position's pool. The flow agent is our best entry
+    signal; ignoring it once we're in leaves the strongest sell signal unused."""
+    c = p.get("ctx") or {}
+    pool, ver, q0 = c.get("pool"), c.get("ver"), c.get("q0")
+    if not pool:
+        return None
+    try:
+        blk = int(rpc("eth_blockNumber", []), 16)
+        frm = hex(max(blk - 1800, 0))                 # ~3 min of RH blocks
+        if ver == "v4":
+            m = analyze(V4_PM, [V4S, pool], frm, q0, None, inv=True)
+        else:
+            m = analyze(pool, [V3S], frm, q0, None)
+        return m["net"]
+    except Exception:
+        return None
+
+
+def exit_decision(p, px):
+    """Exit policy in priority order -> (action, fraction, why).
+    action: 'close' | 'trim' | None."""
+    entry = p["entry"]
+    peak = max(p.get("peak", entry), px)
+    p["peak"] = peak
+    mult, pk_mult = px / entry, peak / entry
+
+    # 1. hard stop — the floor, always first
+    if px <= p["stop"]:
+        return "close", 1.0, "stop"
+
+    # 2. trailing stop — once a trade has run, protect the run. This is what keeps
+    #    a +80% winner from round-tripping into a full loss.
+    if pk_mult >= TRAIL_ARM and px <= peak * (1 - TRAIL_GIVE):
+        return "close", 1.0, "trail %d%% off %.1fx" % (TRAIL_GIVE * 100, pk_mult)
+
+    # 3. scale-out ladder — bank profit on the way up, not all-or-nothing
+    for i, (m, frac) in enumerate(RUNGS):
+        if mult >= m and i not in p["rungs"]:
+            p["rungs"].append(i)
+            return "trim", frac, "rung %gx" % m
+
+    # 4. flow reversal — money leaving the pool while we hold it
+    if FLOW_EXIT and time.time() - p.get("flow_at", 0) > 45:
+        p["flow_at"] = time.time()
+        net = live_flow(p)
+        p["flow"] = net
+        if net is not None and net < 0 and mult > 1.0:
+            return "close", 1.0, "flow reversed"
+
+    # 5. time stop — a quiet pool is dead capital
+    if (time.time() - p["opened"]) / 60 > MAX_HOLD_MIN and not p["rungs"]:
+        return "close", 1.0, "time stop %dm" % MAX_HOLD_MIN
+    return None, 0.0, ""
+
+
 def mark_and_exit():
-    """Re-price the whole book CONCURRENTLY against fresh sell quotes, then honour
-    stops/targets. Parallel because marking 8 positions one-at-a-time costs 8
-    round trips of latency; together it costs one."""
+    """Re-price the book CONCURRENTLY against fresh sell quotes, then apply the
+    exit policy. Parallel because marking 8 positions serially costs 8 round trips
+    of latency; together it costs one."""
     items = list(BOOK.items())
     if not items:
         MARKED[0] = time.time()
         return
     vals = list(POOL.map(lambda kv: sell_value(kv[0], kv[1]["tokens"]), items))
     for (token, p), val in zip(items, vals):
-        if val is None:
+        if val is None or token not in BOOK:
             continue
         px = val / p["tokens"] if p["tokens"] else 0
         p["mark"] = px
@@ -510,12 +710,13 @@ def mark_and_exit():
         p["upnl"] = val - p["cost"]
         sup, _d = supply(token)
         p["mc"] = (sup * px) if sup else None
-        if px <= p["stop"]:
-            close_paper(token, val, "stop")
-        elif px >= p["tp"]:
-            close_paper(token, val, "take-profit")
+        act, frac, why = exit_decision(p, px)
+        if act == "close":
+            close_paper(token, val, why)
+        elif act == "trim":
+            trim_paper(token, frac, why)
+    save_book()
     MARKED[0] = time.time()
-
 
 def publish(block):
     wins = sum(1 for c in CLOSED if c["pnl"] > 0)
@@ -531,12 +732,16 @@ def publish(block):
                     "value": round(p.get("value", p["cost"]), 2),
                     "upnl": round(p.get("upnl", 0.0), 2),
                     "chg": round(100 * ((p.get("mark", p["entry"]) / p["entry"]) - 1), 1),
-                    "opened": int(p["opened"]), "mc": (round(p["mc"]) if p.get("mc") else None)} for p in pos],
+                    "opened": int(p["opened"]), "mc": (round(p["mc"]) if p.get("mc") else None),
+                    "peak_mult": round(max(p.get("peak", p["entry"]) / p["entry"], 1.0), 2),
+                    "rungs": len(p.get("rungs") or []), "banked": round(p.get("banked", 0.0), 2)}
+                   for p in pos],
         closed=[{"token": c["token"], "sym": c["sym"], "pad": c["pad"],
                  "cost": round(c["cost"], 2), "exit_value": c["exit_value"],
                  "pnl": c["pnl"], "why": c["why"]} for c in CLOSED[-30:]][::-1],
         blotter=BLOTTER[-40:][::-1], trace=TRACE[-60:][::-1], now=int(time.time()),
-        marked=int(time.time() - MARKED[0]) if MARKED[0] else None)
+        marked=int(time.time() - MARKED[0]) if MARKED[0] else None,
+        memory=base_rates())
 
 
 def scan_and_trade():
@@ -601,7 +806,11 @@ def scan_and_trade():
         return {"pad": pad, "verified": verified, "token": tok, "sym": symb,
                 "conf": conf, "tier": tier, "net": round(m["net"]), "liq": round(liq),
                 "mc": round(sup * px) if (sup and px) else None,
-                "_m": m, "_fo": fo}
+                "_m": m, "_fo": fo,
+                "_ctx": {"pool": pool, "ver": ver, "q0": q0,
+                         "feat": {"conf": conf, "fanout": fo, "sniper": round(m["snipe"], 2),
+                                  "liq": round(liq), "mc": round(sup * px) if (sup and px) else None,
+                                  "pad": pad, "verified": verified}}}
 
     scouting = [r for r in POOL.map(enrich, hits[:ENRICH]) if r]
     # decisions stay serial: the PM is the only place order matters, and it keeps
@@ -609,20 +818,26 @@ def scan_and_trade():
     for r in scouting:
         if r["tier"] == "STRONG" and r["token"] not in SEEN:
             m, fo = r["_m"], r["_fo"]
-            v = pm({"ticker": r["sym"], "pad": r["pad"], "net_flow_usd": r["net"],
-                    "liquidity_usd": r["liq"], "market_cap_usd": r["mc"],
-                    "sniper_share": round(m["snipe"], 2), "fanout": fo,
-                    "buys": m["buys"], "sells": m["sells"], "confluence": r["conf"]})
+            facts = {"ticker": r["sym"], "pad": r["pad"], "net_flow_usd": r["net"],
+                     "liquidity_usd": r["liq"], "market_cap_usd": r["mc"],
+                     "sniper_share": round(m["snipe"], 2), "fanout": fo,
+                     "buys": m["buys"], "sells": m["sells"], "confluence": r["conf"]}
+            mb = memory_brief()
+            if mb:
+                facts["desk_track_record"] = mb
+            v = pm(facts)
             SEEN.add(r["token"])
             TRACE.append({"t": now_hms(), "agent": "A · Sniper", "sym": r["sym"],
                           "token": r["token"], "pad": r["pad"], "decision": v["decision"],
                           "conf": r["conf"], "net": r["net"], "liq": r["liq"],
                           "reason": v["reason"] or "confluence"})
             if v["decision"] == "buy":
-                open_paper(r["token"], r["sym"], r["pad"], "sniper", v["reason"] or "confluence")
+                open_paper(r["token"], r["sym"], r["pad"], "sniper",
+                           v["reason"] or "confluence", ctx=r.get("_ctx"))
     for r in scouting:
         r.pop("_m", None)
         r.pop("_fo", None)
+        r.pop("_ctx", None)
     STATE["scouting"] = scouting[:14]
     STATE["scan_ms"] = int((time.time() - _t0) * 1000)
     publish(block)
@@ -857,7 +1072,7 @@ animation-duration:.01ms!important}.flash-up{animation:flash-up var(--dur-flash)
   <div class="pane fill">
    <div class=ph><span class=label-micro>Positions</span><span class="tbmeta num" id=posn></span></div>
    <div class=body><table><thead><tr><th>Instrument</th><th>Pad</th><th>MC</th><th>Size</th>
-    <th>Value</th><th>Δ</th><th>Unreal</th><th>Age</th></tr></thead><tbody id=positions></tbody></table></div>
+    <th>Value</th><th>Δ</th><th>Peak</th><th>Unreal</th><th>Age</th></tr></thead><tbody id=positions></tbody></table></div>
   </div>
   <div class=pane style="height:38%">
    <div class=ph><span class="tab on" data-t=blo>Fills<span class="c num" id=cblo></span></span>
@@ -897,7 +1112,7 @@ animation-duration:.01ms!important}.flash-up{animation:flash-up var(--dur-flash)
  <div class=rh><span class=dot></span><span class=label-micro style=color:var(--agent)>Agent trace</span>
   <span class=grow></span><span class="tbmeta num" id=trn></span></div>
  <div class=trace id=trace></div>
- <div class=agents id=agents></div>
+ <div id=memwrap style="flex-shrink:0;border-top:var(--hairline) solid var(--border)"><div class=rh style="height:var(--row-default)"><span class=label-micro>Track record</span><span class=grow></span><span class="tbmeta num" id=memn></span></div><div id=mem style="padding:var(--s-2) var(--s-4);font-size:var(--t-xs);color:var(--text-dim)"></div></div><div class=agents id=agents></div>
 </aside>
 <script>
 const DEX=t=>`https://dexscreener.com/search?q=${t}`,EXP=t=>`https://robinhoodchain.blockscout.com/address/${t}`;
@@ -978,8 +1193,8 @@ async function tick(){let d;try{d=await(await fetch('/data')).json()}catch(e){re
   `<tr data-origin=agent><td>${inst(p.sym,p.token,p.pad)}</td><td>${tag(p.pad,true)}</td>`+
   `<td class="num faint">${p.mc?d$(p.mc):'—'}</td><td class=num>${d$(p.cost)}</td><td class=num>${d$(p.value)}</td>`+
   `<td class="num ${sgn(p.chg)}">${p.chg>0?'+':''}${p.chg}%</td>`+
-  `<td class="num ${sgn(p.upnl)}" data-k="u${p.token}" data-v="${p.upnl}">${d$(p.upnl)}</td><td class="num faint age" data-open="${p.opened}"></td></tr>`).join(''):
-  '<tr><td colspan=8 class=empty>No open positions. Agents are scanning.</td></tr>';
+  `<td class="num faint" title="high-water mark / rungs banked">${p.peak_mult}x${p.rungs?' ·'+p.rungs:''}</td>`+`<td class="num ${sgn(p.upnl)}" data-k="u${p.token}" data-v="${p.upnl}">${d$(p.upnl)}</td><td class="num faint age" data-open="${p.opened}"></td></tr>`).join(''):
+  '<tr><td colspan=9 class=empty>No open positions. Agents are scanning.</td></tr>';
  document.getElementById('blotter').innerHTML=d.blotter.length?d.blotter.map(b=>
   `<tr data-origin=agent><td class="num faint">${b.t}</td>`+
   `<td class="${b.side=='BUY'?'up':'down'}">${b.side=='BUY'?'Buy':'Sell'}</td>`+
@@ -1009,6 +1224,15 @@ async function tick(){let d;try{d=await(await fetch('/data')).json()}catch(e){re
   `<div class=meta>conf ${x.conf} · net ${d$(x.net)} · liq ${d$(x.liq)} · ${x.pad}</div></div>`).join(''):
   '<div class=empty>No agent decisions yet.</div>';
  tickAges();flashCells();
+ const M=d.memory||{};document.getElementById('memn').textContent=M.n||0;
+ document.getElementById('mem').innerHTML=(M.n?
+  (()=>{const o=M.overall||{};let h=`<div><span class=num>${o.win_pct}%</span> win · `+
+    `<span class="num ${o.avg_pnl>=0?'up':'down'}">${d$(o.avg_pnl||0)}</span> avg · ${o.n} closed</div>`;
+   const rows=[];for(const[k,lbl]of[['by_pad','pad'],['by_fanout','fanout'],['by_exit','exit']]){
+    const g=M[k]||{};for(const[n,v]of Object.entries(g))if(v.n>=2)
+     rows.push(`<div class=faint style="margin-top:2px">${lbl} ${n} — <span class=num>${v.win_pct}%</span> of ${v.n}</div>`)}
+   return h+rows.slice(0,6).join('')})():
+  '<span class=faint>Learning — needs 5 closed trades.</span>');
  document.getElementById('agents').innerHTML=d.agents.map(a=>
   `<div class="ag ${a.on?'on':''}"><span class=s></span>${a.name}<span class="st ${a.on?'':'faint'}">${a.on?'Live':'Idle'}</span></div>`).join('');
 }
@@ -1061,6 +1285,7 @@ class H(BaseHTTPRequestHandler):
 
 
 def main():
+    load_book()
     threading.Thread(target=worker, daemon=True).start()
     threading.Thread(target=marker, daemon=True).start()
     print(f"\n  ◆ CAMBRIAN desk (paper) running  ->  http://localhost:{PORT}")
