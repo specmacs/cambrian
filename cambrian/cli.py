@@ -213,9 +213,17 @@ def cmd_sweep(args: argparse.Namespace) -> int:
 
     client = ChainClient()
     latest = client.block_number()
+    # Prefer a LIVE ETH price over the config default: RH_WETH_USD ships at 3000
+    # and measured ~1917 against Flash, which would inflate every market cap and
+    # every ticket sized from one by the same margin.
+    eth_usd = args.weth_usd
+    if eth_usd is None:
+        from .runners.execution import live_eth_usd
+        eth_usd = live_eth_usd(fallback=rcfg.WETH_USD)
+        print("ETH/USD %.2f (live)" % eth_usd if eth_usd != rcfg.WETH_USD
+              else "ETH/USD %.2f (config fallback)" % eth_usd)
     result = sweep(client, from_block=max(latest - args.blocks, 0), to_block=latest,
-                   quote_price_usd=args.weth_usd or rcfg.WETH_USD,
-                   bankroll_usd=args.bankroll)
+                   quote_price_usd=eth_usd, bankroll_usd=args.bankroll)
     print(format_sweep(result, limit=args.n))
     if args.json:
         print(json.dumps(result["rows"], indent=2, default=str))

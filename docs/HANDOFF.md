@@ -331,6 +331,44 @@ an ERC-20 called AAPL and pair a launch against it; that launch would look
 stock-backed while its quote asset is worthless — and would inherit the looser
 tax ceiling. `is_stock_token()` checks the registry, never the name.
 
+### Execution — Definitive Flash
+
+`runners/execution.py`. Flow from Flash's OpenAPI spec (`/v1/openapi.json`, v2.0.0):
+
+```
+POST /quote  -> quoteId + evm.{wrap, approveTx, orderTypedData}
+sign evm.orderTypedData (EIP-712) with the funder wallet   <- ELSEWHERE
+POST /order  -> quoteId + userSignature + evmOrderTypedData echo
+```
+
+**Keys never enter this process.** Nothing here signs and nothing accepts a
+private key. `prepare()` hands out typed data for the Flash MCP
+(`@definitive-fi/flash-mcp`) to sign from the OS keychain; `submit()` takes a
+signature made somewhere else and refuses unless `confirm=True`. A Flash API key
+alone cannot move funds — every order also needs the wallet signature plus an
+on-chain approval to the settlement contract `0x5d00000873b6BF41539e6f5365B0Ff7d3c368f78`.
+
+Three things learned against the live API, each of which costs an hour if you
+rediscover it:
+
+- ⚠️ **A browser User-Agent is mandatory.** Without one Cloudflare answers
+  `403 error code: 1010`, which reads exactly like a bad API key and sends you
+  hunting in the wrong place.
+- ⚠️ **Flash cannot price a fresh Pons v2 curve.** It aggregates 200+ DEXes but
+  only assets it has notional rates for; a bonding curve is not an AMM it indexes
+  and returns `FailedPrecondition ... missing notional rates for assets`. Verified
+  live. `route_for()` sends pre-graduation v2 to the direct curve path and
+  everything else — v3/v4 pools, flap's pair, stock tokens — to Flash.
+- **Native ETH gets wrapped.** Spending the `0xEeee...EEeE` sentinel returns a
+  `wrap.evmTx` to send first; the order itself then spends WETH.
+
+⚠️ **`RH_WETH_USD` defaulted to 3000. ETH measured $1,917 against Flash — a 56%
+overstatement.** Market cap is priced in the quote asset and size is a fraction
+of market cap, so that stale constant inflated every ticket by 56%. `sweep` now
+takes a LIVE price from `live_eth_usd()`, derived from a real quote's
+notional/amount. Note it anchors on a stock token, not WETH: spending native ETH
+for WETH is just a wrap and Flash declines to quote it.
+
 ### The sweep — one command that does the whole job
 
 ```
