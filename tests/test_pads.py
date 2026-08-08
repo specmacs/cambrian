@@ -41,9 +41,26 @@ def test_flap_identified_by_7777_suffix():
     assert pad_of("0x20024e485c0b22b42855589700721b28320a7777", None) == "flap"
 
 
-def test_pons_identified_by_deployer():
-    assert pad_of("0xtok", None,
-                  deployer="0x0000ffffbe8efe702c8703ae3477ff5de3d319c0") == "pons"
+def test_uniswap_launcher_is_never_labeled_as_a_pad():
+    # 0x0000ffff.. is Uniswap's Liquidity Launcher on RH — shared infrastructure
+    # every pad routes through. We used to call it "pons", which stamped a trusted
+    # name on launches from any pad at all. It must stay an unnamed fingerprint.
+    got = pad_of("0xtok", None,
+                 deployer="0x0000ffffbe8efe702c8703ae3477ff5de3d319c0")
+    assert got != "pons"
+    assert got.startswith("dep:")
+
+
+def test_strategy_outranks_a_spoofable_suffix():
+    # A token whose address was ground to end in 'ba3' still gets identified by
+    # the strategy the launcher actually distributed through, not the vanity suffix.
+    assert pad_of("0xdeadbeef00000000000000000000000000000ba3", None,
+                  strategy="0x05d552391067389ee44fec3924157ed33f976000") == "lbp"
+
+
+def test_unnamed_strategy_is_still_a_stable_verified_label():
+    assert pad_of("0xtok", None, strategy="0xabc1230000000000000000000000000000000000") \
+        == "strat:abc123"
 
 
 def test_pools_trade_identified_by_deployer():

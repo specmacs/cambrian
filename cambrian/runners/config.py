@@ -74,11 +74,13 @@ PAD_BY_HOOK: dict[str, str] = {
     # is hookless, IDed by the 7777 suffix). Name it once traced.
 }
 PAD_BY_DEPLOYER: dict[str, str] = {
-    # Pons is the dominant, hookless pad -> identified by its launch-tx deployer.
-    # INFERRED: 0x0000ffff.. was ~54% of sampled deployers and Pons is ~50%+ of all
-    # RH activity (both hookless) — too clean a match to be anything else. Trace a
-    # Pons-launched token with rh_who to hard-confirm; correct here if it differs.
-    "0x0000ffffbe8efe702c8703ae3477ff5de3d319c0": "pons",
+    # 0x0000ffff.. is DELIBERATELY ABSENT. We used to label it "pons" because it
+    # was ~54% of sampled deployers, but Uniswap's own liquidity-launcher repo
+    # publishes it as Liquidity Launcher core v3.2.0 on Robinhood Chain — shared
+    # infrastructure that EVERY pad routes through, not a pad. Labelling it "pons"
+    # stamped a trusted name on launches from any pad, including impostors, which
+    # is how unverified contracts got through the gate. Pads are told apart by the
+    # `strategy` in TokenDistributed instead; see LAUNCHER/STRATEGY below.
     # Pools.trade (Uniswap Labs' RH pad): launches via Uniswap's canonical CREATE2
     # deployer (CCA), so the "deployer" is Uniswap infra, not a bespoke factory. It
     # deployed the pools for $FRONG (the confirmed flagship Pools.trade token), and
@@ -89,6 +91,31 @@ PAD_BY_DEPLOYER: dict[str, str] = {
 PAD_BY_SUFFIX: dict[str, str] = {
     "ba3": "bankr",
     "777": "flap",          # confirmed: Flap grinds '7777' token addresses (hookless)
+}
+
+# --- Verified launch path -------------------------------------------------
+# Addresses and event signatures below come from Uniswap's published repos
+# (liquidity-launcher, continuous-clearing-auction), not from inference. The
+# topic0s are keccak256 of the declared signatures.
+#
+# Only the launcher can emit logs at the launcher's address, so a token that
+# appears in TokenCreated came from the real launch path BY CONSTRUCTION — an
+# impostor cannot forge membership the way it can forge an address suffix.
+UNI_LAUNCHER = "0x0000fffFbe8efe702c8703ae3477ff5de3d319c0"   # RH v3.2.0, core
+
+EVT_TOKEN_CREATED = "0x2e2b3f61b70d2d131b2a807371103cc98d51adcaa5e9a8f9c32658ad8426e74e"
+EVT_TOKEN_DISTRIBUTED = "0x67226bacccef969dab310a9e55dc1cf821363658e433fd330344f5cc00c79ac8"
+EVT_AUCTION_CREATED = "0x7ede475fad18ccf0039f2b956c4d43a8b4ed0853de4daaa8ae25299f331ae3b9"
+
+# TokenDistributed(token, strategy, amount): the strategy is the pad's real
+# identity — each pad runs its own strategy/fee-splitter pair. Names are the
+# contract roles from the repo; which pad operates which is still being mapped
+# by examples/rh_launcher.py, so these stay descriptive rather than branded.
+PAD_BY_STRATEGY: dict[str, str] = {
+    "0x23f8209572b4a1c2ad88a42749e830791fb027f1": "instant-launch-1",
+    "0xad44d55e7f8337c3ce113fbb591486e85be104b2": "instant-launch-2",
+    "0x05d552391067389ee44fec3924157ed33f976000": "lbp",
+    "0x1242c9439d589cae85e121b1f79f2af51e91dcee": "universal-router",
 }
 
 # Shared infrastructure that shows up as a launch-tx `to` but is NOT a launchpad —
@@ -124,11 +151,17 @@ _load_pad_names()
 
 
 def pad_of(token: str | None, hook: str | None,
-           deployer: str | None = None) -> str | None:
-    """Which pad launched this token? Named where known (hook > deployer > suffix,
-    hook being authoritative); otherwise a STABLE short fingerprint so EVERY launch
-    still carries a pad label you can group by and name later. None only when there
-    is nothing to fingerprint (hookless, no deployer given, no suffix match)."""
+           deployer: str | None = None, strategy: str | None = None) -> str | None:
+    """Which pad launched this token? Ordered by how forgeable each signal is:
+    strategy (unspoofable — the launcher emitted it) > hook > deployer > address
+    suffix (spoofable by a vanity grind, kept only as a last-resort hint).
+    Otherwise a STABLE short fingerprint, so EVERY launch carries a label you can
+    group by and name later. None only when there is nothing to fingerprint."""
+    s = (strategy or "").lower()
+    if s in PAD_BY_STRATEGY:
+        return PAD_BY_STRATEGY[s]
+    if s and s != ZERO_ADDR:
+        return "strat:" + s[2:8]         # verified launch path, pad not yet named
     h = (hook or "").lower()
     if h in PAD_BY_HOOK:
         return PAD_BY_HOOK[h]
