@@ -528,18 +528,37 @@ def worker():
 
 PAGE = r"""<!doctype html><html><head><meta charset=utf-8><title>CAMBRIAN</title>
 <link rel=preconnect href="https://fonts.googleapis.com"><link rel=preconnect href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel=stylesheet>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700;800&family=Geist+Mono:wght@400;500;600;700&family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&family=Inter+Tight:wght@400;500;600;700;800&display=swap" rel=stylesheet>
 <style>
-:root{--bg:#08080c;--pnl:#0d0d13;--pnl2:#121219;--rail:#0a0a10;--bd:#1a1a24;--bd2:#15151d;
---tx:#e8ecf4;--mut:#8b93a7;--dim:#4a5065;--gr:#3ddc84;--rd:#ff4d6d;--cy:#5ac8fa;--am:#ffb340;
---pu:#a78bfa;--grad:linear-gradient(135deg,#3ddc84,#5ac8fa)}
+/* ── THEMES ── cycle with the button in the nav (or press T). Persists. ── */
+:root{--ui:"Geist Mono";--mono:"Geist Mono";
+--bg:#000000;--pnl:#08080a;--pnl2:#0e0e11;--rail:#050506;--bd:#18181c;--bd2:#121215;
+--tx:#f0f0f2;--mut:#8a8a94;--dim:#4d4d57;--gr:#00ff9d;--rd:#ff3b5c;--cy:#4dd8ff;--am:#ffc043;
+--pu:#b98bff;--grad:linear-gradient(135deg,#00ff9d,#4dd8ff)}
+[data-t="carbon"]{--ui:"Geist";--mono:"Geist Mono";
+--bg:#0c0c0d;--pnl:#131315;--pnl2:#1a1a1d;--rail:#0f0f11;--bd:#232326;--bd2:#1b1b1e;
+--tx:#ededf0;--mut:#96969e;--dim:#5a5a63;--gr:#4ade80;--rd:#f87171;--cy:#60c8f8;--am:#fbbf24;
+--pu:#a78bfa;--grad:linear-gradient(135deg,#4ade80,#60c8f8)}
+[data-t="midnight"]{--ui:"Space Grotesk";--mono:"JetBrains Mono";
+--bg:#060911;--pnl:#0b1020;--pnl2:#111829;--rail:#080c17;--bd:#1a2440;--bd2:#141c33;
+--tx:#e4ecfb;--mut:#8296bd;--dim:#4a5b80;--gr:#2fe3a3;--rd:#ff5470;--cy:#4cc9ff;--am:#ffb340;
+--pu:#a78bfa;--grad:linear-gradient(135deg,#2fe3a3,#4cc9ff)}
+[data-t="phosphor"]{--ui:"IBM Plex Mono";--mono:"IBM Plex Mono";
+--bg:#050705;--pnl:#0a0f0a;--pnl2:#0f160f;--rail:#070b07;--bd:#16211a;--bd2:#111a14;
+--tx:#d6f5e0;--mut:#6f9d84;--dim:#3f5f4d;--gr:#00e676;--rd:#ff5252;--cy:#64d8cb;--am:#ffca28;
+--pu:#9ccc65;--grad:linear-gradient(135deg,#00e676,#64d8cb)}
+[data-t="slate"]{--ui:"Inter Tight";--mono:"JetBrains Mono";
+--bg:#0f1115;--pnl:#171a21;--pnl2:#1e222b;--rail:#12151a;--bd:#272c37;--bd2:#1f232c;
+--tx:#e9edf5;--mut:#98a2b8;--dim:#5b6478;--gr:#34d399;--rd:#fb7185;--cy:#38bdf8;--am:#fbbf24;
+--pu:#a78bfa;--grad:linear-gradient(135deg,#34d399,#38bdf8)}
 *{box-sizing:border-box;margin:0}
 ::-webkit-scrollbar{width:7px;height:7px}::-webkit-scrollbar-thumb{background:#1e1e2a;border-radius:4px}
 ::-webkit-scrollbar-track{background:transparent}
 body{background:var(--bg);color:var(--tx);height:100vh;overflow:hidden;display:flex;flex-direction:column;
-font:500 12.5px/1.4 "Inter Tight",-apple-system,"Segoe UI",Roboto,Arial,sans-serif;
--webkit-font-smoothing:antialiased;letter-spacing:-.01em}
-.m{font-family:"JetBrains Mono",ui-monospace,Menlo,Consolas,monospace;font-variant-numeric:tabular-nums}
+font:500 12.5px/1.4 var(--ui),-apple-system,"Segoe UI",Roboto,Arial,sans-serif;
+-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale;letter-spacing:-.01em}
+.m,th,.n,.eqn{font-family:var(--mono),ui-monospace,Menlo,Consolas,monospace;
+font-variant-numeric:tabular-nums;font-feature-settings:"tnum" 1,"zero" 1}
 /* top nav */
 nav{display:flex;align-items:center;gap:22px;padding:0 16px;height:48px;background:var(--pnl);
 border-bottom:1px solid var(--bd);flex-shrink:0}
@@ -653,6 +672,8 @@ transition:transform .2s cubic-bezier(.2,.9,.3,1.3);z-index:99}
  <span class=nv data-v=wallets>Wallets</span>
  <span class=sp></span>
  <span class=pill id=mode>PAPER</span>
+ <span class=pill id=themeBtn style="cursor:pointer;background:transparent;border-color:var(--bd);color:var(--mut)"
+  title="cycle theme (T)">◐ VOID</span>
  <span class="eqn m" id=eqTop>$0.00</span>
  <button class=btn onclick="alert('Wallet connect (Privy) arrives with LIVE mode. The paper desk needs no wallet.')">Connect</button>
 </nav>
@@ -732,7 +753,15 @@ document.querySelectorAll('.tb').forEach(t=>t.onclick=()=>{
  document.querySelectorAll('.tb').forEach(x=>x.classList.remove('on'));t.classList.add('on');
  document.querySelectorAll('.pane').forEach(p=>p.classList.remove('on'));
  document.getElementById('p-'+t.dataset.t).classList.add('on')});
+const THEMES=[['void','VOID'],['carbon','CARBON'],['midnight','MIDNIGHT'],['phosphor','PHOSPHOR'],['slate','SLATE']];
+let ti=THEMES.findIndex(t=>t[0]==(localStorage.cambrianTheme||'void'));if(ti<0)ti=0;
+function setTheme(i){ti=(i+THEMES.length)%THEMES.length;const[v,n]=THEMES[ti];
+ if(v=='void')document.documentElement.removeAttribute('data-t');else document.documentElement.setAttribute('data-t',v);
+ localStorage.cambrianTheme=v;document.getElementById('themeBtn').textContent='◐ '+n}
+setTheme(ti);
+document.getElementById('themeBtn').onclick=()=>setTheme(ti+1);
 document.addEventListener('keydown',e=>{if(e.target.tagName=='TEXTAREA')return;
+ if(e.key.toLowerCase()=='t'){setTheme(ti+1);return}
  const k={'1':'desk','2':'scout','3':'wallets'}[e.key];if(k)document.querySelector(`.nv[data-v=${k}]`).click()});
 async function saveWallets(){
  const l=document.getElementById('wtext').value.split('\n').map(s=>s.trim()).filter(s=>/^0x[a-fA-F0-9]{40}$/.test(s));
