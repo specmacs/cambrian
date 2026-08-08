@@ -41,6 +41,10 @@ TRAIL_ARM = float(os.getenv("RH_TRAIL_ARM", "1.35"))
 TRAIL_GIVE = float(os.getenv("RH_TRAIL_GIVE", "0.22"))
 FLOW_EXIT = os.getenv("RH_FLOW_EXIT", "1") not in ("0", "false")
 MAX_HOLD_MIN = float(os.getenv("RH_MAX_HOLD_MIN", "45"))
+# The deterministic score is a CHEAP PRE-FILTER, not the decision. Anything alive
+# and not a honeypot goes to the model — that is the whole point of having a PM.
+# Raise this only to cut inference spend, never to "improve" selection.
+PM_MIN_CONF = float(os.getenv("RH_PM_MIN_CONF", "0.20"))
 RUNGS = [(2.0, 0.50), (3.0, 0.25), (5.0, 0.15)]
 STATE_FILE = os.getenv("RH_STATE", os.path.expanduser("~/cambrian_state.json"))
 TRADES_FILE = os.getenv("RH_TRADES", os.path.expanduser("~/cambrian_trades.jsonl"))
@@ -402,7 +406,10 @@ def confluence(sig, verified, sellable):
 
 
 SYS = ("You are the PM of an automated memecoin desk on Robinhood Chain. Analysts "
-       "scored a fresh launch that passed the honeypot gate. Decide. Be strict. If a "
+       "scored a fresh launch that passed the honeypot gate. THE CALL IS YOURS — the "
+       "scores are inputs, not a verdict, and a low score is not automatically a "
+       "pass. Most fresh launches are skips; buy only when real money is flowing "
+       "in and the launch is not bot-sniped or wallet-farmed. If a "
        "desk_track_record is given, weigh it: it is this desk's own realised base "
        "rates on comparable setups, not theory. "
        'Reply ONLY JSON: {"decision":"buy"|"skip","confidence":0..1,"reason":"<=8 words"}.')
@@ -816,12 +823,17 @@ def scan_and_trade():
     # decisions stay serial: the PM is the only place order matters, and it keeps
     # LLM spend predictable instead of firing a burst of parallel calls.
     for r in scouting:
-        if r["tier"] == "STRONG" and r["token"] not in SEEN:
+        # judge everything that survived the safety gate and shows any life —
+        # BLOCKED means honeypot/unsellable and is never negotiable.
+        if r["tier"] != "BLOCKED" and r["conf"] >= PM_MIN_CONF and r["token"] not in SEEN:
             m, fo = r["_m"], r["_fo"]
-            facts = {"ticker": r["sym"], "pad": r["pad"], "net_flow_usd": r["net"],
-                     "liquidity_usd": r["liq"], "market_cap_usd": r["mc"],
-                     "sniper_share": round(m["snipe"], 2), "fanout": fo,
-                     "buys": m["buys"], "sells": m["sells"], "confluence": r["conf"]}
+            facts = {"ticker": r["sym"], "pad": r["pad"],
+                     "pad_verified": r["verified"], "net_flow_usd": r["net"],
+                     "gross_volume_usd": round(m["gross"]), "liquidity_usd": r["liq"],
+                     "market_cap_usd": r["mc"], "sniper_share": round(m["snipe"], 2),
+                     "transfer_fanout": fo, "buys": m["buys"], "sells": m["sells"],
+                     "buy_ratio": round(m["buys"] / max(m["buys"] + m["sells"], 1), 2),
+                     "confluence_score": r["conf"], "confluence_tier": r["tier"]}
             mb = memory_brief()
             if mb:
                 facts["desk_track_record"] = mb
