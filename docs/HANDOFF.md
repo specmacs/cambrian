@@ -369,6 +369,42 @@ takes a LIVE price from `live_eth_usd()`, derived from a real quote's
 notional/amount. Note it anchors on a stock token, not WETH: spending native ETH
 for WETH is just a wrap and Flash declines to quote it.
 
+### Curve-direct execution — the path Flash cannot route
+
+`runners/curve_exec.py`. Pre-graduation Pons v2 tokens have no AMM, so Flash
+returns `missing notional rates`; the only way to trade them is to call the curve.
+That window is also where a sniping desk lives, so this is not an edge case.
+
+ABI from docs.ponsfamily.com/v2, both selectors confirmed present in live curve
+bytecode:
+
+```
+buy(uint256 quoteIn, uint256 minTokensOut, address recipient) payable  0x59a87bc1
+sell(uint256 tokensIn, uint256 minQuoteOut, address recipient)         0xd04c6983
+```
+
+**VALIDATED AGAINST THE CHAIN.** Simulating the built calldata with `eth_call`
+plus a balance state-override on two live curves, the contract's own `buy()`
+return matched our `quote_buy()` to **0.000%** — including on a 10%-tax curve. So
+the curve math here reproduces the contract exactly; a quote and a fill agree.
+
+Three mechanics that silently cost money if assumed:
+
+- **Native vs ERC-20 quote.** On a native launch `quoteIn` must EQUAL `msg.value`.
+  On a stock-paired launch (~60% of v2) you approve the curve first and send
+  ZERO value. Sending value on an ERC-20 launch strands ETH; approving on a
+  native launch wastes a transaction.
+- **minOut is mandatory.** It bounds the price, and passing 0 invites a sandwich
+  — a fresh curve with virtual reserves is the cheapest place to run one. Every
+  builder derives minOut from our own quote and REFUSES to emit a zero, so a
+  curve we cannot price produces no trade rather than an unbounded one.
+- **Selling always needs the token approved**, whatever the quote asset is: the
+  curve pulls the tokens from you.
+
+Same safety model as Flash: these build **unsigned** transactions, nothing signs,
+nothing accepts a key. A plan the gate blocked cannot reach calldata — otherwise
+the tax gate would be advisory rather than binding.
+
 ### The sweep — one command that does the whole job
 
 ```
