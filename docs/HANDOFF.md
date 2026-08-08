@@ -213,21 +213,54 @@ required; plain `/v1` is wrong.
 
 ## UI / design
 
-`docs/DESIGN.md` + `docs/tokens.css`. Hard rules:
+**The entire UI lives inside `examples/cambrian_desk.py`** as the `PAGE`
+raw-string — tokens, layout, six palettes, the logo, and the fonts. That one
+file is the whole desk: chain scanning, agents, exit policy, paper engine, web
+server and interface. Copy it anywhere and it renders identically.
+`docs/DESIGN.md` + `docs/tokens.css` are the reference spec; nothing reads them
+at runtime.
 
-- **Violet means agent. Nothing else is ever violet.** 2px violet provenance
-  gutter marks agent-originated rows.
-- Teal = profit, coral = loss.
-- No floating cards. 28px dense rows. 2/4px radii.
-- Fonts must be **loaded**, not just declared — an earlier version named Inter
-  and JetBrains Mono without a `<link>` and fell back to Segoe UI on Windows.
-  Use tabular-nums for all numeric columns.
+**Fonts are embedded, not linked.** Geist and Geist Mono (latin subset) are
+inlined as woff2 data URIs, ~69 KB, two `@font-face` rules because both are
+variable faces spanning weights 400–600. Do NOT replace them with a Google
+Fonts `<link>` — an earlier version did that and fell back to Segoe UI offline,
+which the owner rejected twice. The page now loads **zero** external resources;
+the only outbound URLs are click-through links (DexScreener, Blockscout, the
+pad sites).
+
+**Palettes**: `instrument` is the default (no `data-theme` attribute), plus
+`graphite`, `void`, `ember`, `nocturne`, `daylight`. The owner wanted to *click
+through* them, not pick from a dropdown. He tried `void` and disliked it — do
+not make it the default.
+
+**The logo is inline SVG** in the page (not `assets/logo.svg`, which is just a
+copy), stroked with `var(--text)` and `var(--agent)` so it recolors per theme.
+
+Hard rules:
+
+- **Violet means agent. Nothing else is ever violet.** Each palette defines its
+  own `--agent` hue and `--fill-agent` is its only consumer. A 2px violet
+  provenance gutter marks agent-originated rows.
+- Teal `#2ED3A7` = profit, coral `#FF6B7A` = loss.
+- No floating cards. 28px dense rows. 2px/4px radii (`--r-sm`/`--r-md`).
+- `font-variant-numeric: tabular-nums` on every numeric column, so digits do not
+  jitter as prices tick.
 - Age format is `42s` / `5m12s` / `1h05m`, ticking client-side every second.
-  Never decimal minutes.
-- `examples/cambrian_desk_v3.py` is the preserved pre-redesign snapshot.
+  Never decimal minutes — `5.2` was rejected explicitly.
+- `examples/cambrian_desk_v3.py` is the preserved pre-redesign snapshot. Keep
+  it; the owner asked for a way back.
 
 Contract addresses in the UI link to both the launchpad token page and
 DexScreener, and the ticker must be shown.
+
+### Taste notes from review rounds
+
+The owner is watching agents work, not reading a consumer app — reference
+points were Padre-style pro terminals. "Think PROFESSIONAL AGENT TRADING DESK."
+He is blunt about visual misses and will say so; when he does, fix the actual
+cause rather than adjusting around it. The Segoe UI fallback was diagnosed
+twice before the real cause (fonts declared but never loaded) was found, which
+is exactly why they are embedded now.
 
 ---
 
