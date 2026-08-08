@@ -576,6 +576,30 @@ PAGE = r"""<!doctype html><html><head><meta charset=utf-8><title>Cambrian</title
 --r-sm:2px;--r-md:4px;--hairline:1px;--gutter:2px;--rail-w:320px;--nav-w:48px;
 --dur-fast:120ms;--dur-enter:160ms;--dur-flash:400ms;--ease:cubic-bezier(.2,0,0,1);
 --shadow-overlay:0 8px 32px rgba(0,0,0,.5)}
+
+/* ── palettes ── same token names, different values. Structure never changes.
+   --agent stays a hue used for NOTHING else within each palette. ────────────── */
+[data-theme="graphite"]{
+--bg:#0E0F11;--surface:#15171A;--surface-raised:#1D2024;--border:#272B31;--border-strong:#373D45;
+--text:#E9EBEE;--text-dim:#8D949E;--text-faint:#5C636D;
+--up:#2ED3A7;--down:#FF6B7A;--agent:#9B8CFF;--pending:#F2B544;--focus:#4DA6FF}
+[data-theme="void"]{
+--bg:#050507;--surface:#0B0B0F;--surface-raised:#131318;--border:#1E1E26;--border-strong:#2E2E3A;
+--text:#F2F4F8;--text-dim:#8E93A3;--text-faint:#585D6D;
+--up:#00E5A0;--down:#FF5470;--agent:#A78BFF;--pending:#FFC043;--focus:#5AC8FA}
+[data-theme="ember"]{
+--bg:#0F0C0A;--surface:#171310;--surface-raised:#211B16;--border:#2C241D;--border-strong:#3E3328;
+--text:#F2EAE1;--text-dim:#A2917F;--text-faint:#6E6154;
+--up:#43C79A;--down:#FF6B5A;--agent:#C79BFF;--pending:#F2B544;--focus:#5AA9FF}
+[data-theme="nocturne"]{
+--bg:#090A18;--surface:#101228;--surface-raised:#181B36;--border:#242848;--border-strong:#343A62;
+--text:#E7E9FA;--text-dim:#8C93BE;--text-faint:#5A6091;
+--up:#3FE0B0;--down:#FF6B8E;--agent:#B49BFF;--pending:#F5C155;--focus:#5B9DFF}
+[data-theme="daylight"]{
+--bg:#F6F7F9;--surface:#FFFFFF;--surface-raised:#EEF1F5;--border:#DDE2EA;--border-strong:#BFC7D4;
+--text:#121722;--text-dim:#5A6376;--text-faint:#8B94A7;
+--up:#0E9E77;--down:#D8394E;--agent:#6741E8;--pending:#A9760A;--focus:#0B6BCB}
+
 *{box-sizing:border-box;margin:0}
 ::-webkit-scrollbar{width:8px;height:8px}::-webkit-scrollbar-thumb{background:var(--border)}
 ::-webkit-scrollbar-track{background:transparent}
@@ -715,6 +739,7 @@ animation-duration:.01ms!important}.flash-up{animation:flash-up var(--dur-flash)
   <span class=grow></span>
   <span class=tbmeta>Equity</span>
   <span class="num" id=eqTop style="font-size:var(--t-md);font-weight:var(--w-ui)">$0.00</span>
+  <select id=theme class=btn title="Palette (T)" style="padding:0 var(--s-2)"><option value=instrument>Instrument</option><option value=graphite>Graphite</option><option value=void>Void</option><option value=ember>Ember</option><option value=nocturne>Nocturne</option><option value=daylight>Daylight</option></select>
   <button class="btn primary" onclick="alert('Wallet connect (Privy) arrives with live mode. Paper needs no wallet.')">Connect</button>
  </div>
  <div class=kpis>
@@ -776,6 +801,12 @@ const DEX=t=>`https://dexscreener.com/search?q=${t}`,EXP=t=>`https://robinhoodch
 const PADURL={"pools-trade":"https://pools.trade/token/","flap":"https://flap.sh/token/",
 "bankr":"https://bankr.bot/token/","pons":"https://pons.fun/token/"};
 let PREV={};
+const PAL=['instrument','graphite','void','ember','nocturne','daylight'];
+function setTheme(v){if(v==='instrument')document.documentElement.removeAttribute('data-theme');
+ else document.documentElement.setAttribute('data-theme',v);
+ localStorage.cambrianPalette=v;document.getElementById('theme').value=v}
+setTheme(localStorage.cambrianPalette||'instrument');
+document.getElementById('theme').onchange=e=>setTheme(e.target.value);
 function d$(n){const s=n<0?'-':'',a=Math.abs(n);
  return s+'$'+(a>=1e6?(a/1e6).toFixed(2)+'M':a>=1e3?(a/1e3).toFixed(1)+'K':a.toFixed(2))}
 function sgn(n){return n>0?'up':n<0?'down':'faint'}
@@ -796,7 +827,8 @@ document.querySelectorAll('.tab').forEach(t=>t.onclick=()=>{
  document.querySelectorAll('.tab').forEach(x=>x.classList.remove('on'));t.classList.add('on');
  document.querySelectorAll('.view').forEach(v=>v.classList.remove('on'));
  document.getElementById('p-'+t.dataset.t).classList.add('on')});
-document.addEventListener('keydown',e=>{if(e.target.tagName=='TEXTAREA')return;
+document.addEventListener('keydown',e=>{if(e.target.tagName=='TEXTAREA'||e.target.tagName=='SELECT')return;
+ if(e.key.toLowerCase()==='t'){setTheme(PAL[(PAL.indexOf(localStorage.cambrianPalette||'instrument')+1)%PAL.length]);return}
  const k={'1':'desk','2':'scout','3':'wallets'}[e.key];
  if(k)document.querySelector(`.ni[data-v=${k}]`).click()});
 async function saveWallets(){
