@@ -405,6 +405,37 @@ Same safety model as Flash: these build **unsigned** transactions, nothing signs
 nothing accepts a key. A plan the gate blocked cannot reach calldata — otherwise
 the tax gate would be advisory rather than binding.
 
+### Settlement is USDG or ETH — and that costs hops
+
+The desk holds **USDG or ETH** on Robinhood Chain (USDC or ETH on Base). Nothing
+launches denominated in USDG, so almost every entry crosses an asset boundary.
+`runners/router.py` plans the path.
+
+⚠️ **USDG is 6 decimals**, not 18 — `0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168`,
+"Global Dollar", verified on-chain. An 18-decimal assumption overstates an amount
+by 10^12: it would size a position a trillion times too large, or revert. $25 is
+`25_000_000`.
+
+Three shapes:
+
+| Case | Hops | |
+| --- | --- | --- |
+| Flash-routable, USDG as contra | 1 | Flash takes USDG directly — $25 into FRONG quoted 0.18% impact live |
+| Curve whose quote IS the settlement asset | 1 | only native-ETH launches settled in ETH |
+| Curve whose quote is NOT the settlement asset | **2** | the common case |
+
+The two-hop case dominates: ~60% of Pons v2 is stock-paired, so buying one from a
+USDG balance is `USDG -> AAPL -> curve`. **Slippage is paid twice, and the desk is
+exposed to the intermediate between legs** — a stock can move between the swap and
+the curve call, so the size that arrives is not the size quoted. `plan_route`
+reports the extra hop rather than folding it into one number; a two-leg entry into
+a thin curve can cost more in transit than the edge being chased.
+
+**Exits are NOT the entry reversed.** A curve sale returns the CURVE's quote
+asset, so a stock-paired position exits into a STOCK which then has to be sold for
+USDG. Planning the exit backwards leaves the desk holding equity it never chose —
+`exit_route()` is a separate function for exactly that reason.
+
 ### The sweep — one command that does the whole job
 
 ```
