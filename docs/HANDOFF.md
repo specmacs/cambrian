@@ -181,6 +181,15 @@ Live check after wiring: `discover_fresh` returned **18 launches in 1,500 blocks
 (~2.5 min) — 14 flap, 4 pons**. Before, it returned zero for both, because a
 blank `created_topic0` makes it skip the pad entirely (fail closed).
 
+⚠️ **flap launches create NO Uniswap pool — 0 of 177 sampled**, neither v3 nor v4.
+flap runs its own bonding curve inside the pad and only graduates to a pool later.
+Pons, by contrast, opens a v3 pool in the very same tx (18 of 18 sampled). This
+matters more than it looks: flap is the **highest-volume launch source on the
+chain** (~177 per 16 min vs pools.trade 53 and Pons 18), and none of it is
+priceable or sellable through our v3/v4 quote path at launch. Treat flap
+discovery as a watchlist feed, not a buyable feed, until the graduation event is
+found — that is now the biggest open trading gap.
+
 Known tokens: FRONG (pools.trade flagship)
 `0x6245e67affA44a23077f0Ea7f981a8DC743a0c47`.
 `0x391e96EE8C17ca09Ee795331C1D10A70b3a1432B` is a Pons launch — contract
