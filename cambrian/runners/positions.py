@@ -56,6 +56,10 @@ class Position:
     rungs_hit: list[int] = field(default_factory=list)
     liq0_usd: float | None = None
     closed: bool = False
+    # False when the mark came from spot rather than a real sell quote (V3
+    # venues). Surfaced in the UI so an approximate mark is never mistaken for a
+    # priced exit.
+    mark_is_exact: bool = True
 
     @property
     def multiple(self) -> float | None:
@@ -76,20 +80,32 @@ def open_position(*, token: str, venue: V.Venue, tokens: int, cost_usd: float,
                     peak_usd=cost_usd)
 
 
-def exit_value_usd(venue: V.Venue, tokens: int, *, quote_price_usd: float) -> float | None:
-    """What closing this position right now would actually pay, in USD.
+def exit_value_usd(venue: V.Venue, tokens: int, *,
+                   quote_price_usd: float) -> tuple[float | None, bool]:
+    """(value_usd, is_exact) for closing this position right now.
 
-    Uses `quote_sell`, so tax, fee and the slippage of THIS size are all included.
-    Returns None — never 0 — when the venue cannot be priced, so the caller can
-    tell "worth nothing" apart from "cannot tell", which are different facts with
-    different responses.
+    Three outcomes, and collapsing any two of them is a bug:
+
+    1. **Exact.** `quote_sell` works (curves, V2 pairs), so tax, fee and the
+       slippage of THIS size are all priced in. `is_exact` is True.
+    2. **Approximate.** The venue has no constant-product reserves to quote from
+       — a Uniswap V3 pool — but it does have an exact spot price. Mark at spot
+       and flag it. Slightly optimistic, since spot ignores exit slippage, but
+       vastly better than the alternative: treating "this venue type cannot be
+       quoted locally" as "this position cannot be sold" manufactured a fake
+       -100% and stopped out every Pons v1 position the instant it opened.
+    3. **Unknown.** Neither works — the venue is broken or gone. Returns None so
+       `mark` can treat it as the rug signal it is.
     """
     if tokens <= 0:
-        return 0.0
+        return 0.0, True
     out = V.quote_sell(venue, tokens)
-    if out is None:
-        return None
-    return out / (10 ** venue.quote_decimals) * quote_price_usd
+    if out is not None:
+        return out / (10 ** venue.quote_decimals) * quote_price_usd, True
+    spot = V.price_quote_per_token(venue)
+    if spot:
+        return (spot * (tokens / 10 ** venue.token_decimals) * quote_price_usd), False
+    return None, False
 
 
 def mark(pos: Position, venue: V.Venue, *, quote_price_usd: float) -> Position:
@@ -98,13 +114,14 @@ def mark(pos: Position, venue: V.Venue, *, quote_price_usd: float) -> Position:
     A failed quote marks to ZERO and counts a failure. Preserving the last good
     mark is how a honeypot renders as a winner — see correction #1.
     """
-    val = exit_value_usd(venue, pos.tokens, quote_price_usd=quote_price_usd)
+    val, exact = exit_value_usd(venue, pos.tokens, quote_price_usd=quote_price_usd)
     if val is None:
         pos.fails += 1
         pos.mark_usd = 0.0
         return pos
     pos.fails = 0
     pos.mark_usd = val
+    pos.mark_is_exact = exact
     pos.peak_usd = max(pos.peak_usd, val)
     return pos
 

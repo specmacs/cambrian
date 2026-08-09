@@ -37,16 +37,17 @@ def test_mark_uses_the_real_sell_quote_not_the_mid_price():
     # position — the number that makes a desk feel profitable while it bleeds.
     v = _v(tax_bps=0)
     taxed = _v(tax_bps=1000)
-    clean_val = P.exit_value_usd(v, 10 * MM, quote_price_usd=2000.0)
-    taxed_val = P.exit_value_usd(taxed, 10 * MM, quote_price_usd=2000.0)
+    clean_val, _ = P.exit_value_usd(v, 10 * MM, quote_price_usd=2000.0)
+    taxed_val, _ = P.exit_value_usd(taxed, 10 * MM, quote_price_usd=2000.0)
     assert taxed_val < clean_val
 
 
 def test_mark_includes_slippage_of_the_actual_size():
     v = _v()
-    small = P.exit_value_usd(v, MM, quote_price_usd=2000.0)
-    big = P.exit_value_usd(v, 100 * MM, quote_price_usd=2000.0)
+    small, exact = P.exit_value_usd(v, MM, quote_price_usd=2000.0)
+    big, _ = P.exit_value_usd(v, 100 * MM, quote_price_usd=2000.0)
     assert big / 100 < small          # bigger exit gets a worse average price
+    assert exact is True              # a curve gives a real sell quote
 
 
 def test_unpriceable_venue_marks_to_zero_and_counts_a_failure():
@@ -64,11 +65,40 @@ def test_a_good_mark_resets_the_failure_counter():
     assert pos.fails == 0 and pos.mark_usd > 0
 
 
-def test_exit_value_distinguishes_worthless_from_unknowable():
-    # 0 and None are different facts with different responses.
-    assert P.exit_value_usd(_v(), 0, quote_price_usd=2000.0) == 0.0
+def test_exit_value_distinguishes_worthless_unknowable_and_approximate():
+    # Three distinct outcomes. Collapsing any two of them is a bug — collapsing
+    # "cannot quote this venue type" into "cannot sell" manufactured a fake -100%
+    # and stopped out every Pons v1 position the moment it opened.
+    assert P.exit_value_usd(_v(), 0, quote_price_usd=2000.0) == (0.0, True)
+    # V3: no reserves, but an exact spot price -> approximate mark, not a rug
+    v3 = _v(pricing_reserves=None, spot_price_quote_per_token=1e-8)
+    val, exact = P.exit_value_usd(v3, MM, quote_price_usd=2000.0)
+    assert val > 0 and exact is False
+    # genuinely unpriceable -> None, which mark() turns into the rug path
     assert P.exit_value_usd(_v(pricing_reserves=None), MM,
-                            quote_price_usd=2000.0) is None
+                            quote_price_usd=2000.0) == (None, False)
+
+
+def test_a_v3_position_is_not_stopped_out_the_moment_it_opens():
+    # The live paper run caught this: every pons-v1 buy marked $0.00 and closed
+    # at "stop -100%" on the very next mark.
+    v3 = _v(kind=V.PONS_V1, pricing_reserves=None,
+            spot_price_quote_per_token=1e-8)
+    # 1e6 whole tokens at 1e-8 quote each, quote at $2000 => a ~$20 mark against
+    # a $20 cost, i.e. a flat position that must simply be held.
+    pos = _pos(cost_usd=20.0, tokens=10**24, peak_usd=20.0)
+    P.mark(pos, v3, quote_price_usd=2000.0)
+    assert abs(pos.mark_usd - 20.0) < 0.01
+    assert pos.mark_usd > 0
+    assert pos.mark_is_exact is False
+    assert pos.fails == 0
+    assert P.exit_decision(pos)[0] is None
+
+
+def test_an_approximate_mark_is_flagged_so_it_is_never_mistaken_for_a_quote():
+    exact = _pos()
+    P.mark(exact, _v(), quote_price_usd=2000.0)
+    assert exact.mark_is_exact is True
 
 
 def test_peak_tracks_the_high_water_mark():
