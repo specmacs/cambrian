@@ -567,6 +567,42 @@ was stale relative to the owner's local file — check that before trusting it.*
 
 ---
 
+## Position tracking — mark at the EXIT, not the mid
+
+`runners/positions.py`. Two rules, both corrections to how this desk used to work.
+
+**Mark at the sell quote, never the mid price.** A position is worth what closing
+it would actually pay — net of creator tax, protocol fee, and the slippage of
+THAT size against THAT venue. Measured live on four fresh positions of ~$20:
+
+```
+venue  tax     spent    mid-mark   exit-mark   instant P&L
+pons   4.0%    $20.00   $18.89     $17.84      -10.8%
+pons   0.0%    $20.00   $19.68     $19.37       -3.2%
+flap  10.0%    $20.00   $17.85     $15.94      -20.3%
+flap  10.0%    $20.00   $17.85     $15.94      -20.3%
+```
+
+The mid overstates a 10%-tax position by ~12% at the moment of entry. That gap is
+the number that makes a desk feel profitable while it bleeds.
+
+⚠️ **A failed sell quote marks to ZERO, never to the last good value.** This is
+correction #1 and it must not regress. `exit_value_usd` returns None only when the
+venue cannot be priced; `mark()` turns that into a 0 mark plus a `fails`
+increment, and `RUG_FAILS` consecutive failures force a close at any price. The
+old `if val is None: continue` preserved a stale mark forever, so a honeypot
+printed a beautiful P&L right up until you tried to leave.
+
+Exit priority is unchanged and the rug check outranks everything — a honeypot can
+print a great mark, and being unable to sell still wins:
+
+```
+unsellable xN -> stop -> trailing stop -> profit rungs -> liq collapse -> time stop
+```
+
+The rungs never sum to 1.0, so a moon bag always survives; the trailing stop
+(arm 1.35x, give 22%) is what lets a winner run past them.
+
 ## Exit policy
 
 Priority order in `exit_decision()`: stop → trailing stop → profit rungs →
