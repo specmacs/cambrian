@@ -290,3 +290,67 @@ def test_stock_price_uses_the_mid_not_one_side(monkeypatch):
     monkeypatch.setattr(ST, "_get", lambda url, timeout=10.0: {
         "quotes": [{"bid": "19.08", "ask": "19.99"}]})
     assert ST.usd_price("0xgme") == (19.08 + 19.99) / 2
+
+
+# --- Uniswap V3 venues (Pons v1) --------------------------------------------
+
+def _v3(**kw) -> V.Venue:
+    base = dict(kind=V.PONS_V1, token="0xtok", pool="0xpool",
+                quote_token="0xweth", quote_decimals=18, token_decimals=18,
+                pricing_reserves=None, total_supply=10**27,
+                spot_price_quote_per_token=2.5e-8)
+    base.update(kw)
+    return V.Venue(**base)
+
+
+def test_v3_venues_price_from_spot_not_reserves():
+    # A concentrated pool has no constant-product reserves; faking x*y=k on one
+    # misprices depth in both directions. Spot is exact and is all MC needs.
+    v = _v3()
+    assert V.price_quote_per_token(v) == 2.5e-8
+    assert V.market_cap_usd(v, 2000.0) == 2.5e-8 * 1e9 * 2000.0
+
+
+def test_v3_venue_passes_the_gate_on_spot_price_alone():
+    # The live bug: 11 of 11 Pons v1 launches failed as "no price" because the V2
+    # reader returned nothing on a V3 pool. The gate was fine; the resolver wasn't.
+    assert V.tradeable(_v3())["ok"] is True
+    assert V.tradeable(_v3(spot_price_quote_per_token=None))["ok"] is False
+
+
+def test_v3_venue_has_no_local_round_trip_quote():
+    v = _v3()
+    assert V.quote_buy(v, 10**18) is None
+    assert V.quote_sell(v, 10**18) is None
+
+
+def test_v3_plan_sizes_off_market_cap_and_defers_slippage_to_flash():
+    plan = S.plan_entry(_v3(), quote_price_usd=2000.0, bankroll_usd=1000)
+    assert plan["ok"] is True
+    assert plan["size_usd"] > 0 and plan["quote_in"] > 0
+    assert plan["slippage_priced_by"] == "flash-at-execution"
+    assert plan["round_trip"] is None      # honest: we did not compute one
+
+
+def test_fee_farm_share_counts_tokens_at_the_maximum_tax():
+    # Owner's read, confirmed live: 36 of 53 flap tokens sat at exactly 10.0%.
+    # A real launch does not pick the cap — it makes the token unsellable at a
+    # profit — so this ratio is the fee-farm tell.
+    from cambrian.runners.scanner import fee_farm_share
+    result = {"rows": [{"tax_bps": 1000}, {"tax_bps": 1000}, {"tax_bps": 230},
+                       {"tax_bps": None}]}
+    assert fee_farm_share(result) == (2, 3)
+
+
+def test_blocked_rows_are_summarised_not_dropped():
+    # They must not vanish (a hidden gate looks like a quiet market) but at ~68%
+    # of flap at max tax, listing every one buries what is actionable.
+    from cambrian.runners.scanner import format_sweep
+    rows = [{"pad": "flap", "token": "0x%040x" % i, "ok": False,
+             "reasons": ["tax 10% > 3%"], "tax_bps": 1000,
+             "market_cap_usd": 5000, "size_usd": None} for i in range(20)]
+    txt = format_sweep({"rows": rows, "scanned_blocks": 1500, "found": 20,
+                        "tradeable": 0, "failed_chunks": 0}, show_blocked=3)
+    assert "...17 more blocked" in txt
+    assert "tax x20" in txt
+    assert "fee farms, not launches" in txt

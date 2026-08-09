@@ -436,6 +436,39 @@ asset, so a stock-paired position exits into a STOCK which then has to be sold f
 USDG. Planning the exit backwards leaves the desk holding equity it never chose —
 `exit_route()` is a separate function for exactly that reason.
 
+### High-tax flap is fee farming, not launches
+
+Owner's read, and the chain agrees. Over 4,500 blocks:
+
+```
+PAD       TOTAL  TRADEABLE  PASS   MEDIAN TAX
+flap      53     2          4%     10.0%
+pons-v2   7      3          43%     6.0%
+pons-v1   11     11         —      none (plain ERC-20, no tax function)
+```
+
+**36 of 53 flap tokens sat at EXACTLY 10.0%** — the maximum. A real launch does
+not choose the cap, because the cap makes the token unsellable at a profit. So the
+3% gate is not throwing away 93% of an opportunity; it is throwing away fee farms
+and keeping the launches. Pons is where the tradeable flow actually is.
+
+`format_sweep` now lists every PASSING row but only a few blocked ones, with the
+rest counted by reason plus a fee-farm ratio. Blocked rows still must not vanish —
+a scanner showing only passes makes a broken gate look like a quiet market — but
+listing 40 max-tax farms buries the handful worth acting on.
+
+⚠️ **Pons v1 launches into a Uniswap V3 pool, not V2.** Resolving it with the V2
+reader returned nothing, so all 11 v1 launches in a live window failed the gate as
+"no price" — the gate was working, the resolver was not. `venues.from_v3_pool`
+prices them from `slot0().sqrtPriceX96`, which is exact.
+
+V3 venues deliberately have **no local round-trip quote**: constant-product math on
+a concentrated pool misprices depth in both directions. They size off market cap
+and let Flash enforce slippage at execution, where it does the tick math properly,
+and `execution.prepare` re-checks the real quote before anything becomes signable.
+`plan["slippage_priced_by"] == "flash-at-execution"` marks those rows honestly
+rather than printing a number we did not compute.
+
 ### The sweep — one command that does the whole job
 
 ```

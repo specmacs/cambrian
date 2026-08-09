@@ -67,6 +67,12 @@ class Venue:
     total_supply: int | None = None
     graduated: bool | None = None
     sellable_tokens: int | None = None
+    # Concentrated-liquidity venues (Uniswap V3) have no constant-product
+    # reserves to quote from. They still have an exact SPOT price, which is all
+    # market cap needs; execution cost for these comes from Flash, which does the
+    # tick math properly. Faking v3 depth with x*y=k would misprice it in both
+    # directions — understating depth at the price, overstating it away from it.
+    spot_price_quote_per_token: float | None = None
 
     @property
     def prices_off_virtual_reserves(self) -> bool:
@@ -163,7 +169,7 @@ def from_flap(client, *, token: str, pair: str,
 def price_quote_per_token(v: Venue) -> float | None:
     """Marginal price of one whole token, in whole units of the quote asset."""
     if not v.pricing_reserves or None in v.pricing_reserves:
-        return None
+        return v.spot_price_quote_per_token
     q, t = v.pricing_reserves
     if not t:
         return None
@@ -286,7 +292,7 @@ def tradeable(v: Venue, *, max_tax_bps: int | None = None,
         reasons.append(f"tax {v.tax_bps / 100:.2g}% > {limit / 100:.0f}%")
     if v.graduated is False and v.sellable_tokens == 0:
         reasons.append("curve closed, not yet graduated")
-    if not v.pricing_reserves or None in (v.pricing_reserves or (None,)):
+    if price_quote_per_token(v) is None:
         reasons.append("no price")
     if require_backing:
         if v.real_backing_quote is None:
@@ -294,3 +300,67 @@ def tradeable(v: Venue, *, max_tax_bps: int | None = None,
         elif v.real_backing_quote <= 0:
             reasons.append("no real backing")
     return {"ok": not reasons, "reasons": reasons}
+
+
+# --- Uniswap V3 (Pons v1) ----------------------------------------------------
+
+SEL_SLOT0 = "0x3850c7bd"        # slot0() -> (sqrtPriceX96, tick, ...)
+SEL_TOKEN0 = "0x0dfe1681"
+SEL_TOKEN1 = "0xd21220a7"
+
+
+def from_v3_pool(client, *, token: str, pool: str, quote_token: str,
+                 kind: str = PONS_V1) -> Venue:
+    """A concentrated-liquidity pool — Pons v1 launches into these.
+
+    Price comes from `slot0().sqrtPriceX96`, which is exact. Depth comes from the
+    pool's real token balance, which a V3 pool genuinely holds. `pricing_reserves`
+    is deliberately left empty so nothing tries constant-product math on a
+    concentrated pool; execution cost comes from Flash, which routes V3 properly.
+
+    Resolving these with the V2 reader was a real bug: `getReserves()` returns
+    empty on a V3 pool, so every Pons v1 launch failed the gate with "no price" —
+    11 of 11 in one live window.
+    """
+    raw = None
+    try:
+        raw = client.eth_call(pool, SEL_SLOT0)
+    except Exception:
+        raw = None
+    sqrt_price = None
+    if raw and len(raw) >= 66:
+        try:
+            sqrt_price = int(raw[2:66], 16)
+        except (TypeError, ValueError):
+            sqrt_price = None
+    t0 = (_u_addr(client, pool, SEL_TOKEN0) or "").lower()
+    quote_is_token0 = bool(t0) and t0 == (quote_token or "").lower()
+    qdec = _decimals(client, quote_token)
+    tdec = _decimals(client, token)
+    spot = None
+    if sqrt_price:
+        # (sqrt/2^96)^2 is token1 per token0 in RAW units; flip and rescale so the
+        # result is quote-per-token in whole units.
+        ratio = (sqrt_price / (1 << 96)) ** 2
+        if ratio > 0:
+            spot = (ratio if quote_is_token0 is False else 1 / ratio)
+            spot *= 10 ** (tdec - qdec)
+    return Venue(
+        kind=kind, token=token, pool=pool, quote_token=quote_token,
+        quote_decimals=qdec, token_decimals=tdec,
+        pricing_reserves=None,
+        real_backing_quote=_balance_of(client, quote_token, pool),
+        fee_bps=None, tax_bps=None,
+        total_supply=_u(client, token, "0x18160ddd"),
+        spot_price_quote_per_token=spot,
+    )
+
+
+def _u_addr(client, to: str, selector: str) -> str | None:
+    try:
+        raw = client.eth_call(to, selector)
+    except Exception:
+        return None
+    if not raw or len(raw) < 42:
+        return None
+    return "0x" + raw[-40:]

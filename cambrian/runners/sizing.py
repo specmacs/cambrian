@@ -130,6 +130,20 @@ def plan_entry(venue: V.Venue, *, quote_price_usd: float,
         return out
     scale = 10 ** venue.quote_decimals
     want_quote = int(want_usd / quote_price_usd * scale)
+
+    # Concentrated-liquidity venues (Pons v1 on Uniswap V3) have an exact spot
+    # price but no constant-product reserves, so there is no honest local
+    # round-trip to solve for. Rather than fake x*y=k on a V3 pool — which
+    # misprices depth in both directions — size off market cap and let Flash
+    # enforce slippage at execution, where it does the tick math properly.
+    # `execution.prepare` re-checks the real quote before anything is signable.
+    if V.quote_buy(venue, want_quote) is None:
+        out.update({"size_usd": want_quote / scale * quote_price_usd,
+                    "quote_in": want_quote,
+                    "slippage_priced_by": "flash-at-execution"})
+        out["ok"] = not out["reasons"]
+        return out
+
     capped = cap_for_slippage(venue, want_quote, max_slippage_bps=max_slippage_bps)
     if capped <= 0:
         out["reasons"].append("no size clears the slippage cap")

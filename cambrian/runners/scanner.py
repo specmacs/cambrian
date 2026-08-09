@@ -103,7 +103,10 @@ def _resolve(client, hit: dict) -> V.Venue | None:
                                   quote_token=hit["quote_token"])
         if hit["pad"] == "flap":
             return V.from_flap(client, token=hit["token"], pair=hit["pool"])
-        return V.from_v2_pair(client, token=hit["token"], pair=hit["pool"],
+        # Pons v1 launches into a Uniswap **V3** pool. Reading it with the V2
+        # reader returns nothing, which failed 11 of 11 live launches as "no
+        # price" — the gate was working, the resolver was not.
+        return V.from_v3_pool(client, token=hit["token"], pool=hit["pool"],
                               quote_token=hit["quote_token"], kind=V.PONS_V1)
     except Exception:
         return None
@@ -167,12 +170,36 @@ def _quote_label(row: dict) -> str:
     return q[2:8]
 
 
-def format_sweep(result: dict, *, limit: int = 25) -> str:
-    """Human-readable sweep, actionable rows first."""
+MAX_TAX_FEE_FARM_BPS = 1000     # the cap; nobody launching a real token picks it
+
+
+def fee_farm_share(result: dict) -> tuple[int, int]:
+    """(tokens at the maximum tax, total tokens with a readable tax).
+
+    Owner's read, and the data agrees: flap tokens above the tax gate are mostly
+    fee farms rather than launches. Measured over 4,500 blocks, 36 of 53 flap
+    tokens sat at EXACTLY 10.0% — the maximum. A real launch does not choose the
+    cap, because the cap makes the token unsellable at a profit.
+    """
+    taxed = [r.get("tax_bps") for r in result["rows"] if r.get("tax_bps") is not None]
+    return sum(1 for t in taxed if t >= MAX_TAX_FEE_FARM_BPS), len(taxed)
+
+
+def format_sweep(result: dict, *, limit: int = 25, show_blocked: int = 5) -> str:
+    """Human-readable sweep, actionable rows first.
+
+    Blocked rows are summarised rather than listed in full. They must not vanish —
+    a scanner showing only passes makes a broken gate look like a quiet market —
+    but at ~68% of flap sitting at the maximum tax, listing every one buries the
+    handful of rows worth acting on. So: all passing rows, a few blocked ones, and
+    a counted breakdown of the rest.
+    """
     lines = ["", "%-9s %-12s %-7s %-11s %-7s %-9s %-7s %s"
              % ("PAD", "TOKEN", "QUOTE", "MCAP", "TAX", "SIZE", "RTRIP", "VERDICT")]
     lines.append("-" * 100)
-    for r in result["rows"][:limit]:
+    passing = [r for r in result["rows"] if r.get("ok")]
+    blocked = [r for r in result["rows"] if not r.get("ok")]
+    for r in (passing[:limit] + blocked[:show_blocked]):
         mc, size = r.get("market_cap_usd"), r.get("size_usd")
         rt = r.get("round_trip") or {}
         tax = r.get("tax_bps")
@@ -185,6 +212,19 @@ def format_sweep(result: dict, *, limit: int = 25) -> str:
             ("%.0f%%" % rt["returned_pct"]) if rt.get("returned_pct") else "-",
             "OK" if r.get("ok") else "; ".join(r.get("reasons") or ["blocked"])))
     lines.append("-" * 100)
+    if len(blocked) > show_blocked:
+        import collections as _c
+        why = _c.Counter()
+        for r in blocked:
+            reason = (r.get("reasons") or ["blocked"])[0]
+            why["tax" if reason.startswith("tax") else reason] += 1
+        lines.append("  ...%d more blocked: %s"
+                     % (len(blocked) - show_blocked,
+                        ", ".join("%s x%d" % (k, v) for k, v in why.most_common(4))))
+    farms, taxed = fee_farm_share(result)
+    if taxed:
+        lines.append("  %d of %d taxed tokens sit at the %g%% maximum — fee farms, not launches"
+                     % (farms, taxed, MAX_TAX_FEE_FARM_BPS / 100))
     lines.append("%d launches over %d blocks | %d tradeable | %d blocked%s"
                  % (result["found"], result["scanned_blocks"], result["tradeable"],
                     result["found"] - result["tradeable"],
