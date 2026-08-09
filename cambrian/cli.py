@@ -232,6 +232,46 @@ def cmd_sweep(args: argparse.Namespace) -> int:
     return 1 if result["failed_chunks"] else 0
 
 
+
+def cmd_watch(args: argparse.Namespace) -> int:
+    """Run the desk live: discover on one cadence, mark and exit on a faster one."""
+    import time as _t
+
+    from .chain import ChainClient
+    from .runners import config as rcfg
+    from .runners import live as L
+    from .runners.execution import live_eth_usd
+
+    client = ChainClient()
+    state = L.LiveState()
+    eth = args.weth_usd or live_eth_usd(fallback=rcfg.WETH_USD)
+    print("watching — scan %gs / mark %gs — ETH $%.2f — DRY RUN (no signing)"
+          % (L.SCAN_INTERVAL_S, L.MARK_INTERVAL_S, eth))
+    deadline = _t.time() + args.seconds if args.seconds else None
+    try:
+        while deadline is None or _t.time() < deadline:
+            scan_due, mark_due = L.due(state)
+            fresh, intents = [], []
+            if scan_due:
+                try:
+                    fresh = L.scan_tick(client, state, quote_price_usd=eth,
+                                        bankroll_usd=args.bankroll,
+                                        blocks=args.blocks)
+                except Exception as e:              # a scan failure must not stop marking
+                    print("  scan error: %s" % str(e)[:90])
+                    state.last_scan_at = _t.time()
+            if mark_due:
+                intents = L.mark_tick(client, state, weth_usd=eth)
+            out = L.format_tick(fresh, intents, state)
+            if out:
+                print(out, flush=True)
+            _t.sleep(min(L.MARK_INTERVAL_S, 1.0))
+    except KeyboardInterrupt:
+        print("\nstopped")
+    print("%d scans, %d marks, %d tokens seen" % (state.scans, state.marks, len(state.seen)))
+    return 0
+
+
 def cmd_scan_base(args: argparse.Namespace) -> int:
     from .feeds.cambrian_api import CambrianClient, CambrianError
     from . import base_config
@@ -806,6 +846,15 @@ def build_parser() -> argparse.ArgumentParser:
     sw.add_argument("-n", type=int, default=25, help="max rows to show")
     sw.add_argument("--json", action="store_true", help="also emit raw rows as JSON")
     sw.set_defaults(func=cmd_sweep)
+
+    wt = sub.add_parser("watch",
+                        help="run the desk live (dry run): discover, mark, exit")
+    wt.add_argument("--blocks", type=int, default=1200, help="scan window per sweep")
+    wt.add_argument("--bankroll", type=float, default=None)
+    wt.add_argument("--weth-usd", type=float, default=None, dest="weth_usd")
+    wt.add_argument("--seconds", type=float, default=None,
+                    help="stop after N seconds (default: run until interrupted)")
+    wt.set_defaults(func=cmd_watch)
 
     fd = sub.add_parser("field",
                         help="best APY across the whole field (LP + lending), ranked")

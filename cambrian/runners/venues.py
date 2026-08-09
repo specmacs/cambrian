@@ -350,7 +350,11 @@ def from_v3_pool(client, *, token: str, pool: str, quote_token: str,
         quote_decimals=qdec, token_decimals=tdec,
         pricing_reserves=None,
         real_backing_quote=_balance_of(client, quote_token, pool),
-        fee_bps=None, tax_bps=None,
+        # tax_bps=0 is a KNOWN zero, not an unknown. Pons v1 has no tax mechanism
+        # at all — plain ERC-20s — which is precisely why v2 was built. So a v1
+        # token reading "no tax function" is a positive fact, and recording it as
+        # None would leave the gate trusting an absence instead of a certainty.
+        fee_bps=None, tax_bps=0,
         total_supply=_u(client, token, "0x18160ddd"),
         spot_price_quote_per_token=spot,
     )

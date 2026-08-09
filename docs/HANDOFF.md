@@ -469,6 +469,33 @@ and `execution.prepare` re-checks the real quote before anything becomes signabl
 `plan["slippage_priced_by"] == "flash-at-execution"` marks those rows honestly
 rather than printing a number we did not compute.
 
+### The live loop
+
+```
+RH_RPC_URL=... python -m cambrian watch --blocks 1200 --bankroll 1000
+```
+
+`runners/live.py`. **Two cadences, deliberately** — scan 20s, mark 2s. Discovery
+is slow (every pad, venue resolution, quote-asset pricing); marking is fast and
+matters more, because a stop that fires 30 seconds late on a memecoin is a stop
+that did not fire. Marking never waits on a sweep. This is correction #4 held at
+loop level, and a scan failure is caught so it cannot stall marking.
+
+**Dry run by default; nothing signs.** Ticks return *intents*. `positions.apply`
+is called only via `record_exit_fill` on a real fill — a book that updates on
+intent disagrees with the chain, which is worse than not tracking at all.
+
+Discovery is deduped by token with a bounded seen-set (a launch alerts once, and
+an unbounded set is a slow leak in a process meant to run for days). A quiet tick
+prints nothing, because a loop that logs every tick buries the ticks that matter.
+
+Live over 75s: 4 scans, 22 marks, 21 tokens — the cadence split working.
+
+⚠️ **Pons v1 carries `tax_bps = 0` as a KNOWN zero, not an unknown.** v1 has no tax
+mechanism at all — plain ERC-20s — which is exactly why v2 was built. Recording it
+as None would leave the gate trusting an absence rather than a certainty. Do not
+"fix" this by failing closed on v1.
+
 ### The sweep — one command that does the whole job
 
 ```

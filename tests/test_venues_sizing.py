@@ -354,3 +354,17 @@ def test_blocked_rows_are_summarised_not_dropped():
     assert "...17 more blocked" in txt
     assert "tax x20" in txt
     assert "fee farms, not launches" in txt
+
+
+def test_pons_v1_carries_a_known_zero_tax_not_an_unknown():
+    # v1 has no tax mechanism — plain ERC-20s — which is exactly why v2 exists.
+    # Recording that as None would leave the gate trusting an absence; 0 states
+    # the fact. A future session must not "fix" this by failing closed on v1.
+    class C:
+        def eth_call(self, to, data):
+            if data == V.SEL_SLOT0:
+                return "0x" + f"{2**96:064x}" + "0" * 64
+            return "0x" + f"{10**27:064x}"
+    v = V.from_v3_pool(C(), token="0xtok", pool="0xpool", quote_token="0xweth")
+    assert v.tax_bps == 0
+    assert V.tradeable(v)["ok"] is True
