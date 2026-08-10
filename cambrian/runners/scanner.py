@@ -52,6 +52,54 @@ def chunked_logs(client, *, address: str, topics: list, from_block: int,
     return logs, failed
 
 
+def _provenance(client, from_block: int, to_block: int) -> tuple[dict, int]:
+    """Tokens that PROVABLY came from a launchpad, by pad.
+
+    This is the check the desk was missing, and its absence is how a Uniswap
+    honeypot got bought from a "verified pad": pools.trade launches were being
+    recognised as "a hookless v4 pool paired with WETH", and **anyone can create
+    one of those**. The pad label was an inference dressed up as provenance.
+
+    `config.py` already states the invariant — only the launcher can emit logs at
+    the launcher's own address, so membership in `TokenCreated` cannot be forged
+    the way an address suffix or a pool shape can. `UNI_LAUNCHER_ADDRESSES` and
+    `FLAP_PORTAL` were both defined for exactly this and read by nothing.
+
+    Scanned over a WIDER window than the sweep: a pool can be initialised well
+    after its token was created, and a launch that scrolled out of the discovery
+    window is still a real launch.
+    """
+    span = int(os.getenv("RH_PROVENANCE_BLOCKS", "6000"))
+    lo = max(from_block - span, 0)
+    verified: dict = {"pools-trade": set(), "flap": set()}
+    failures = 0
+
+    for addr in rcfg.UNI_LAUNCHER_ADDRESSES:
+        logs, f = chunked_logs(client, address=addr,
+                               topics=[rcfg.EVT_TOKEN_CREATED],
+                               from_block=lo, to_block=to_block)
+        failures += f
+        for lg in logs:
+            # TokenCreated(address) — indexed or not depending on generation, so
+            # take the topic when present and fall back to the first data word.
+            tops = lg.get("topics") or []
+            raw = tops[1] if len(tops) > 1 else (lg.get("data") or "0x")[2:66]
+            if raw and len(raw) >= 40:
+                verified["pools-trade"].add("0x" + raw[-40:].lower())
+
+    logs, f = chunked_logs(client, address=rcfg.FLAP_PORTAL,
+                           topics=[rcfg.EVT_FLAP_LAUNCH],
+                           from_block=lo, to_block=to_block)
+    failures += f
+    for lg in logs:
+        # TokenCreated(uint256 ts, address creator, uint256 nonce, address token,
+        #              string, string, string) — all unindexed; token is word 3.
+        data = (lg.get("data") or "0x")[2:]
+        if len(data) >= 256:
+            verified["flap"].add("0x" + data[192:256][-40:].lower())
+    return verified, failures
+
+
 def _discover(client, from_block: int, to_block: int) -> tuple[list[dict], int]:
     """Raw launches across every configured pad, tagged by pad name."""
     from .pons_v2 import decode_token_launched
@@ -182,6 +230,18 @@ def sweep(client, *, from_block: int, to_block: int, quote_price_usd: float,
     that shows only what passed makes a broken gate look like a quiet market.
     """
     hits, failures = _discover(client, from_block, to_block)
+    verified, vf = _provenance(client, from_block, to_block)
+    failures += vf
+    # A pad label inferred from pool shape is not provenance. Only pons emits its
+    # own launch from its own factory in the same read; pools.trade and flap are
+    # discovered by pool shape, which anyone can imitate, so both must be
+    # confirmed against a launcher's own event before they are tradeable.
+    for h in hits:
+        pad = h.get("pad")
+        if pad in verified:
+            h["verified"] = (h.get("token") or "").lower() in verified[pad]
+        else:
+            h["verified"] = True          # pons v1/v2: emitted by its own factory
     rows: list[dict] = []
     with ThreadPoolExecutor(max_workers=workers) as pool:
         for hit, venue in zip(hits, pool.map(lambda h: _resolve(client, h), hits)):
@@ -204,6 +264,13 @@ def sweep(client, *, from_block: int, to_block: int, quote_price_usd: float,
                 continue
             plan = S.plan_entry(venue, quote_price_usd=qp,
                                 bankroll_usd=bankroll_usd)
+            if not hit.get("verified", True):
+                rows.append({**hit, "ok": False, "market_cap_usd": None,
+                             "size_usd": None, "tax_bps": venue.tax_bps,
+                             "reasons": ["no launcher provenance — pool exists but "
+                                         "no %s launch event names this token"
+                                         % (hit.get("pad") or "pad")]})
+                continue
             blocks_left = _restricted(hit, to_block)
             if blocks_left:
                 # ~100ms blocks, so this is also roughly the wait in tenths of a

@@ -920,7 +920,36 @@ ticket, `--max-positions` concurrent, `--buys-per-hour`. A launch missed costs
 nothing; a runaway loop costs everything. One entry per scan pass, and a token
 bought once is never re-entered in the same session.
 
-### ⚠️ IT WAS NOT A HONEYPOT — it was Pons's launch restriction window
+### ⚠️⚠️ THE REAL CAUSE: "pools-trade" was a guess, not provenance
+
+The scanner's first live buy was a honeypot. It was **not** a Pons launch and
+**not** a pools.trade launch — and the owner's objection was the whole clue:
+*you cannot get honeypotted from these four pads*. Correct. It never came from
+one.
+
+**`_discover` labelled ANY hookless Uniswap v4 pool paired with WETH as
+`pools-trade`.** Anyone can initialise one of those. The same hole existed for
+flap: any V2 pair against WETH got the `flap` label. Both were inferences from
+pool *shape*, presented to the gate as pad identity, and the gate trusted them.
+
+The invariant was already written in `config.py`: *only the launcher can emit
+logs at the launcher's own address, so a token that appears in `TokenCreated`
+came from the real launch path BY CONSTRUCTION*. `UNI_LAUNCHER_ADDRESSES` and
+`FLAP_PORTAL` were defined for precisely this — **and read by nothing.**
+
+`scanner._provenance` now builds the verified token set from the four launchers'
+own `TokenCreated` and from flap's Portal, over a **wider window** than the sweep
+(a pool can be initialised long after its token was created). A pool with no
+launch event naming its token is blocked with `no launcher provenance`. Pons is
+exempt: its own factory emits the launch, so discovery and provenance are the
+same read.
+
+**That is three bugs of one shape in a single session** — `restrictionsEndBlock`,
+`UNI_LAUNCHER_ADDRESSES`, `FLAP_PORTAL`: all decoded or defined, all documented,
+none acted on. **Audit for the rest.** A constant that nothing reads is not
+documentation, it is an unfinished check.
+
+### It was ALSO Pons's launch restriction window (a separate, real bug)
 
 The first thing the live scanner bought could not be sold, and it looked exactly
 like a honeypot: real token, verified pad, 0% tax, sell refused. The owner's
