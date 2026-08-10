@@ -102,3 +102,36 @@ def test_quote_cost_survives_a_quote_with_nothing_in_it():
 
 def test_robinhood_is_the_default_chain():
     assert D.CHAIN == "robinhood"
+
+
+def test_a_key_file_sets_credentials_without_shell_quoting(tmp_path, monkeypatch):
+    # Setting secrets from a shell is where this actually broke: PowerShell
+    # mangles unquoted values, bakes in quoted ones, and an interactive prompt
+    # invites pasting the next command as the value. A KEY=VALUE file has none of
+    # those semantics.
+    monkeypatch.delenv("DEFINITIVE_API_KEY", raising=False)
+    monkeypatch.delenv("DEFINITIVE_API_SECRET", raising=False)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "cambrian.env").write_text(
+        '# a comment\n\nDEFINITIVE_API_KEY=dpka_abc\n'
+        'DEFINITIVE_API_SECRET="dpks_xyz"\n')
+    from cambrian import config
+    config._load_key_file()
+    assert D.api_key() == "dpka_abc"
+    assert D.api_secret() == "dpks_xyz"       # surrounding quotes stripped
+
+
+def test_a_real_environment_variable_beats_the_file(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "cambrian.env").write_text("DEFINITIVE_API_KEY=dpka_fromfile\n")
+    monkeypatch.setenv("DEFINITIVE_API_KEY", "dpka_fromenv")
+    from cambrian import config
+    config._load_key_file()
+    assert D.api_key() == "dpka_fromenv"
+
+
+def test_a_malformed_key_file_never_stops_the_desk_booting(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "cambrian.env").write_text("this is not = = valid\x00\n")
+    from cambrian import config
+    config._load_key_file()          # must not raise

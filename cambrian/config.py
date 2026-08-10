@@ -9,6 +9,42 @@ fill these in from the block explorer, do not guess.
 import os
 from dataclasses import dataclass, field
 
+def _load_key_file() -> None:
+    """Read `cambrian.env` from the working directory or the user's home.
+
+    Exists because setting secrets from a shell is where non-developers actually
+    get stuck: PowerShell mangles unquoted values with special characters, quoted
+    values end up with the quotes baked in, and an interactive prompt invites
+    pasting the next command as the value. A plain KEY=VALUE file has none of
+    those semantics — a text editor just holds text.
+
+    Never overrides an environment variable that is already set, so a real
+    environment still wins over a convenience file.
+    """
+    import pathlib as _p
+    for candidate in (_p.Path.cwd() / "cambrian.env",
+                      _p.Path.home() / "cambrian.env"):
+        try:
+            if not candidate.is_file():
+                continue
+            for raw in candidate.read_text(encoding="utf8-sig"
+                                           if False else "utf8").splitlines():
+                line = raw.strip().lstrip("\ufeff")
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                name, _, value = line.partition("=")
+                name = name.strip()
+                # Tolerate quotes and stray whitespace: someone pasting a secret
+                # into Notepad should not have to know shell quoting rules.
+                value = value.strip().strip('"').strip("'").strip()
+                if name and value and not os.getenv(name):
+                    os.environ[name] = value
+        except Exception:
+            continue        # a malformed file must never stop the desk booting
+
+
+_load_key_file()
+
 # Load .env if python-dotenv is installed. Without this, .env is a decorative
 # file and every getenv below silently returns "" - which fails closed, but
 # confusingly.

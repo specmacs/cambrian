@@ -520,6 +520,45 @@ def cmd_trade_vault(args: argparse.Namespace) -> int:
     return 0
 
 
+
+def cmd_keys(args: argparse.Namespace) -> int:
+    """Show where credentials were found and whether they look right.
+
+    Prints prefixes only. A secret that has to be echoed to be verified is a
+    secret that ends up in a screenshot.
+    """
+    import pathlib as _p
+
+    from .runners import definitive as D
+
+    print("\n  looking for cambrian.env in:")
+    for c in (_p.Path.cwd() / "cambrian.env", _p.Path.home() / "cambrian.env"):
+        print("    %-52s %s" % (c, "FOUND" if c.is_file() else "-"))
+    k, s = D.api_key(), D.api_secret()
+    print("\n  DEFINITIVE_API_KEY     %s" % (("%s... (%d chars)" % (k[:9], len(k)))
+                                              if k else "NOT SET"))
+    print("  DEFINITIVE_API_SECRET  %s" % (("%s... (%d chars)" % (s[:6], len(s)))
+                                           if s else "NOT SET"))
+    ok = True
+    if not k or not s:
+        print("\n  -> create cambrian.env with two lines:")
+        print("       DEFINITIVE_API_KEY=dpka_...")
+        print("       DEFINITIVE_API_SECRET=dpks_...")
+        ok = False
+    else:
+        if not k.startswith("dpka_"):
+            print("\n  -> the KEY should start dpka_ — the two look swapped")
+            ok = False
+        if not s.startswith("dpks_"):
+            print("  -> the SECRET should start dpks_ — the two look swapped")
+            ok = False
+        if k.startswith("$env:") or s.startswith("$env:"):
+            print("  -> a value contains shell text, not a credential")
+            ok = False
+    print("\n  %s" % ("looks right — try: vault" if ok else "not ready yet"))
+    return 0 if ok else 1
+
+
 def cmd_scan_base(args: argparse.Namespace) -> int:
     from .feeds.cambrian_api import CambrianClient, CambrianError
     from . import base_config
@@ -1121,6 +1160,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     vt = sub.add_parser("vault", help="show the Definitive vault address and positions")
     vt.set_defaults(func=cmd_vault)
+
+    ky = sub.add_parser("keys", help="check where credentials were found")
+    ky.set_defaults(func=cmd_keys)
 
     tv = sub.add_parser("trade-vault",
                         help="quote/execute ONE trade from the Definitive vault")
