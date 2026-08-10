@@ -915,6 +915,47 @@ removal itself rather than its effect on price — `exit_decision` already takes
 `liquidity_usd` argument and the vault path never passes one. **Another decoded-
 but-unused check; that is now four this session.**
 
+## Should this be LLM-driven? — the diagnosis was right, the fix is not a model
+
+Owner: *"do you think we should move to LLM trading, the math stuff feels like
+too much input because there is nothing back testing our trading performance and
+making corrections to it."*
+
+The diagnosis is exactly right and it is the most important thing anyone has said
+about this desk. The conclusion does not follow. **What was missing is the
+feedback loop, not a different kind of decider.** An LLM handed no outcome data
+guesses thresholds too — it just guesses less legibly, more slowly, and at ~1-2s
+per call on a chain that produces a block every 100ms.
+
+`runners/memory.py` closes it: every closed position appends its entry FEATURES
+(pad, profile, market cap, tax, round-trip recovery) alongside the realised
+outcome, and `base_rates()` slices win rate and expectancy by each of them.
+`corrections()` states only what the sample carries — slices under `MIN_SLICE`
+are dropped, because a 1-trade "pattern" is how a desk talks itself into a bad
+rule. A position that left through another surface records a **null** outcome
+rather than an invented one; fabricating it would poison every rate afterwards.
+
+`examples/cambrian_desk.py` has had this for the paper desk the entire time
+(`record_outcome` / `base_rates` / `memory_brief`). **Fifth built-and-unported
+thing found this session** — after `restrictionsEndBlock`,
+`UNI_LAUNCHER_ADDRESSES`, `FLAP_PORTAL` and `honeypot_ok`. The pattern is now
+undeniable: **when porting an engine, port its feedback and its safety checks
+first, and its happy path last.**
+
+Where an LLM genuinely helps, once there is history:
+
+- **Off the hot path**, on judgement no statistic encodes: is this deployer a
+  serial rugger, does this narrative have legs, does the metadata read like a
+  team or a script.
+- **Reading the record** — handing `corrections()` and the raw slices to a model
+  is a good use of one, and the journal is exactly the input it would need.
+- **Never in the entry/exit path.** A 1-2s round trip on a 100ms chain is not a
+  slow decision, it is a missed one.
+
+Statistics first, because at 40 trades a slice-level win rate beats any opinion
+and costs a microsecond. The Memory pane on the desk is now live rather than
+stubbed at `{"n": 0}`.
+
 ## Exit policy — PER SETUP, not one ladder for everything
 
 Owner: *there should be different decisions for different setups.* Right — and

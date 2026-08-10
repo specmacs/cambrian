@@ -30,6 +30,7 @@ from . import ui_desk
 from .runners import config as rcfg
 from .runners import definitive as D
 from .runners import positions as P
+from .runners import memory as MEM
 from .runners import vault_exec as VX
 
 PORT = int(os.getenv("RH_TERMINAL_PORT", "8799"))
@@ -176,6 +177,12 @@ def _engine(client, *, slippage: float, interval: float) -> None:
                             "exit_value": None, "pnl": None,
                             "why": "closed outside the desk"})
                         del STATE["closed"][30:]
+                    MEM.record(token=token, symbol=entry.get("symbol") or "",
+                               pad=entry.get("pad") or "?", profile=pos.profile,
+                               why="closed outside the desk",
+                               cost_usd=entry.get("basis0", pos.cost_usd),
+                               exit_usd=None, opened_at=pos.opened_at,
+                               market_cap_usd=entry.get("mc"))
                     _event("close", "left the vault — sold outside the desk", token)
                     continue
                 value = (plan.get("cost") or {}).get("receive_usd") \
@@ -348,7 +355,8 @@ def _maybe_buy(client, rows, *, vault, usdg, slippage) -> None:
                 "position": pos, "decimals": 18, "held": 0.0,
                 "basis_known": True, "basis0": float(spend), "banked": 0.0,
                 "pad": r.get("pad") or "?", "symbol": sym,
-                "mc": r.get("market_cap_usd"),
+                "mc": r.get("market_cap_usd"), "tax_bps": r.get("tax_bps"),
+                "recovery": recovery,
                 # From the fill itself: what one token cost, all-in.
                 "entry_px": (float(spend) / float(cost.get("buy_amount"))
                              if cost.get("buy_amount") else None),
@@ -406,6 +414,14 @@ def _submit_exit(client, token, entry, fraction, why, guard, *, slippage,
             "pnl": round(proceeds - pos.cost_usd * fraction, 2)})
         del STATE["fills"][60:]
         if entry["position"].closed:
+            MEM.record(token=token, symbol=entry.get("symbol") or "",
+                       pad=entry.get("pad") or "?",
+                       profile=pos.profile, why=why,
+                       cost_usd=entry.get("basis0", pos.cost_usd),
+                       exit_usd=entry["banked"], opened_at=pos.opened_at,
+                       market_cap_usd=entry.get("mc"),
+                       tax_bps=entry.get("tax_bps"),
+                       recovery=entry.get("recovery"))
             # Realized is banked-minus-basis, counted once, when the last of the
             # position leaves. Counting it per trim would double-count the rungs.
             realized = entry["banked"] - entry.get("basis0", pos.cost_usd)
@@ -492,7 +508,7 @@ def snapshot() -> dict:
             # No scout pane and no agent trace on a vault desk: this manages what
             # is held, it does not hunt. Empty beats fabricated.
             "scouting": list(STATE["scouting"]), "trace": list(STATE["trace"]),
-            "memory": {"n": 0}, "auto_buy": STATE["auto_buy"],
+            "memory": MEM.base_rates(), "auto_buy": STATE["auto_buy"],
             "agents": [{"name": "Scanner",
                         "on": STATE["auto_buy"] and not STATE["halted"]},
                        {"name": "Exit policy", "on": not STATE["halted"]},
