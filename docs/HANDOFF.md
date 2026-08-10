@@ -365,11 +365,23 @@ Corrections now in `runners/definitive.py`:
 - `slippageTolerance` defaults to **1%**, which a fresh launch will not fill
   inside. The desk passes it explicitly (5%) on every submit.
 - `chain: "robinhood"` is on the published supported-networks list.
-- `qty` is documented only as "Amount to trade", and Definitive's own two
-  examples read inconsistently about whether it denominates the target or the
-  contra asset. Do not guess: `trade-vault` quotes first and **refuses if
-  `metadata.fromNotional` exceeds the ticket cap**, so backwards units cost a
+- `qty` denominates the **contra** asset (what you spend) — confirmed live: 8
+  USDG in returned `fromNotional: "8"`. `trade-vault` still refuses if
+  `fromNotional` exceeds the ticket cap, so a future units change costs a
   refused trade rather than an oversized one.
+- **`qty` must respect the spend asset's decimals.** `"8.00000000"` (eight
+  places) against six-decimal USDG returns `400 {"message":"Internal server
+  error"}`; the identical trade as `"8"` quotes fine. Confirmed both directions
+  on the same token. Quantities are truncated — never rounded up — to the contra
+  asset's on-chain `decimals()`.
+- **Definitive cannot price every fresh launch.** A token it has no rate for
+  fails with `failed to price asset. err: missing notional rates for assets
+  [<uuid>]`. This is per-token and unrelated to liquidity: one pons-v1 launch
+  quoted cleanly while another, minutes old, did not. So `trade-vault` walks the
+  ranked candidates until one quotes instead of dying on its top pick, and names
+  what it skipped. **Unpriceable tokens are not untradeable** — they need the
+  curve-direct/router path rather than Definitive, which is the strongest
+  argument yet for keeping both execution paths alive.
 
 ### Execution — Definitive Flash
 

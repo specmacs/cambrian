@@ -485,16 +485,6 @@ def cmd_trade_vault(args: argparse.Namespace) -> int:
     if not rows:
         print("nothing cleared the gate in the last %d blocks" % args.blocks)
         return 1
-    row = rows[0]
-    if not row.get("ok"):
-        print("BLOCKED: %s" % "; ".join(row.get("reasons") or ["unknown"]))
-        return 1
-    venue = _resolve(client, row)
-    size_usd = min(row.get("size_usd") or 0.0, args.max_usd)
-    if size_usd <= 0:
-        print("no size — check RH_BANKROLL_USD / RH_MIN_BUY_USD for a small wallet")
-        return 1
-
     contra = args.contra or rcfg.CONTRACTS["weth"]
     qprice = ST.quote_price_usd(contra, weth_usd=eth,
                                 usdg=rcfg.CONTRACTS.get("usdg"),
@@ -505,28 +495,53 @@ def cmd_trade_vault(args: argparse.Namespace) -> int:
         contra_dec = client.erc20_decimals(contra)
     except Exception:
         contra_dec = 18
-    qty_str = _fmt_qty(size_usd / qprice, contra_dec)
-    qty = float(qty_str)
-    if qty <= 0:
-        print("  size rounds to zero at the spend asset's %d decimals" % contra_dec)
+
+    # Walk the ranked candidates until one QUOTES. Definitive cannot price every
+    # fresh launch — it answers "missing notional rates for assets [...]" for a
+    # token it has no rate for — and a desk that quotes only its top pick and
+    # gives up throws away a whole scan because of one unpriceable token. The
+    # gate already decided these are all acceptable; this just finds the first
+    # one that is also reachable through this venue.
+    row = venue = c = None
+    qty_str = ""
+    for cand in rows[:args.max_candidates]:
+        if not cand.get("ok") and not args.token:
+            continue
+        size_usd = min(cand.get("size_usd") or 0.0, args.max_usd)
+        if size_usd <= 0:
+            print("  skip %s — sizes to zero (check RH_BANKROLL_USD / RH_MIN_BUY_USD)"
+                  % cand["token"][:12])
+            continue
+        cand_qty = _fmt_qty(size_usd / qprice, contra_dec)
+        if float(cand_qty) <= 0:
+            print("  skip %s — rounds to zero at %d decimals"
+                  % (cand["token"][:12], contra_dec))
+            continue
+        try:
+            cq = D.quicktrade_quote(target=cand["token"], contra=contra,
+                                    qty=cand_qty, side="buy")
+        except D.DefinitiveError as e:
+            why = "not priceable by Definitive" if "notional rate" in (e.raw or "") \
+                else "quote failed (%s): %s" % (e.status, e)
+            print("  skip %-12s %-9s — %s" % (cand["token"][:12],
+                                              cand.get("pad", "?"), why))
+            if "notional rate" not in (e.raw or "") and e.raw:
+                print("       raw: %s" % e.raw[:300])
+            continue
+        row, c, qty_str = cand, D.quote_cost(cq), cand_qty
+        break
+    if row is None:
+        print("\n  no candidate could be quoted (%d tried). Nothing submitted."
+              % min(len(rows), args.max_candidates))
         return 1
+    venue = _resolve(client, row)
+    size_usd = min(row.get("size_usd") or 0.0, args.max_usd)
     print("\n  token      %s  (%s)" % (row["token"], row.get("pad")))
     print("  market cap $%.0f   tax %s" % (
         row.get("market_cap_usd") or 0,
         ("%.1f%%" % (venue.tax_bps / 100)) if venue and venue.tax_bps is not None else "n/a"))
     print("  spending   %s of %s  (~$%.2f, capped at $%.2f)"
           % (qty_str, contra, size_usd, args.max_usd))
-    try:
-        q = D.quicktrade_quote(target=row["token"], contra=contra,
-                               qty=qty_str, side="buy")
-    except D.DefinitiveError as e:
-        print("\n  quote failed (%s): %s" % (e.status, e))
-        if e.raw:
-            print("  raw: %s" % e.raw[:600])
-        print("  -> isolate it:  quote --target %s --contra %s --qty %s --raw"
-              % (row["token"], contra, qty_str))
-        return 1
-    c = D.quote_cost(q)
     print("\n  quote %s" % (c["quote_id"] or "-"))
     print("  spend $%s -> receive $%s  (%s on the leg)" % (
         c["spend_usd"], c["receive_usd"],
@@ -1306,6 +1321,8 @@ def build_parser() -> argparse.ArgumentParser:
     # fill inside. 5% is the desk's own cap and is passed explicitly.
     tv.add_argument("--max-slippage", type=float, default=0.05, dest="max_slippage",
                     help="slippage tolerance sent to Definitive (0.05 = 5%%)")
+    tv.add_argument("--max-candidates", type=int, default=6, dest="max_candidates",
+                    help="how many ranked candidates to try quoting (default 6)")
     tv.add_argument("--yes", action="store_true", help="required to execute")
     tv.set_defaults(func=cmd_trade_vault)
 
