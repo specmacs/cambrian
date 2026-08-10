@@ -1437,9 +1437,13 @@ def build_parser() -> argparse.ArgumentParser:
     wt.add_argument("--wallet", default=None, help="your wallet, to find the vault")
     wt.add_argument("--max-slippage", type=float, default=0.05, dest="max_slippage",
                     help="slippage tolerance on exits (0.05 = 5%%)")
-    wt.add_argument("--mark-interval", type=float, default=10.0,
+    # 2s, matching live.MARK_INTERVAL_S. A stop that fires ten seconds late on a
+    # memecoin is a stop that did not fire; one quote per position per tick is
+    # well inside Definitive's quicktrade rate limits, which are documented as
+    # deliberately higher than the standard endpoints for exactly this.
+    wt.add_argument("--mark-interval", type=float, default=2.0,
                     dest="mark_interval",
-                    help="seconds between vault sell-quote marks (default 10)")
+                    help="seconds between vault sell-quote marks (default 2)")
     wt.add_argument("--quiet", action="store_true",
                     help="only print exits, not every mark")
     wt.set_defaults(func=cmd_watch)
