@@ -339,9 +339,11 @@ def _maybe_buy(client, rows, *, vault, usdg, slippage) -> None:
         with _lock:
             STATE["buys_this_hour"].append(time.time())
             STATE.setdefault("bought_ever", set()).add(token)
+            prof = P.profile_for(market_cap_usd=r.get("market_cap_usd"),
+                                 tax_bps=r.get("tax_bps"), pad=r.get("pad"))
             pos = P.Position(token=token, venue_kind="vault", pool="", tokens=0,
                              cost_usd=float(spend), opened_at=time.time(),
-                             peak_usd=float(spend))
+                             peak_usd=float(spend), profile=prof.name)
             STATE["book"][token] = {
                 "position": pos, "decimals": 18, "held": 0.0,
                 "basis_known": True, "basis0": float(spend), "banked": 0.0,
@@ -359,10 +361,10 @@ def _maybe_buy(client, rows, *, vault, usdg, slippage) -> None:
                 "token": token, "pad": r.get("pad") or "?", "agent": "scan",
                 "usd": round(spend, 2), "pnl": None})
             del STATE["fills"][60:]
-        _event("buy", "bought $%.2f of %s (%s, MC $%s, round trip %.0f%%)"
+        _event("buy", "bought $%.2f of %s (%s, MC $%s, round trip %.0f%%, %s)"
                % (spend, sym, r.get("pad") or "?",
                   ("%.0f" % r["market_cap_usd"]) if r.get("market_cap_usd") else "?",
-                  (recovery or 0) * 100),
+                  (recovery or 0) * 100, prof.name),
                token)
         return          # one entry per scan, deliberately
 
@@ -456,6 +458,7 @@ def snapshot() -> dict:
                 "peak_mult": round(max(pos.peak_usd / pos.cost_usd, 1.0), 2)
                              if pos.cost_usd else 1.0,
                 "rungs": len(pos.rungs_hit), "banked": round(entry.get("banked", 0.0), 2),
+                "profile": pos.profile,
                 "unsellable": pos.fails > 0,
             })
         positions.sort(key=lambda p: -p["upnl"])

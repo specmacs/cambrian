@@ -368,7 +368,7 @@ async function tick(){let d;try{d=await(await fetch('/data')).json()}catch(e){re
   `<tr data-origin=agent><td>${inst(p.sym,p.token,p.pad)}</td><td>${tag(p.pad,true)}</td>`+
   `<td class="num faint">${p.mc?d$(p.mc):'—'}</td><td class=num>${d$(p.cost)}</td><td class=num>${d$(p.value)}</td>`+
   `<td class="num ${sgn(p.chg)}">${p.chg>0?'+':''}${p.chg}%</td>`+
-  `<td class="num faint" title="high-water mark / rungs banked">${p.peak_mult}x${p.rungs?' ·'+p.rungs:''}</td>`+`<td class="num ${sgn(p.upnl)}" data-k="u${p.token}" data-v="${p.upnl}">${d$(p.upnl)}</td><td class="num faint age" data-open="${p.opened}"></td>`+`<td><button class="btn xs danger" data-close="${p.token}">Close</button></td></tr>`).join(''):
+  `<td class="num faint" title="high-water mark / rungs banked / exit profile">${p.peak_mult}x${p.rungs?' ·'+p.rungs:''}${p.profile?' <span class=faint>'+p.profile+'</span>':''}</td>`+`<td class="num ${sgn(p.upnl)}" data-k="u${p.token}" data-v="${p.upnl}">${d$(p.upnl)}</td><td class="num faint age" data-open="${p.opened}"></td>`+`<td><button class="btn xs danger" data-close="${p.token}">Close</button></td></tr>`).join(''):
   (d.adopt_note?`<tr><td colspan=10 class=empty>${d.adopt_note}</td></tr>`
    :'<tr><td colspan=10 class=empty>No open positions.</td></tr>');
  document.getElementById('blotter').innerHTML=d.blotter.length?d.blotter.map(b=>

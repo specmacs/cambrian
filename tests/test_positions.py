@@ -324,3 +324,48 @@ def test_a_stop_still_outranks_a_stall():
     pos = _pos(mark_usd=50.0, peak_usd=105.0)
     pos.peak_at = _t.time() - (P.STALL_S + 5)
     assert "stop" in P.exit_decision(pos)[2]
+
+
+# --- per-setup profiles ------------------------------------------------------
+
+def test_a_taxed_setup_never_banks_a_loss_on_its_first_rung():
+    # The point of the profiles. A 5% tax makes the round trip ~13%, so a ladder
+    # starting at +10% would BANK A LOSS on every rung it hit.
+    taxed = P.profile_for(tax_bps=500, market_cap_usd=50_000)
+    assert taxed.name == "taxed"
+    assert taxed.rungs[0][0] >= 1.13
+
+
+def test_a_micro_cap_gets_a_wider_stop_and_a_faster_stall():
+    # An $8 ticket is a large fraction of a $5k pool: violent price, expensive
+    # exit, and it either goes or it is dead.
+    micro = P.profile_for(market_cap_usd=5_000, tax_bps=0)
+    std = P.PROFILES["standard"]
+    assert micro.stop < std.stop            # wider — noise must not close it
+    assert micro.stall_s < std.stall_s      # faster — no slow grind here
+    assert micro.rungs[0][0] < std.rungs[-1][0]
+
+
+def test_a_deep_pool_is_given_room_and_time():
+    deep = P.profile_for(market_cap_usd=400_000, tax_bps=0)
+    std = P.PROFILES["standard"]
+    assert deep.stall_s > std.stall_s
+    assert deep.max_hold_min > std.max_hold_min
+
+
+def test_tax_decides_before_depth():
+    # A tax is charged on every exit and swamps everything else about the setup.
+    assert P.profile_for(market_cap_usd=5_000, tax_bps=500).name == "taxed"
+
+
+def test_the_profile_is_fixed_at_entry_and_used_by_the_decision():
+    # The rules must not drift under a position mid-life.
+    pos = _pos(mark_usd=118.0, peak_usd=118.0, profile="taxed")
+    assert P.exit_decision(pos)[0] is None          # +18% is below taxed's 1.30
+    same = _pos(mark_usd=118.0, peak_usd=118.0)     # standard
+    assert P.exit_decision(same)[0] == "trim"
+
+
+def test_an_unknown_profile_name_falls_back_rather_than_crashing():
+    pos = _pos(mark_usd=115.0, peak_usd=115.0, profile="nonsense")
+    assert P.exit_decision(pos)[0] == "trim"

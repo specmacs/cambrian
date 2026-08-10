@@ -886,7 +886,42 @@ serial. Exits themselves are still submitted serially, which is deliberate:
 they are rarer, and a burst of concurrent submits is not a risk worth taking to
 save a second.
 
-## Exit policy — RETUNED, and the reasoning matters more than the numbers
+## Exit policy — PER SETUP, not one ladder for everything
+
+Owner: *there should be different decisions for different setups.* Right — and
+what varies is not taste, it is **arithmetic**. The round trip is what a rung has
+to clear before it is profit, and it is ~5% on a normal launch and ~13% on a 5%
+taxed one. A ladder starting at +10% **banks a loss** on the taxed setup. One
+policy over both means it is wrong for both.
+
+`positions.Profile` + `profile_for(market_cap_usd, tax_bps, pad)`, chosen at
+entry and **fixed for the life of the position** so the rules cannot drift under
+it. Selection order is by what dominates the outcome: a tax is charged on every
+exit and swamps everything else, so it decides first; then depth, which sets both
+the cost of leaving and the speed of the move.
+
+| Profile | When | Stop | Rungs | Stall | Hold |
+| --- | --- | --- | --- | --- | --- |
+| `micro` | MC < $25k | −28% | 1.15/1.40/2.0 @ 30/30/25% | 60s | 5m |
+| `standard` | default | −20% | 1.10/1.25/1.50/2.50 @ 25/25/25/15% | 90s | 8m |
+| `taxed` | tax ≥ 3% | −25% | 1.30/1.80/3.00 @ 40/30/20% | 150s | 12m |
+| `deep` | MC > $150k | −15% | 1.20/1.60/2.50 @ 25/25/25% | 240s | 20m |
+
+The reasoning per profile:
+
+- **micro** — an $8 ticket is a large fraction of a $5k pool, so entry and exit
+  both cost more and price is violent. **Wider** stop (noise must not close it),
+  earlier rungs, and a **faster** stall: there is no slow grind at this size, it
+  either goes or it is dead.
+- **taxed** — every threshold moves up by the tax or the ladder banks losses.
+  Fewer, larger rungs, because each exit is expensive.
+- **deep** — deeper liquidity, slower moves, cheaper exits. Room and time; the
+  stall clock would otherwise cut a healthy position for moving at a normal speed.
+
+The profile name shows in the Peak column, so the desk says *why* a position is
+being managed the way it is.
+
+## Exit policy — the standard profile's numbers, and where they came from
 
 Owner's brief: *farm profit, or stop out fast if the entry is shit*, and *it
 should be buying and selling at a fairly consistent rate, not buying and

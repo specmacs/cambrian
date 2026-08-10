@@ -363,7 +363,10 @@ def adopt(client, vault: str, *, exclude: tuple = (), now: float | None = None) 
         pos = P.Position(token=token, venue_kind="vault", pool="", tokens=raw,
                          cost_usd=float(basis),
                          opened_at=(now if now is not None else time.time()),
-                         peak_usd=float(basis))
+                         peak_usd=float(basis),
+                         # Nothing is known about an adopted position's setup,
+                         # so it gets the default rather than a guess.
+                         profile="standard")
         book[token] = {"position": pos, "decimals": dec, "held": human,
                        "basis_known": basis_known,
                        # basis0 is the ORIGINAL cost, kept because `P.apply`

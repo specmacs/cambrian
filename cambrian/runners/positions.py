@@ -93,6 +93,69 @@ RUG_FAILS = int(os.getenv("RH_RUG_FAILS", "3"))
 LIQ_COLLAPSE = float(os.getenv("RH_LIQ_COLLAPSE", "0.35"))
 
 
+@dataclass(frozen=True)
+class Profile:
+    """One setup's exit rules. Different launches are different bets.
+
+    A $5k micro-cap and a 5%-tax stock-paired launch do not want the same
+    policy, and running one ladder over both means it is wrong for both. What
+    varies is not taste, it is arithmetic: the round trip is what a rung has to
+    clear before it is profit, and it is ~5% on a normal launch and ~13% on a
+    taxed one. A ladder starting at +10% BANKS A LOSS on the taxed setup.
+    """
+    name: str
+    stop: float
+    rungs: tuple
+    trail_arm: float
+    trail_give: float
+    stall_s: float
+    max_hold_min: float
+
+
+PROFILES: dict[str, Profile] = {
+    # The default. Round trip ~5%, so the first rung at +10% is real profit.
+    "standard": Profile("standard", STOP_FRAC, RUNGS, TRAIL_ARM, TRAIL_GIVE,
+                        STALL_S, MAX_HOLD_MIN),
+
+    # Micro-cap (under ~$25k). An $8 ticket is a large fraction of the pool, so
+    # entry and exit both cost more and the price is violent. Bank sooner, keep
+    # a wider stop so ordinary noise does not close it, and stall out faster —
+    # there is no slow grind here, it either goes or it is dead.
+    "micro": Profile("micro", 0.72, ((1.15, 0.30), (1.40, 0.30), (2.00, 0.25)),
+                     1.30, 0.35, 60.0, 5.0),
+
+    # Taxed / stock-paired (pons at 5%). The round trip is ~13%, so every
+    # threshold moves up by that much or the ladder banks losses. Fewer, larger
+    # rungs: each exit is expensive, so take fewer of them.
+    "taxed": Profile("taxed", 0.75, ((1.30, 0.40), (1.80, 0.30), (3.00, 0.20)),
+                     1.45, 0.30, 150.0, 12.0),
+
+    # Larger cap (over ~$150k). Deeper liquidity, slower moves, cheaper exits.
+    # Give it room and time; the stall clock is what would otherwise cut a
+    # perfectly healthy position that is simply moving at a normal speed.
+    "deep": Profile("deep", 0.85, ((1.20, 0.25), (1.60, 0.25), (2.50, 0.25)),
+                    1.25, 0.25, 240.0, 20.0),
+}
+
+
+def profile_for(*, market_cap_usd: float | None = None,
+                tax_bps: int | None = None, pad: str | None = None) -> Profile:
+    """Pick the exit policy this setup deserves.
+
+    Ordered by what dominates the outcome: a tax is charged on every exit and
+    swamps everything else, so it decides first. Then depth, because it sets
+    both the cost of leaving and the speed of the move.
+    """
+    if tax_bps and tax_bps >= 300:
+        return PROFILES["taxed"]
+    if market_cap_usd is not None:
+        if market_cap_usd < 25_000:
+            return PROFILES["micro"]
+        if market_cap_usd > 150_000:
+            return PROFILES["deep"]
+    return PROFILES["standard"]
+
+
 @dataclass
 class Position:
     """One open position, valued in the settlement asset (USD terms)."""
@@ -110,6 +173,9 @@ class Position:
     # When the peak was last set. A position making new highs is alive; one that
     # is not is a bag, and telling those apart needs a clock, not a price.
     peak_at: float = 0.0
+    # Which exit policy this position is managed under. Chosen at entry from the
+    # setup, and kept, so the rules cannot drift under a position mid-life.
+    profile: str = "standard"
     closed: bool = False
     # False when the mark came from spot rather than a real sell quote (V3
     # venues). Surfaced in the UI so an approximate mark is never mistaken for a
@@ -226,13 +292,15 @@ def mark_from_exit_quote(pos: Position, value_usd: float | None) -> Position:
 
 
 def exit_decision(pos: Position, *, liquidity_usd: float | None = None,
-                  now: float | None = None) -> tuple[str | None, float, str]:
+                  now: float | None = None,
+                  profile: Profile | None = None) -> tuple[str | None, float, str]:
     """(action, fraction, why) — action is 'close', 'trim' or None.
 
     Priority order is deliberate and unchanged: a stop must beat a rung, and a
     rug must beat both.
     """
     t = time.time() if now is None else now
+    prof = profile or PROFILES.get(pos.profile) or PROFILES["standard"]
     if pos.closed:
         return None, 0.0, "already closed"
 
@@ -246,15 +314,17 @@ def exit_decision(pos: Position, *, liquidity_usd: float | None = None,
     peak_mult = pos.peak_usd / pos.cost_usd if pos.cost_usd > 0 else 0.0
 
     # 1. Hard stop.
-    if mult <= STOP_FRAC:
+    if mult <= prof.stop:
         return "close", 1.0, "stop %.0f%%" % ((mult - 1) * 100)
 
     # 2. Trailing stop — what keeps a +80% winner from round-tripping to flat.
-    if peak_mult >= TRAIL_ARM and pos.mark_usd <= pos.peak_usd * (1 - TRAIL_GIVE):
-        return "close", 1.0, "trail %.0f%% off %.1fx" % (TRAIL_GIVE * 100, peak_mult)
+    if (peak_mult >= prof.trail_arm
+            and pos.mark_usd <= pos.peak_usd * (1 - prof.trail_give)):
+        return "close", 1.0, "trail %.0f%% off %.1fx" % (
+            prof.trail_give * 100, peak_mult)
 
     # 3. Profit rungs — bank on the way up, keep a moon bag.
-    for i, (at, frac) in enumerate(RUNGS):
+    for i, (at, frac) in enumerate(prof.rungs):
         if mult >= at and i not in pos.rungs_hit:
             pos.rungs_hit.append(i)
             return "trim", frac, "rung %gx" % at
@@ -273,13 +343,13 @@ def exit_decision(pos: Position, *, liquidity_usd: float | None = None,
     # holding the remainder of something that stopped moving is the buy-and-hold
     # this desk is explicitly not supposed to do.
     since_peak = t - (pos.peak_at or pos.opened_at)
-    if since_peak > STALL_S:
+    if since_peak > prof.stall_s:
         return "close", 1.0, "stalled %.0fs at %.0f%% — no new high" % (
             since_peak, (mult - 1) * 100)
 
     # 5. Time stop, only if nothing has been banked yet.
-    if (t - pos.opened_at) / 60.0 > MAX_HOLD_MIN and not pos.rungs_hit:
-        return "close", 1.0, "time stop %.0fm" % MAX_HOLD_MIN
+    if (t - pos.opened_at) / 60.0 > prof.max_hold_min and not pos.rungs_hit:
+        return "close", 1.0, "time stop %.0fm" % prof.max_hold_min
     return None, 0.0, "hold"
 
 
