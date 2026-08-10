@@ -59,7 +59,7 @@ class DefinitiveError(RuntimeError):
     def __init__(self, message: str, *, status: int | None = None,
                  code: str | None = None):
         super().__init__(message)
-        self.status, self.code = status, code
+        self.status, self.code, self.raw = status, code, ""
 
 
 def api_key() -> str | None:
@@ -136,8 +136,11 @@ def request(path: str, *, method: str = "GET", body: dict | None = None,
         except Exception:
             payload = {}
         msg = payload.get("message") or payload.get("error") or raw[:300]
-        raise DefinitiveError(msg, status=e.code,
-                              code=str(payload.get("code") or "")) from None
+        err = DefinitiveError(msg, status=e.code, code=str(payload.get("code") or ""))
+        # Keep the untouched body: "Internal server error" as a 400 message tells
+        # you nothing, and whatever detail exists is in the parts we dropped.
+        err.raw = raw
+        raise err from None
 
 
 # --- portfolio ---------------------------------------------------------------

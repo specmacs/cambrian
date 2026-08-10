@@ -511,6 +511,10 @@ def cmd_trade_vault(args: argparse.Namespace) -> int:
                                qty="%.8f" % qty, side="buy")
     except D.DefinitiveError as e:
         print("\n  quote failed (%s): %s" % (e.status, e))
+        if e.raw:
+            print("  raw: %s" % e.raw[:600])
+        print("  -> isolate it:  quote --target %s --contra %s --qty %.4f --raw"
+              % (row["token"], contra, qty))
         return 1
     c = D.quote_cost(q)
     print("\n  quote %s" % (c["quote_id"] or "-"))
@@ -549,6 +553,44 @@ def cmd_trade_vault(args: argparse.Namespace) -> int:
     print("  track it:  python -m cambrian vault --wallet <your address>")
     return 0
 
+
+
+def cmd_quote(args: argparse.Namespace) -> int:
+    """Quote ONE pair directly, with no scan and no sizing in the way.
+
+    Exists to bisect a failing quote. `trade-vault` does discovery, sizing,
+    routing and quoting in one breath, so a 400 from it could come from any of
+    them. This does exactly one thing, and defaults to USDG -> WETH — a pair
+    Definitive certainly knows — so a bare run answers "is the endpoint working
+    at all?" before we blame a two-hour-old memecoin.
+    """
+    from .runners import config as rcfg
+    from .runners import definitive as D
+
+    contra = args.contra or rcfg.CONTRACTS["usdg"]
+    target = args.target or rcfg.CONTRACTS["weth"]
+    print("\n  %s %s of %s\n  for %s" % (args.side, args.qty, contra, target))
+    try:
+        q = D.quicktrade_quote(target=target, contra=contra, qty=str(args.qty),
+                               side=args.side, debug=args.debug)
+    except D.DefinitiveError as e:
+        print("\n  FAILED %s: %s" % (e.status, e))
+        if e.raw:
+            print("  raw: %s" % e.raw[:1000])
+        return 1
+    if args.raw:
+        print("\n%s" % json.dumps(q, indent=2)[:3000])
+        return 0
+    c = D.quote_cost(q)
+    print("\n  spend $%s -> receive $%s  (%s)" % (
+        c["spend_usd"], c["receive_usd"],
+        ("%.2f%% on the leg" % c["loss_pct"]) if c["loss_pct"] is not None else "?"))
+    print("  buy %s   sell %s" % (c["buy_amount"], c["sell_amount"]))
+    print("  impact %s   fee $%s   minOut %s   marketable %s"
+          % (c["price_impact"], c["fee_usd"], c["min_out"], c["marketable"]))
+    for w in c["warnings"]:
+        print("  WARNING: %s" % w)
+    return 0
 
 
 def cmd_keys(args: argparse.Namespace) -> int:
@@ -1216,6 +1258,15 @@ def build_parser() -> argparse.ArgumentParser:
 
     ky = sub.add_parser("keys", help="check where credentials were found")
     ky.set_defaults(func=cmd_keys)
+
+    qt = sub.add_parser("quote", help="quote one pair directly (no scan, no sizing)")
+    qt.add_argument("--target", default=None, help="asset to buy (default WETH)")
+    qt.add_argument("--contra", default=None, help="asset to spend (default USDG)")
+    qt.add_argument("--qty", default="8")
+    qt.add_argument("--side", default="buy", choices=("buy", "sell"))
+    qt.add_argument("--raw", action="store_true", help="dump the whole response")
+    qt.add_argument("--debug", action="store_true", help="print the signed string")
+    qt.set_defaults(func=cmd_quote)
 
     tv = sub.add_parser("trade-vault",
                         help="quote/execute ONE trade from the Definitive vault")
