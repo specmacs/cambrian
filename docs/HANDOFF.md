@@ -869,6 +869,21 @@ the *position* of the value irrelevant. A pasted terminal line
 straight swap of the two values both self-correct, silently and correctly. Add
 any future prefixed credential to `CREDENTIAL_PREFIXES` and it inherits this.
 
+One more rule fell out of this, and it is the interesting one. "A real
+environment variable beats the file" is right, but it was being applied to a
+value that **was not a credential at all** — a shell variable holding a copied
+terminal prompt silently outranked a perfectly good file, and the diagnostic then
+blamed the file. A missing `dpka_`/`dpks_` prefix is *proof* the value cannot be
+that credential, so the file now wins over shell text — and `KEY_SOURCES` records
+the override so `keys` says it happened rather than quietly doing the right thing
+for an unexplained reason. A correctly-prefixed environment value is still
+authoritative; a stale file must never silently redirect a trade.
+
+`cambrian.build` stamps every bundle with the commit it came from, because "run
+the new file" and "the new file is what ran" are different claims and a
+hand-copied bundle makes a stale copy look like a bug in new code. That cost a
+round on its own.
+
 `cambrian keys` reports where each value came from and flags a salvage, printing
 prefixes only — a secret that must be echoed to be verified is a secret that ends
 up in a screenshot, which is exactly how this one leaked.

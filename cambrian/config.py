@@ -40,6 +40,29 @@ def key_file_candidates() -> list:
     return [c for c, _ in out]
 
 
+def credentials_in_files() -> dict:
+    """{name: path} for each prefixed credential visible in a key file.
+
+    Reports WHERE one was seen, never what it is. Lets a diagnostic distinguish
+    "the file is wrong" from "the file is fine and something else overrode it",
+    which is the distinction that actually tells someone what to go fix.
+    """
+    import re
+    out: dict = {}
+    for candidate in key_file_candidates():
+        try:
+            if not candidate.is_file():
+                continue
+            text = candidate.read_text(encoding="utf8", errors="replace")
+        except Exception:
+            continue
+        for name, prefix in CREDENTIAL_PREFIXES.items():
+            if name not in out and re.search(
+                    re.escape(prefix) + r"[A-Za-z0-9_\-]{8,}", text):
+                out[name] = str(candidate)
+    return out
+
+
 def _load_key_file() -> None:
     """Read `cambrian.env` from the working directory or the user's home.
 
@@ -96,23 +119,30 @@ def _load_key_file() -> None:
 def _salvage(text: str, source: str, from_file: set) -> None:
     """Re-find prefixed credentials anywhere in the file's text.
 
-    Only ever overwrites a value this loader itself read from a file, and only
-    when that value does not carry the right prefix -- a credential set properly
-    in the real environment is never touched.
+    A correctly-prefixed environment variable is authoritative and is never
+    touched. But a value that does NOT carry the prefix cannot be this
+    credential at all, and one turned up in the wild: a shell variable set to a
+    copied terminal prompt, which then silently outranked a perfectly good file
+    because "the environment wins" was applied to a value that was not a
+    credential in the first place. So the file wins over shell text — loudly,
+    with the override recorded in KEY_SOURCES so `keys` can say it happened
+    rather than quietly doing the right thing for an unexplained reason.
     """
     import re
     for name, prefix in CREDENTIAL_PREFIXES.items():
         current = os.getenv(name)
         if current and current.startswith(prefix):
             continue
-        if current and name not in from_file:
-            continue        # came from the real environment -- not ours to fix
         m = re.search(re.escape(prefix) + r"[A-Za-z0-9_\-]{8,}", text)
         if not m:
             continue
+        overrode_shell = bool(current) and name not in from_file
         os.environ[name] = m.group(0)
         from_file.add(name)
-        KEY_SOURCES[name] = "%s (recovered from the line's text)" % source
+        KEY_SOURCES[name] = (
+            "%s — OVERRODE a shell value that is not a %s credential"
+            % (source, prefix) if overrode_shell
+            else "%s (recovered from the line's text)" % source)
 
 
 _load_key_file()

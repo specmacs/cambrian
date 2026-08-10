@@ -546,18 +546,34 @@ def cmd_keys(args: argparse.Namespace) -> int:
         print("\n  %s  %s" % (label, shown))
         src = appcfg.KEY_SOURCES.get(name)
         print("    from %s" % (src or ("the environment" if value else "-")))
-    ok = bool(k and s and k.startswith("dpka_") and s.startswith("dpks_"))
-    if not k or not s:
-        print("\n  -> create cambrian.env with two lines:")
-        print("       DEFINITIVE_API_KEY=dpka_...")
-        print("       DEFINITIVE_API_SECRET=dpks_...")
-    elif not ok:
-        # The loader already recovers a swap or a pasted terminal line by
-        # prefix, so reaching here means the prefix is genuinely absent from
-        # the file — the credential itself is missing, not just misplaced.
-        print("\n  -> a value does not carry its dpka_/dpks_ prefix, and the "
-              "prefix is\n     nowhere in the file either — so the credential "
-              "itself is missing,\n     not merely on the wrong line.")
+    in_files = appcfg.credentials_in_files()
+    ok = True
+    for name, value, prefix, env_name in (
+            ("DEFINITIVE_API_KEY", k, "dpka_", "DEFINITIVE_API_KEY"),
+            ("DEFINITIVE_API_SECRET", s, "dpks_", "DEFINITIVE_API_SECRET")):
+        if value and value.startswith(prefix):
+            continue
+        ok = False
+        # The loader recovers a swap or a pasted terminal line, and now
+        # overrides shell text with a good file value, so reaching here means
+        # the prefix is genuinely absent from BOTH — say which, precisely,
+        # because "put it in the file" and "clear your shell" are different
+        # fixes and guessing between them is what cost the last two rounds.
+        if not value:
+            print("\n  -> %s is not set anywhere." % name)
+        elif name in in_files:
+            print("\n  -> %s is being overridden by something this process "
+                  "cannot see." % name)
+        else:
+            print("\n  -> %s holds a value that is not a %s credential, and no "
+                  "%s\n     string appears in cambrian.env either — so the "
+                  "credential itself is\n     missing, not merely misplaced."
+                  % (name, prefix, prefix))
+            if not appcfg.KEY_SOURCES.get(name):
+                print("     It came from the SHELL in this window "
+                      "(`$env:%s`), not from the file." % env_name)
+        print("     Put the real value in cambrian.env:  %s=%s..."
+              % (name, prefix))
     print("\n  %s" % ("looks right — try: vault" if ok else "not ready yet"))
     return 0 if ok else 1
 

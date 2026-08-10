@@ -166,15 +166,39 @@ def test_swapped_values_self_correct(tmp_path, monkeypatch):
     assert D.api_secret() == "dpks_realsecret456"
 
 
-def test_salvage_never_overwrites_a_real_environment_variable(tmp_path, monkeypatch):
-    # A shell-set credential is authoritative even if it looks wrong to us:
-    # silently replacing it from a stale file would be the worse failure.
+def test_shell_text_loses_to_a_real_credential_in_the_file(tmp_path, monkeypatch):
+    # Observed in the wild: a shell variable holding a copied terminal prompt
+    # silently outranked a perfectly good file, because "the environment wins"
+    # was applied to a value that is not a credential at all. A missing dpka_
+    # prefix is proof it cannot be one, so the file wins — and says so.
     monkeypatch.chdir(tmp_path)
     (tmp_path / "cambrian.env").write_text("DEFINITIVE_API_KEY=dpka_fromfile\n")
-    monkeypatch.setenv("DEFINITIVE_API_KEY", "not_a_prefixed_value")
+    monkeypatch.setenv("DEFINITIVE_API_KEY", "PS C:\\Users\\J> whatever")
     from cambrian import config
     config._load_key_file()
-    assert D.api_key() == "not_a_prefixed_value"
+    assert D.api_key() == "dpka_fromfile"
+    assert "OVERRODE" in config.KEY_SOURCES["DEFINITIVE_API_KEY"]
+
+
+def test_a_valid_shell_credential_still_beats_the_file(tmp_path, monkeypatch):
+    # The override is narrow on purpose: a properly-prefixed environment value
+    # is authoritative, so a stale file can never silently redirect a trade.
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "cambrian.env").write_text("DEFINITIVE_API_KEY=dpka_fromfile\n")
+    monkeypatch.setenv("DEFINITIVE_API_KEY", "dpka_fromenv")
+    from cambrian import config
+    config._load_key_file()
+    assert D.api_key() == "dpka_fromenv"
+
+
+def test_credentials_in_files_reports_location_not_value(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "cambrian.env").write_text("DEFINITIVE_API_SECRET=dpks_inthefile\n")
+    from cambrian import config
+    found = config.credentials_in_files()
+    assert found["DEFINITIVE_API_SECRET"].endswith("cambrian.env")
+    assert "DEFINITIVE_API_KEY" not in found
+    assert "dpks_inthefile" not in str(found)
 
 
 def test_a_bad_line_does_not_discard_the_good_lines_below_it(tmp_path, monkeypatch):
