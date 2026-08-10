@@ -94,8 +94,15 @@ def sign(secret: str, message: str) -> str:
 def request(path: str, *, method: str = "GET", body: dict | None = None,
             query: dict | None = None, key: str | None = None,
             secret: str | None = None, timeout: float = 30.0,
-            now_ms: int | None = None) -> dict:
-    """Signed call against the Client API."""
+            now_ms: int | None = None, debug: bool = False) -> dict:
+    """Signed call against the Client API.
+
+    `debug` prints the exact string being signed with the key redacted. A wrong
+    signature and a wrong key return the same bare 401, so this is the only way
+    to tell them apart — and it can be read out over a screenshot without
+    exposing anything, which the alternative (handing over real credentials)
+    cannot.
+    """
     k, s = key or api_key(), secret or api_secret()
     if not k or not s:
         raise DefinitiveError(
@@ -105,8 +112,13 @@ def request(path: str, *, method: str = "GET", body: dict | None = None,
     # Serialise ONCE: the bytes that are signed must be the bytes that are sent.
     body_str = json.dumps(body, separators=(",", ":")) if body is not None else ""
     headers = {"x-definitive-api-key": k, "x-definitive-timestamp": ts}
-    signature = sign(s, prehash(method=method, path=path, timestamp=ts,
-                                headers=headers, query=query, body_str=body_str))
+    pre = prehash(method=method, path=path, timestamp=ts,
+                  headers=headers, query=query, body_str=body_str)
+    signature = sign(s, pre)
+    if debug:
+        print("  [debug] signing: %s" % pre.replace(k, "<KEY:%d chars>" % len(k)))
+        print("  [debug] signature %s...  secret %d chars, prefix %s"
+              % (signature[:12], len(s), s[:5]))
     qs = urllib.parse.urlencode(query or {})
     url = "%s%s%s" % (BASE_URL, path, ("?" + qs) if qs else "")
     req = urllib.request.Request(

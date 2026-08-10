@@ -409,7 +409,7 @@ def cmd_vault(args: argparse.Namespace) -> int:
     """Show the Definitive vault address to fund, and what is in it."""
     from .runners import definitive as D
     try:
-        addr = D.deposit_address(D.CHAIN)
+        addr = D.deposit_address(D.CHAIN, debug=args.debug)
     except D.DefinitiveError as e:
         print("\n  vault lookup failed (HTTP %s): %s" % (e.status or "?", e))
         k, s = D.api_key(), D.api_secret()
@@ -425,7 +425,9 @@ def cmd_vault(args: argparse.Namespace) -> int:
                 print("  -> the SECRET should start with dpks_ — are the two swapped?")
         if e.status == 401:
             print("  -> 401 means the signature did not match. If both keys are "
-                  "correct and unswapped, this is my bug — send me this output.")
+                  "correct and unswapped, this is my bug — re-run with --debug "
+                  "and send me\n     that output; it redacts the key and never "
+                  "touches the secret.")
         elif e.status and e.status >= 500:
             print("  -> a 5xx usually means a malformed key rather than a wrong one")
         return 1
@@ -527,34 +529,33 @@ def cmd_keys(args: argparse.Namespace) -> int:
     Prints prefixes only. A secret that has to be echoed to be verified is a
     secret that ends up in a screenshot.
     """
-    import pathlib as _p
-
+    from . import config as appcfg
     from .runners import definitive as D
 
     print("\n  looking for cambrian.env in:")
-    for c in (_p.Path.cwd() / "cambrian.env", _p.Path.home() / "cambrian.env"):
+    for c in appcfg.key_file_candidates():
         print("    %-52s %s" % (c, "FOUND" if c.is_file() else "-"))
     k, s = D.api_key(), D.api_secret()
-    print("\n  DEFINITIVE_API_KEY     %s" % (("%s... (%d chars)" % (k[:9], len(k)))
-                                              if k else "NOT SET"))
-    print("  DEFINITIVE_API_SECRET  %s" % (("%s... (%d chars)" % (s[:6], len(s)))
-                                           if s else "NOT SET"))
-    ok = True
+    for label, name, value, prefix in (
+            ("DEFINITIVE_API_KEY   ", "DEFINITIVE_API_KEY", k, "dpka_"),
+            ("DEFINITIVE_API_SECRET", "DEFINITIVE_API_SECRET", s, "dpks_")):
+        shown = ("%s... (%d chars)" % (value[:len(prefix) + 4], len(value))
+                 if value else "NOT SET")
+        print("\n  %s  %s" % (label, shown))
+        src = appcfg.KEY_SOURCES.get(name)
+        print("    from %s" % (src or ("the environment" if value else "-")))
+    ok = bool(k and s and k.startswith("dpka_") and s.startswith("dpks_"))
     if not k or not s:
         print("\n  -> create cambrian.env with two lines:")
         print("       DEFINITIVE_API_KEY=dpka_...")
         print("       DEFINITIVE_API_SECRET=dpks_...")
-        ok = False
-    else:
-        if not k.startswith("dpka_"):
-            print("\n  -> the KEY should start dpka_ — the two look swapped")
-            ok = False
-        if not s.startswith("dpks_"):
-            print("  -> the SECRET should start dpks_ — the two look swapped")
-            ok = False
-        if k.startswith("$env:") or s.startswith("$env:"):
-            print("  -> a value contains shell text, not a credential")
-            ok = False
+    elif not ok:
+        # The loader already recovers a swap or a pasted terminal line by
+        # prefix, so reaching here means the prefix is genuinely absent from
+        # the file — the credential itself is missing, not just misplaced.
+        print("\n  -> a value does not carry its dpka_/dpks_ prefix, and the "
+              "prefix is\n     nowhere in the file either — so the credential "
+              "itself is missing,\n     not merely on the wrong line.")
     print("\n  %s" % ("looks right — try: vault" if ok else "not ready yet"))
     return 0 if ok else 1
 
@@ -1159,6 +1160,8 @@ def build_parser() -> argparse.ArgumentParser:
     td.set_defaults(func=cmd_trade)
 
     vt = sub.add_parser("vault", help="show the Definitive vault address and positions")
+    vt.add_argument("--debug", action="store_true",
+                    help="print the signed string (key redacted) to diagnose a 401")
     vt.set_defaults(func=cmd_vault)
 
     ky = sub.add_parser("keys", help="check where credentials were found")

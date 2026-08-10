@@ -846,6 +846,39 @@ over trusting a search-result summary.
 Pure-Python keccak256 lives in `examples/rh_codehash.py`; no dependency provides
 it. Import it by slicing the source between `_M = (1 << 64)` and `def rpc(`.
 
+### Credentials reach the desk through a FILE, not the shell
+
+Getting the Definitive key and secret onto the owner's machine cost more rounds
+than every piece of trading math combined, and none of the failures were about
+trading. `$env:X=value` baked quotes into the value; an interactive `Read-Host`
+prompt collected the *next pasted command* as the secret — twice; and the value
+that finally landed in the key line was 80 characters of copied terminal prompt.
+The lesson is not "explain PowerShell better", it is that **a value typed at a
+shell passes through the shell's grammar, and a value in a text file does not**.
+
+So `cambrian/config.py` reads `cambrian.env` (working dir, then home) as plain
+`KEY=VALUE`, tolerating quotes, whitespace, BOMs and comments, never overriding a
+real environment variable, and never raising — a malformed file must not stop the
+desk booting.
+
+Then a **salvage pass**, which is the part worth keeping: `dpka_`/`dpks_` are
+unambiguous prefixes, so any credential that is missing or carries the wrong
+prefix is re-found by scanning the whole file's text for its prefix. This makes
+the *position* of the value irrelevant. A pasted terminal line
+(`DEFINITIVE_API_KEY=PS C:\Users\...> $env:DEFINITIVE_API_KEY=dpka_real`) and a
+straight swap of the two values both self-correct, silently and correctly. Add
+any future prefixed credential to `CREDENTIAL_PREFIXES` and it inherits this.
+
+`cambrian keys` reports where each value came from and flags a salvage, printing
+prefixes only — a secret that must be echoed to be verified is a secret that ends
+up in a screenshot, which is exactly how this one leaked.
+
+`cambrian vault --debug` prints the exact string being signed with the key
+redacted and the secret never touched. A wrong signature and a wrong key both
+return a bare 401, and this is the only way to tell them apart **without ever
+being handed real credentials** — the offer to paste them into chat was declined
+and should stay declined.
+
 ---
 
 ## Open work

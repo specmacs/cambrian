@@ -9,6 +9,37 @@ fill these in from the block explorer, do not guess.
 import os
 from dataclasses import dataclass, field
 
+# Credentials with a distinctive, unambiguous prefix. Anything listed here can be
+# recovered from a mangled file by pattern rather than by position -- see the
+# salvage pass in `_load_key_file`.
+CREDENTIAL_PREFIXES = {
+    "DEFINITIVE_API_KEY": "dpka_",
+    "DEFINITIVE_API_SECRET": "dpks_",
+}
+
+# name -> where the value came from. Diagnostics only; never holds a value.
+KEY_SOURCES: dict[str, str] = {}
+
+
+def key_file_candidates() -> list:
+    """The files `_load_key_file` reads, in order, deduplicated.
+
+    Shared with the `keys` command so the diagnostic can never disagree with the
+    loader about where it looked -- and so a home directory that *is* the working
+    directory gets listed once rather than twice.
+    """
+    import pathlib as _p
+    out: list = []
+    for candidate in (_p.Path.cwd() / "cambrian.env", _p.Path.home() / "cambrian.env"):
+        try:
+            resolved = str(candidate.resolve())
+        except Exception:
+            resolved = str(candidate)
+        if not any(resolved == seen for _, seen in out):
+            out.append((candidate, resolved))
+    return [c for c, _ in out]
+
+
 def _load_key_file() -> None:
     """Read `cambrian.env` from the working directory or the user's home.
 
@@ -16,20 +47,33 @@ def _load_key_file() -> None:
     get stuck: PowerShell mangles unquoted values with special characters, quoted
     values end up with the quotes baked in, and an interactive prompt invites
     pasting the next command as the value. A plain KEY=VALUE file has none of
-    those semantics — a text editor just holds text.
+    those semantics -- a text editor just holds text.
 
     Never overrides an environment variable that is already set, so a real
     environment still wins over a convenience file.
+
+    **Then a salvage pass**, because KEY=VALUE still assumes the person editing
+    the file put the right thing on the right line, and in practice they paste a
+    whole terminal line -- prompt, command and all -- or swap the two values.
+    Both are recoverable without guessing: `dpka_`/`dpks_` are unambiguous, so a
+    credential that is missing or carries the wrong prefix is re-found by
+    scanning the file text for its prefix. Position stops mattering; only the
+    credential itself does.
     """
-    import pathlib as _p
-    for candidate in (_p.Path.cwd() / "cambrian.env",
-                      _p.Path.home() / "cambrian.env"):
+    from_file: set = set()
+    for candidate in key_file_candidates():
         try:
             if not candidate.is_file():
                 continue
-            for raw in candidate.read_text(encoding="utf8-sig"
-                                           if False else "utf8").splitlines():
-                line = raw.strip().lstrip("\ufeff")
+            text = candidate.read_text(encoding="utf8", errors="replace")
+        except Exception:
+            continue        # a malformed file must never stop the desk booting
+        for raw in text.splitlines():
+            # Per LINE, not per file: one unusable line (a NUL byte, a name the
+            # OS environment will not accept) must not discard the good lines
+            # below it, and must not skip the salvage pass either.
+            try:
+                line = raw.strip().lstrip("﻿")
                 if not line or line.startswith("#") or "=" not in line:
                     continue
                 name, _, value = line.partition("=")
@@ -39,8 +83,36 @@ def _load_key_file() -> None:
                 value = value.strip().strip('"').strip("'").strip()
                 if name and value and not os.getenv(name):
                     os.environ[name] = value
+                    from_file.add(name)
+                    KEY_SOURCES[name] = str(candidate)
+            except Exception:
+                continue
+        try:
+            _salvage(text, str(candidate), from_file)
         except Exception:
-            continue        # a malformed file must never stop the desk booting
+            pass
+
+
+def _salvage(text: str, source: str, from_file: set) -> None:
+    """Re-find prefixed credentials anywhere in the file's text.
+
+    Only ever overwrites a value this loader itself read from a file, and only
+    when that value does not carry the right prefix -- a credential set properly
+    in the real environment is never touched.
+    """
+    import re
+    for name, prefix in CREDENTIAL_PREFIXES.items():
+        current = os.getenv(name)
+        if current and current.startswith(prefix):
+            continue
+        if current and name not in from_file:
+            continue        # came from the real environment -- not ours to fix
+        m = re.search(re.escape(prefix) + r"[A-Za-z0-9_\-]{8,}", text)
+        if not m:
+            continue
+        os.environ[name] = m.group(0)
+        from_file.add(name)
+        KEY_SOURCES[name] = "%s (recovered from the line's text)" % source
 
 
 _load_key_file()

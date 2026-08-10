@@ -135,3 +135,78 @@ def test_a_malformed_key_file_never_stops_the_desk_booting(tmp_path, monkeypatch
     (tmp_path / "cambrian.env").write_text("this is not = = valid\x00\n")
     from cambrian import config
     config._load_key_file()          # must not raise
+
+
+def test_a_pasted_terminal_line_still_yields_the_credential(tmp_path, monkeypatch):
+    # What actually landed in the file on the owner's machine: 80 characters of
+    # copied PowerShell prompt with the real key at the end. `dpka_` is
+    # unambiguous, so position does not have to be right — only presence.
+    monkeypatch.delenv("DEFINITIVE_API_KEY", raising=False)
+    monkeypatch.delenv("DEFINITIVE_API_SECRET", raising=False)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "cambrian.env").write_text(
+        "DEFINITIVE_API_KEY=PS C:\\Users\\J> $env:DEFINITIVE_API_KEY=dpka_realkey123\n"
+        "DEFINITIVE_API_SECRET=dpks_realsecret456\n")
+    from cambrian import config
+    config._load_key_file()
+    assert D.api_key() == "dpka_realkey123"
+    assert D.api_secret() == "dpks_realsecret456"
+
+
+def test_swapped_values_self_correct(tmp_path, monkeypatch):
+    monkeypatch.delenv("DEFINITIVE_API_KEY", raising=False)
+    monkeypatch.delenv("DEFINITIVE_API_SECRET", raising=False)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "cambrian.env").write_text(
+        "DEFINITIVE_API_KEY=dpks_realsecret456\n"
+        "DEFINITIVE_API_SECRET=dpka_realkey123\n")
+    from cambrian import config
+    config._load_key_file()
+    assert D.api_key() == "dpka_realkey123"
+    assert D.api_secret() == "dpks_realsecret456"
+
+
+def test_salvage_never_overwrites_a_real_environment_variable(tmp_path, monkeypatch):
+    # A shell-set credential is authoritative even if it looks wrong to us:
+    # silently replacing it from a stale file would be the worse failure.
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "cambrian.env").write_text("DEFINITIVE_API_KEY=dpka_fromfile\n")
+    monkeypatch.setenv("DEFINITIVE_API_KEY", "not_a_prefixed_value")
+    from cambrian import config
+    config._load_key_file()
+    assert D.api_key() == "not_a_prefixed_value"
+
+
+def test_a_bad_line_does_not_discard_the_good_lines_below_it(tmp_path, monkeypatch):
+    monkeypatch.delenv("DEFINITIVE_API_SECRET", raising=False)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "cambrian.env").write_text(
+        "BROKEN\x00NAME=whatever\nDEFINITIVE_API_SECRET=dpks_survived\n")
+    from cambrian import config
+    config._load_key_file()
+    assert D.api_secret() == "dpks_survived"
+
+
+def test_the_key_file_candidates_are_deduplicated(tmp_path, monkeypatch):
+    # When the working directory IS the home directory the same path was listed
+    # twice, which reads as two separate files that disagree.
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    from cambrian import config
+    assert len(config.key_file_candidates()) == 1
+
+
+def test_debug_redacts_the_key_and_never_prints_the_secret(capsys, monkeypatch):
+    monkeypatch.setenv("DEFINITIVE_API_KEY", "dpka_publicish")
+    monkeypatch.setenv("DEFINITIVE_API_SECRET", "dpks_verysecret")
+
+    def boom(*a, **k):
+        raise OSError("no network in tests")
+
+    monkeypatch.setattr(D.urllib.request, "urlopen", boom)
+    with pytest.raises(OSError):
+        D.request("/v2/portfolio", debug=True)
+    out = capsys.readouterr().out
+    assert "dpka_publicish" not in out
+    assert "dpks_verysecret" not in out
+    assert "<KEY:14 chars>" in out          # length disclosed, value not

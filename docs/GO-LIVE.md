@@ -65,11 +65,42 @@ Measured live at this size, a round trip costs **~2.3%** (≈$0.18 on $8). So th
 token has to move ~2.3% just to break even. A flat trade is a small loss, and
 that is the expected outcome rather than a bug.
 
-## 1. Keys
+## 1. Keys — put them in a file, not in the shell
+
+Setting a secret with `$env:X=value` is where this went wrong repeatedly: the
+shell has opinions about quotes, and a prompt collects whatever you paste next.
+A text file has no grammar. Open it:
 
 ```
-$env:DEFINITIVE_API_KEY=dpka_your_key_here
-$env:DEFINITIVE_API_SECRET=dpks_your_secret_here
+notepad $env:USERPROFILE\cambrian.env
+```
+
+Two lines, nothing else, no quotes:
+
+```
+DEFINITIVE_API_KEY=dpka_your_key_here
+DEFINITIVE_API_SECRET=dpks_your_secret_here
+```
+
+Save. Then check:
+
+```
+python -m cambrian keys
+```
+
+It prints where each value came from and the first few characters only — never
+the secret. `dpka_` on the key line and `dpks_` on the secret line means you are
+ready.
+
+You do not have to be careful about *which* line each value lands on. `dpka_` and
+`dpks_` are unambiguous, so the loader searches the whole file for each prefix: a
+swap, or a whole terminal line pasted around the credential, both self-correct.
+What it cannot do is invent a credential that is not in the file anywhere — that
+is the one thing `keys` will tell you it found.
+
+The RPC is not a secret and can stay in the shell:
+
+```
 $env:RH_RPC_URL="https://rpc.mainnet.chain.robinhood.com"
 ```
 
@@ -165,7 +196,10 @@ Not covered — read these before funding:
   are confirmed live (they return a clean `401 Invalid API Authentication` to a
   fake key), but a *wrong signature* also returns 401 — so I cannot tell a
   correct implementation from a broken one without your real keys. If step 2
-  returns 401 with valid keys, that is the bug, and it is mine.
+  returns 401 with valid keys, that is the bug, and it is mine. Run
+  `python -m cambrian vault --debug` and send me that output: it prints the exact
+  string being signed with the key redacted and never touches the secret, which
+  is enough for me to fix it without ever seeing a credential.
 - **`~spot` marks.** pons-v1 and pools.trade have no local sell math, so between
   Flash refreshes (30s) they mark at spot, ignoring exit slippage. Slightly
   optimistic. Curve and V2 venues are exact.
