@@ -505,7 +505,12 @@ def cmd_trade_vault(args: argparse.Namespace) -> int:
     row = venue = c = None
     qty_str = ""
     for cand in rows[:args.max_candidates]:
-        if not cand.get("ok") and not args.token:
+        # Applies to --token too, deliberately. Naming a token must not
+        # bypass the gate — the tax rule and the liquidity checks are the
+        # whole point of having one.
+        if not cand.get("ok"):
+            print("  skip %-12s — BLOCKED: %s"
+                  % (cand["token"][:12], "; ".join(cand.get("reasons") or ["unknown"])))
             continue
         size_usd = min(cand.get("size_usd") or 0.0, args.max_usd)
         if size_usd <= 0:
