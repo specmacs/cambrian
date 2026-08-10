@@ -529,9 +529,11 @@ def cmd_keys(args: argparse.Namespace) -> int:
     Prints prefixes only. A secret that has to be echoed to be verified is a
     secret that ends up in a screenshot.
     """
+    from . import build as B
     from . import config as appcfg
     from .runners import definitive as D
 
+    print("\n  build %s" % B.BUILD)
     print("\n  looking for cambrian.env in:")
     for c in appcfg.key_file_candidates():
         print("    %-52s %s" % (c, "FOUND" if c.is_file() else "-"))
@@ -1086,7 +1088,9 @@ def cmd_review_hook(args: argparse.Namespace) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
+    from . import build as _build
     p = argparse.ArgumentParser(prog="cambrian", description=__doc__)
+    p.add_argument("--version", action="version", version="cambrian %s" % _build.BUILD)
     sub = p.add_subparsers(dest="command", required=True)
 
     sub.add_parser("status", help="show config gaps, mode, and chain health")

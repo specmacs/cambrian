@@ -8,8 +8,10 @@ Sources are embedded and served through a meta-path finder, so relative imports
 inside the package keep working exactly as they do from a checkout.
 """
 import base64
+import datetime
 import json
 import pathlib
+import subprocess
 import zlib
 
 root = pathlib.Path(__file__).parent
@@ -21,6 +23,14 @@ for f in sorted(root.glob("cambrian/**/*.py")):
     if name.endswith(".__init__"):
         name = name[:-9]
     mods[name] = f.read_text(encoding="utf8")
+
+# Stamp the build with the commit it came from. A bundle is copied by hand, so a
+# stale copy runs silently and looks like a bug in the new code — the stamp makes
+# "is this the new file?" answerable from the output itself.
+_sha = subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=root,
+                      capture_output=True, text=True).stdout.strip() or "unknown"
+_when = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+mods["cambrian.build"] = 'BUILD = "%s built %s"\n' % (_sha, _when)
 
 blob = base64.b64encode(zlib.compress(json.dumps(mods).encode(), 9)).decode()
 out = pathlib.Path(root / "dist" / "cambrian_all_in_one.py")
