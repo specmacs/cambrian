@@ -499,22 +499,32 @@ def cmd_trade_vault(args: argparse.Namespace) -> int:
     qprice = ST.quote_price_usd(contra, weth_usd=eth,
                                 usdg=rcfg.CONTRACTS.get("usdg"),
                                 weth=rcfg.CONTRACTS.get("weth")) or eth
-    qty = size_usd / qprice
+    # Quantity must respect the CONTRA asset's decimals — that is the asset
+    # being spent, and its precision is what the API validates against.
+    try:
+        contra_dec = client.erc20_decimals(contra)
+    except Exception:
+        contra_dec = 18
+    qty_str = _fmt_qty(size_usd / qprice, contra_dec)
+    qty = float(qty_str)
+    if qty <= 0:
+        print("  size rounds to zero at the spend asset's %d decimals" % contra_dec)
+        return 1
     print("\n  token      %s  (%s)" % (row["token"], row.get("pad")))
     print("  market cap $%.0f   tax %s" % (
         row.get("market_cap_usd") or 0,
         ("%.1f%%" % (venue.tax_bps / 100)) if venue and venue.tax_bps is not None else "n/a"))
-    print("  spending   %.8f of %s  (~$%.2f, capped at $%.2f)"
-          % (qty, contra, size_usd, args.max_usd))
+    print("  spending   %s of %s  (~$%.2f, capped at $%.2f)"
+          % (qty_str, contra, size_usd, args.max_usd))
     try:
         q = D.quicktrade_quote(target=row["token"], contra=contra,
-                               qty="%.8f" % qty, side="buy")
+                               qty=qty_str, side="buy")
     except D.DefinitiveError as e:
         print("\n  quote failed (%s): %s" % (e.status, e))
         if e.raw:
             print("  raw: %s" % e.raw[:600])
-        print("  -> isolate it:  quote --target %s --contra %s --qty %.4f --raw"
-              % (row["token"], contra, qty))
+        print("  -> isolate it:  quote --target %s --contra %s --qty %s --raw"
+              % (row["token"], contra, qty_str))
         return 1
     c = D.quote_cost(q)
     print("\n  quote %s" % (c["quote_id"] or "-"))
@@ -546,13 +556,28 @@ def cmd_trade_vault(args: argparse.Namespace) -> int:
         print("\n  NOT SUBMITTED. Re-run with --yes to execute this trade.")
         return 0
     out = D.quicktrade_submit(target=row["token"], contra=contra,
-                              qty="%.8f" % qty, side="buy",
+                              qty=qty_str, side="buy",
                               slippage_tolerance="%.4f" % args.max_slippage,
                               confirm=True)
     print("\n  SUBMITTED: %s" % json.dumps(out)[:400])
     print("  track it:  python -m cambrian vault --wallet <your address>")
     return 0
 
+
+
+def _fmt_qty(value: float, decimals: int) -> str:
+    """Render a quantity the way Definitive will accept it.
+
+    `"%.8f" % 8.0` is `"8.00000000"` — eight decimal places against a token that
+    has six — and that is rejected with a 400 whose message is the entirely
+    unhelpful "Internal server error". The same trade sent as `"8"` quotes fine.
+    So: truncate to the asset's real precision (never round up, which would ask
+    to spend more than the caller authorised) and drop trailing zeros.
+    """
+    from decimal import ROUND_DOWN, Decimal
+    q = Decimal(str(value)).quantize(Decimal(1).scaleb(-max(decimals, 0)),
+                                     rounding=ROUND_DOWN)
+    return format(q.normalize(), "f")
 
 
 def cmd_quote(args: argparse.Namespace) -> int:

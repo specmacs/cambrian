@@ -291,3 +291,26 @@ def test_positions_query_is_omitted_when_empty(monkeypatch):
     assert seen["query"] is None
     D.positions(limit=20, include_dust=True)
     assert seen["query"] == {"limit": "20", "includeDustBalances": "true"}
+
+
+# --- quantity formatting -----------------------------------------------------
+# "%.8f" % 8.0 is "8.00000000" — eight decimal places against six-decimal USDG —
+# and Definitive rejects it with a 400 whose message is "Internal server error".
+# The identical trade sent as "8" quotes fine. Confirmed live, both directions.
+
+def test_qty_respects_the_spend_assets_decimals():
+    from cambrian.cli import _fmt_qty
+    assert _fmt_qty(8.0, 6) == "8"                 # not "8.00000000"
+    assert _fmt_qty(1.23456789, 6) == "1.234567"   # truncated to six places
+    assert _fmt_qty(100.0, 6) == "100"             # no exponent form
+
+
+def test_qty_truncates_rather_than_rounds_up():
+    # Rounding up would ask to spend more than the caller authorised.
+    from cambrian.cli import _fmt_qty
+    assert _fmt_qty(1.9999999, 6) == "1.999999"
+
+
+def test_qty_keeps_full_precision_for_an_18_decimal_asset():
+    from cambrian.cli import _fmt_qty
+    assert _fmt_qty(0.004229852543810322, 18) == "0.004229852543810322"
