@@ -23,9 +23,11 @@ def _v(**kw) -> V.Venue:
 
 
 def _pos(**kw) -> P.Position:
+    # peak_at defaults to NOW so the stall rule does not fire in tests that are
+    # about something else. A test that wants a stall backdates it explicitly.
     base = dict(token="0xtok", venue_kind=V.PONS_V2, pool="0xcurve",
                 tokens=10 * MM, cost_usd=100.0, opened_at=time.time(),
-                peak_usd=100.0)
+                peak_usd=100.0, peak_at=time.time())
     base.update(kw)
     return P.Position(**base)
 
@@ -145,11 +147,12 @@ def test_trailing_stop_stays_disarmed_below_the_arm_level():
 
 
 def test_rungs_trim_once_each_on_the_way_up():
-    # First rung at +40%: the modal good outcome is a launch that runs 40-90%
-    # and fades, and a ladder starting at 2x banked nothing on every one of them.
-    pos = _pos(mark_usd=150.0, peak_usd=150.0)   # 1.5x
+    # First rung at +10% on cost (~+15% on the token, after the round trip).
+    # The modal outcome is a launch that runs 10-50% and fades; a ladder starting
+    # at 2x banked nothing on any of them.
+    pos = _pos(mark_usd=115.0, peak_usd=115.0)   # +15%
     action, frac, why = P.exit_decision(pos)
-    assert action == "trim" and frac == 0.33 and "1.4x" in why
+    assert action == "trim" and frac == 0.25 and "1.1x" in why
     # the same rung must not fire twice
     assert P.exit_decision(pos)[0] is None
 
@@ -175,7 +178,7 @@ def test_stop_outranks_a_rung():
 
 
 def test_liquidity_collapse_closes_the_position():
-    pos = _pos(mark_usd=110.0, peak_usd=110.0)
+    pos = _pos(mark_usd=105.0, peak_usd=105.0)      # below the first rung
     P.exit_decision(pos, liquidity_usd=1000.0)          # establishes the baseline
     action, frac, why = P.exit_decision(pos, liquidity_usd=200.0)
     assert action == "close" and "liquidity" in why
@@ -183,9 +186,9 @@ def test_liquidity_collapse_closes_the_position():
 
 def test_time_stop_only_applies_when_nothing_was_banked():
     old = time.time() - (P.MAX_HOLD_MIN + 5) * 60
-    flat = _pos(mark_usd=110.0, peak_usd=110.0, opened_at=old)
+    flat = _pos(mark_usd=105.0, peak_usd=105.0, opened_at=old)
     assert P.exit_decision(flat)[0] == "close"
-    banked = _pos(mark_usd=110.0, peak_usd=110.0, opened_at=old, rungs_hit=[0])
+    banked = _pos(mark_usd=105.0, peak_usd=105.0, opened_at=old, rungs_hit=[0])
     assert P.exit_decision(banked)[0] is None
 
 
@@ -290,14 +293,16 @@ def test_a_fresh_position_is_given_its_time():
     assert P.exit_decision(pos)[0] is None
 
 
-def test_a_position_that_has_banked_is_left_to_consolidate():
-    # A winner going sideways after a rung is not a stall — it is a moon bag,
-    # and cutting it there is exactly the mistake the ladder exists to avoid.
+def test_a_stall_takes_the_profit_even_after_a_rung_has_banked():
+    # Holding the remainder of something that stopped moving is buy-and-hold
+    # wearing a moon-bag costume. The ladder already took the upside on the way
+    # up; a stalled position is done.
     import time as _t
     pos = _pos(mark_usd=180.0, peak_usd=200.0)
-    pos.rungs_hit = [0]
+    pos.rungs_hit = [0, 1, 2]          # every rung below 2.5x already banked
     pos.peak_at = _t.time() - (P.STALL_S + 60)
-    assert P.exit_decision(pos)[0] is None
+    action, frac, why = P.exit_decision(pos)
+    assert action == "close" and frac == 1.0 and "stalled" in why
 
 
 def test_the_peak_clock_only_resets_on_a_NEW_high():

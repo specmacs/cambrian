@@ -58,11 +58,18 @@ STOP_FRAC = float(os.getenv("RH_STOP_FRAC", "0.80"))
 TRAIL_ARM = float(os.getenv("RH_TRAIL_ARM", "1.25"))
 TRAIL_GIVE = float(os.getenv("RH_TRAIL_GIVE", "0.30"))
 
-# Bank a third at +40%, which is where the common winner actually tops out, and
-# it clears the round trip several times over. The old ladder started at 2x and
-# banked NOTHING on every launch that ran 40-90% and faded — the modal good
-# outcome. 22% rides to whatever it becomes.
-RUNGS: tuple[tuple[float, float], ...] = ((1.4, 0.33), (2.5, 0.25), (5.0, 0.20))
+# Farm the moves that actually happen. Owner's brief, verbatim: *if we constantly
+# farm 10, 15, 20, 50% we will win hard.* The old 2x/3x/5x ladder banked NOTHING
+# on the modal outcome — a launch that runs 10-50% and fades — which is most of
+# them.
+#
+# Remember the ~5% round trip: `mult` is exit-value over cost, so 1.10 here is a
+# token move of roughly +15%, and every rung below is genuinely in profit rather
+# than paying for its own slippage.
+#
+# 25/25/25/15 leaves a 10% moon bag for the one that keeps going.
+RUNGS: tuple[tuple[float, float], ...] = (
+    (1.10, 0.25), (1.25, 0.25), (1.50, 0.25), (2.50, 0.15))
 
 # 8 minutes, not 45. Blocks are 100ms and these resolve in minutes; if nothing
 # has been banked by then the thesis was wrong and the capital is better used on
@@ -72,10 +79,14 @@ MAX_HOLD_MIN = float(os.getenv("RH_MAX_HOLD_MIN", "8"))
 
 # **Stall exit — the one that keeps capital turning over.** A position that has
 # not made a new high in this long has no buyers behind it, and on a fresh launch
-# that is the whole thesis gone. The desk is meant to be trading at a fairly
-# consistent rate, not buying and holding: dead volume is a sell, not a wait. 90s
-# is deliberately short — these resolve in minutes, and the alternative to
-# holding a flat bag is the next launch.
+# that is the whole thesis gone. Dead volume is a sell, not a wait: take whatever
+# profit exists and put the capital into the next launch.
+#
+# It fires **even after a rung has banked**, deliberately. An earlier cut exempted
+# a position that had already trimmed, on the theory that a winner consolidating
+# should be left alone — but that is buy-and-hold wearing a moon-bag costume, and
+# the brief is a consistent rate of buying and selling. A stalled position is
+# done; the ladder already took the upside on the way up.
 STALL_S = float(os.getenv("RH_STALL_S", "90"))
 
 RUG_FAILS = int(os.getenv("RH_RUG_FAILS", "3"))
@@ -256,12 +267,15 @@ def exit_decision(pos: Position, *, liquidity_usd: float | None = None,
             return "close", 1.0, "liquidity -%.0f%%" % (
                 100 * (1 - liquidity_usd / pos.liq0_usd))
 
-    # 4b. Stall — no new high for STALL_S. No buyers, no thesis; recycle the
-    # capital into the next launch rather than sitting in a flat bag. Skipped
-    # once a rung has banked, so a winner that is consolidating is left alone.
+    # 4b. Stall — no new high for STALL_S. No buyers, no thesis. Take the
+    # profit that exists and recycle into the next launch. Fires whether or not
+    # a rung has banked: the ladder already took the upside on the way up, and
+    # holding the remainder of something that stopped moving is the buy-and-hold
+    # this desk is explicitly not supposed to do.
     since_peak = t - (pos.peak_at or pos.opened_at)
-    if not pos.rungs_hit and since_peak > STALL_S:
-        return "close", 1.0, "stalled %.0fs — no new high" % since_peak
+    if since_peak > STALL_S:
+        return "close", 1.0, "stalled %.0fs at %.0f%% — no new high" % (
+            since_peak, (mult - 1) * 100)
 
     # 5. Time stop, only if nothing has been banked yet.
     if (t - pos.opened_at) / 60.0 > MAX_HOLD_MIN and not pos.rungs_hit:

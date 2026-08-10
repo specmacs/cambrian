@@ -902,7 +902,7 @@ dangerous direction.
 | Knob | Was | Now | Why |
 | --- | --- | --- | --- |
 | `STOP_FRAC` | 0.55 (−45%) | **0.80 (−20%)** | −45% is $3.60 of an $8 ticket gone before the desk reacts. These resolve in minutes. |
-| `RUNGS` | 2x/3x/5x @ 50/25/15% | **1.4x/2.5x/5x @ 33/25/20%** | The modal good outcome is +40-90% then fade. The old ladder banked **nothing** on every one of those. |
+| `RUNGS` | 2x/3x/5x @ 50/25/15% | **1.10/1.25/1.50/2.50x @ 25/25/25/15%** | Owner: *if we constantly farm 10, 15, 20, 50% we will win hard.* The old ladder banked **nothing** on the modal outcome. 10% moon bag remains. |
 | `TRAIL_ARM` | 1.35 | **1.25** | Arm sooner so a spike-and-fade does not round-trip to flat. |
 | `TRAIL_GIVE` | 0.22 | **0.30** | 22% off peak is noise on these, not a reversal. |
 | `MAX_HOLD_MIN` | 45 | **8** | Blocks are 100ms. 45 minutes is several lifetimes. |
@@ -912,8 +912,13 @@ dangerous direction.
 made a *new high* in 90s has no buyers behind it — dead volume is a sell, not a
 wait, and the alternative to holding a flat bag is the next launch. It needs a
 clock, not a price: `Position.peak_at` is stamped **only on a new high**
-(re-stamping every mark would mean it never fires). Skipped once a rung has
-banked, so a winner consolidating into a moon bag is left alone.
+(re-stamping every mark would mean it never fires).
+
+It fires **even after a rung has banked.** An earlier version exempted a position
+that had already trimmed, reasoning that a winner consolidating should be left
+alone — but that is buy-and-hold wearing a moon-bag costume, and the brief is a
+consistent rate of buying and selling. The ladder already took the upside on the
+way up; a stalled position is done.
 
 Priority is unchanged and deliberate: rug > stop > trail > rungs > liquidity
 collapse > **stall** > time stop. Every one of these is env-overridable
