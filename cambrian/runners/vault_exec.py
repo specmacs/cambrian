@@ -98,6 +98,23 @@ def execute_sell(plan: dict, *, slippage: float = 0.05, confirm: bool = False) -
                                confirm=confirm)
 
 
+def symbol_of(client, token: str) -> str:
+    """Ticker from the chain, since the venue's own response often omits it.
+
+    The desk shows an instrument, not an address — a row reading `0xd0f8a8` is
+    not something you can recognise at a glance while deciding whether to close
+    it.
+    """
+    try:
+        raw = client.eth_call(token, "0x95d89b41")          # symbol()
+        if raw and len(raw) > 130:
+            n = int(raw[2:][64:128], 16)
+            return bytes.fromhex(raw[2:][128:128 + n * 2]).decode("utf8", "replace")[:12]
+    except Exception:
+        pass
+    return ""
+
+
 def _f(x):
     try:
         return float(x)
@@ -164,7 +181,13 @@ def adopt(client, vault: str, *, exclude: tuple = (), now: float | None = None) 
                          peak_usd=float(basis))
         book[token] = {"position": pos, "decimals": dec, "held": human,
                        "basis_known": basis_known,
-                       "symbol": r.get("symbol") or asset.get("symbol") or ""}
+                       # basis0 is the ORIGINAL cost, kept because `P.apply`
+                       # reduces `cost_usd` as rungs are trimmed. Realized P&L
+                       # has to measure against what was actually paid, not
+                       # against the remainder.
+                       "basis0": float(basis), "banked": 0.0, "pad": "vault",
+                       "symbol": (r.get("symbol") or asset.get("symbol")
+                                  or symbol_of(client, token))}
     return book
 
 

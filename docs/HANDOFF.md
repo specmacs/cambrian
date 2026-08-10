@@ -900,42 +900,51 @@ required; plain `/v1` is wrong.
 
 ## The live terminal — `cambrian terminal`
 
-`examples/cambrian_paper.py` answers "would this have worked". `cambrian/terminal.py`
-answers "what am I in right now, and how do I get out": every number on it is a
-real Definitive sell quote against real vault holdings.
+**It serves the real desk page**, not a second one. `cambrian/ui_desk.py` is
+`examples/cambrian_desk.py`'s `PAGE` lifted verbatim — six palettes, the logo,
+the layout, the embedded fonts — moved into the package because the bundle only
+embeds `cambrian/**` and anything under `examples/` cannot reach the owner's
+machine. A first attempt shipped a plainer page of my own; that was the wrong
+instinct and it was deleted. **When a designed surface exists, wire it — do not
+build a second one beside it.**
 
-It lives **inside the package**, not in `examples/`, because the owner runs the
-single-file bundle and `tools_build_bundle.py` only embeds `cambrian/**`. Anything
-in `examples/` is unreachable on his machine. The design system moved to
-`cambrian/ui_css.py` (fonts + tokens, lifted verbatim) for the same reason — and
-so the paper and live terminals cannot drift apart. **Zero external resources**:
-78 KB page, fonts embedded, only click-through links leave the box.
+Four edits to the page, all in its own vocabulary:
 
-- `STOP` halts automation. It does **not** sell. Those are different intentions
-  and conflating them turns a panic click into a market sell. Manual `Close`
-  keeps working while halted — halting is about the automation, not your hands.
-- `Close` / `Close all` sell at market, both behind a confirm, both bypassing the
-  cooldown (which exists to stop a repeating *automatic* signal, not a person).
-- The engine runs whether or not a browser is open. Closing the tab stops
-  nothing; a desk that only manages positions while you are looking at it is not
-  managing them.
-- It re-adopts every 30s, so anything bought by hand or by `trade-vault` starts
-  being managed without a restart.
-- 127.0.0.1 only. Any local process can reach the controls — personal desk, not
-  a shared one.
+1. `Connect` → **Stop automation** (a Definitive vault has no wallet to connect,
+   and the control that belongs in that slot is the one that stops the desk
+   deciding for you).
+2. **Close all** beside it; **Close** on every position row.
+3. The existing `mode` chip reads Live / Halted rather than a static "Paper".
+4. A halted banner above the KPI strip.
+
+`terminal.py` fills the page's **existing** `/data` contract rather than
+re-cutting the page to suit the backend. Panes with no vault analogue —
+scouting, agent trace, memory — come back **empty rather than invented**: an
+empty pane reads as "nothing here", a fabricated one reads as a lie.
+
+- `STOP` halts automation. It does **not** sell. Conflating those turns a panic
+  click into a market sell. Manual `Close` keeps working while halted.
+- The engine runs whether or not a browser is open; closing the tab stops
+  nothing.
+- Re-adopts every 30s, so anything bought by hand or by `trade-vault` is managed
+  without a restart.
+- `basis0` holds the ORIGINAL cost, because `P.apply` shrinks `cost_usd` as rungs
+  are trimmed — realized P&L must measure against what was paid, not the
+  remainder.
+- 127.0.0.1 only. Any local process can reach the controls.
 
 ### ⚠️ `exit_decision` MUTATES — asking the question consumes the answer
 
 Caught live: `exit_decision` appends to `pos.rungs_hit` when a rung fires, so
 calling it merely to *render a signal* marks that rung taken. The terminal did
-exactly that while halted — 2x and 3x were recorded as hit, nothing was sold, and
-on resume they could never fire again. `watch` had the same bug from the other
-direction: it checked the cooldown *after* the decision, so a rung arriving during
-a cooldown was consumed and never sold.
+exactly that while halted — 2x and 3x recorded as hit, nothing sold, and on
+resume they could never fire again. `watch` had the same bug from the other
+direction: it checked the cooldown *after* the decision, so a rung arriving
+during a cooldown was consumed and never sold.
 
 **Rule: never call `exit_decision` unless the result can be acted on.** Check
-halted and cooldown first. Three tests pin this — including one that runs the
-real engine thread halted and asserts `rungs_hit == []`.
+halted and cooldown first. Three tests pin this — one runs the real engine
+thread halted and asserts `rungs_hit == []`.
 
 ## UI / design
 
