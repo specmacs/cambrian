@@ -223,6 +223,7 @@ animation-duration:.01ms!important}.flash-up{animation:flash-up var(--dur-flash)
   <span class=tbmeta>Equity</span>
   <span class="num" id=eqTop style="font-size:var(--t-md);font-weight:var(--w-ui)">$0.00</span>
   <button id=theme class=btn title="Palette — click to cycle (T)">Instrument</button>
+  <button id=scanbtn class=btn title="Scan the pads and open positions">Entries: on</button>
   <button id=stopbtn class=btn title="Halt automated exits — does NOT sell">Stop automation</button>
   <button id=closeall class="btn danger" title="Sell every open position at market">Close all</button>
  </div>
@@ -419,6 +420,9 @@ function setMode(d){
  const c=document.getElementById('mode');
  c.textContent=d.halted?'Halted':'Live';
  c.className='chip '+(d.halted?'halted':'live');
+ const sb=document.getElementById('scanbtn');
+ if(sb){sb.textContent='Entries: '+(d.auto_buy?'on':'off');
+  sb.className='btn'+(d.auto_buy?'':' danger')}
  const b=document.getElementById('stopbtn');
  if(b)b.textContent=d.halted?'Resume automation':'Stop automation';
  const w=document.getElementById('haltbar');
@@ -427,6 +431,10 @@ function setMode(d){
 async function post(p,b){return (await fetch(p,{method:'POST',
  headers:{'content-type':'application/json'},body:JSON.stringify(b||{})})).json()}
 document.addEventListener('click',async e=>{
+ const sc=e.target.closest('#scanbtn');
+ if(sc){const on=sc.textContent.indexOf('on')>=0;
+  if(!on&&!confirm('Turn entries ON? The desk will buy launches with real money.'))return;
+  await post('/api/scan',{on:!on});return tick()}
  const s=e.target.closest('#stopbtn');
  if(s){const halted=document.getElementById('mode').textContent==='Halted';
   await post('/api/halt',{halted:!halted});return tick()}

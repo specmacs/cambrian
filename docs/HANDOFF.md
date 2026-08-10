@@ -898,7 +898,41 @@ required; plain `/v1` is wrong.
 
 ---
 
-## The live terminal — `cambrian terminal`
+## The live terminal — `cambrian terminal` — SCANS AND TRADES
+
+**This is the desk, not a position viewer.** It runs three loops:
+
+| Loop | Cadence | Does |
+| --- | --- | --- |
+| Scanner | ~8s | `scanner.sweep` across all four pads -> gate -> size -> **buy** |
+| Mark | continuous | a real Definitive sell quote per position, in parallel |
+| Exit | on every mark | stop / trailing / rungs / rug / time stop -> **sell** |
+
+An earlier version of this only managed what was already held, and entry was a
+CLI command. That was wrong — the whole point of the desk is to scrape the pads
+and trade them. Nothing about *which* tokens are acceptable is decided in the
+terminal: `scanner.sweep` and the gate already encode the tax ceiling, the
+stock-pair exception and the liquidity checks, and duplicating any of it would
+let the two paths disagree about what is safe.
+
+**Three caps stand between a bad scan and an empty vault:** `--max-usd` per
+ticket, `--max-positions` concurrent, `--buys-per-hour`. A launch missed costs
+nothing; a runaway loop costs everything. One entry per scan pass, and a token
+bought once is never re-entered in the same session.
+
+**Two traps found while wiring it, both silent:**
+
+- A just-submitted buy has a **zero on-chain balance until it settles**, and a
+  zero balance otherwise means "sold elsewhere" — so the desk would abandon a
+  position the instant it opened it. `seen_balance` guards that: a position is
+  only ever closed as gone once a positive balance has actually been observed.
+- A buy sized off a bankroll setting that exceeds the vault balance is a
+  rejected order, and it gets rejected exactly when a launch was worth catching.
+  `plan_buy` caps the spend at what the vault actually holds.
+
+Controls: **Entries: on/off** (topbar, confirms before switching on), **Stop
+automation** (halts BOTH entries and exits; sells nothing), **Close** per row,
+**Close all**.
 
 **It serves the real desk page**, not a second one. `cambrian/ui_desk.py` is
 `examples/cambrian_desk.py`'s `PAGE` lifted verbatim — six palettes, the logo,

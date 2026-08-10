@@ -414,6 +414,15 @@ def cmd_terminal(args: argparse.Namespace) -> int:
     if not wallet:
         print("\n  need --wallet (or $env:RH_WALLET) to find the vault")
         return 2
+    from . import terminal as _T
+    _T.STATE["max_usd"] = args.max_usd
+    _T.STATE["max_positions"] = args.max_positions
+    _T.STATE["buys_per_hour"] = args.buys_per_hour
+    _T.STATE["scan_blocks"] = args.blocks
+    _T.STATE["bankroll"] = args.bankroll
+    if args.no_auto_buy:
+        _T.STATE["auto_buy"] = False
+        print("entries OFF — manage-only")
     if args.no_auto_exit:
         T.STATE["auto_exit"] = False
         print("auto-exit OFF — marks and signals only, nothing will be sold")
@@ -1515,6 +1524,15 @@ def build_parser() -> argparse.ArgumentParser:
                     help="seconds between marks; 0 = continuous (default)")
     tm.add_argument("--no-auto-exit", action="store_true", dest="no_auto_exit",
                     help="mark and signal, but never sell automatically")
+    tm.add_argument("--no-auto-buy", action="store_true", dest="no_auto_buy",
+                    help="manage what is held, but never open a position")
+    tm.add_argument("--max-usd", type=float, default=8.0, dest="max_usd",
+                    help="hard cap per entry (default 8)")
+    tm.add_argument("--max-positions", type=int, default=3, dest="max_positions")
+    tm.add_argument("--buys-per-hour", type=int, default=6, dest="buys_per_hour")
+    tm.add_argument("--blocks", type=int, default=400,
+                    help="scan window per sweep (400 blocks = ~40s of chain)")
+    tm.add_argument("--bankroll", type=float, default=None)
     tm.set_defaults(func=cmd_terminal)
 
     sl = sub.add_parser("sell", help="sell a position out of the vault")

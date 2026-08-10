@@ -272,3 +272,85 @@ def test_a_position_sold_outside_the_desk_is_closed_not_called_a_rug(monkeypatch
                     slippage=0.05, VX=VX, quiet=True)
     assert book[tok]["position"].closed is True
     assert pos.fails == 0                      # not a rug, just gone
+
+
+# --- entry side: the caps are the only thing between a bad scan and $0 -------
+
+def _fresh_terminal():
+    from cambrian import terminal as T
+    T.STATE.update(book={}, halted=False, auto_buy=True, buys_this_hour=[],
+                   max_positions=3, buys_per_hour=6, max_usd=8.0,
+                   bought_ever=set(), events=[], fills=[])
+    return T
+
+
+def test_entries_stop_at_the_position_cap():
+    T = _fresh_terminal()
+    T.STATE["max_positions"] = 2
+    for i in range(2):
+        T.STATE["book"]["0x%d" % i] = {"position": _pos(), "decimals": 18}
+    ok, why = T._room_to_buy()
+    assert ok is False and "open positions" in why
+
+
+def test_entries_stop_at_the_hourly_cap():
+    import time as _t
+    T = _fresh_terminal()
+    T.STATE["buys_per_hour"] = 3
+    T.STATE["buys_this_hour"] = [_t.time()] * 3
+    ok, why = T._room_to_buy()
+    assert ok is False and "hourly" in why
+
+
+def test_an_hour_old_buy_no_longer_counts_against_the_cap():
+    import time as _t
+    T = _fresh_terminal()
+    T.STATE["buys_per_hour"] = 1
+    T.STATE["buys_this_hour"] = [_t.time() - 3700]
+    assert T._room_to_buy()[0] is True
+
+
+def test_halting_stops_entries_as_well_as_exits():
+    T = _fresh_terminal()
+    T.STATE["halted"] = True
+    assert T._room_to_buy()[0] is False
+
+
+def test_a_buy_is_capped_by_the_settlement_balance(monkeypatch):
+    # Sizing off a bankroll setting that exceeds the balance is a rejected order,
+    # and it gets rejected exactly when a launch was worth catching.
+    seen = {}
+
+    def fake(**kw):
+        seen.update(kw)
+        return {"metadata": {"fromNotional": "5"}}
+
+    monkeypatch.setattr(D, "quicktrade_quote", fake)
+    usdg = VX.rcfg.CONTRACTS["usdg"].lower()
+    plan = VX.plan_buy(FakeChain({usdg: 5_000_000}, decimals=6),
+                       token="0xt", vault="0xv", usd=8.0)
+    assert plan["ok"] and seen["qty"] == "5"       # not 8 — that is all there is
+
+
+def test_a_pending_fill_is_not_mistaken_for_a_sold_position(monkeypatch):
+    # A just-submitted buy has a zero on-chain balance until it settles, and a
+    # zero balance otherwise means "sold elsewhere". Closing it there would
+    # abandon the position the instant it was opened.
+    import time as _t
+
+    T = _fresh_terminal()
+    monkeypatch.setattr(D, "quicktrade_quote",
+                        lambda **kw: pytest.fail("nothing to quote yet"))
+    monkeypatch.setattr(D, "positions", lambda **kw: {"positions": []})
+    tok = "0xpending"
+    pos = _pos(cost=8.0)
+    T.STATE["vault"] = "0xv"
+    T.STATE["book"] = {tok: {"position": pos, "decimals": 18, "held": 0.0,
+                             "basis_known": True, "symbol": "P",
+                             "seen_balance": False}}
+    thread = __import__("threading").Thread(
+        target=T._engine, args=(FakeChain({}),),
+        kwargs={"slippage": 0.05, "interval": 0.05}, daemon=True)
+    thread.start()
+    _t.sleep(0.4)
+    assert T.STATE["book"][tok]["position"].closed is False

@@ -209,6 +209,49 @@ def symbol_of(client, token: str) -> str:
     return ""
 
 
+def plan_buy(client, *, token: str, vault: str, usd: float,
+             contra: str | None = None, quote_price_usd: float = 1.0) -> dict:
+    """Quote spending `usd` of the contra asset on `token`. Submits nothing.
+
+    The spend is capped by what the vault actually holds — a buy sized off a
+    bankroll setting that exceeds the balance is a rejected order, and it gets
+    rejected at the moment a launch is worth catching.
+    """
+    contra = contra or rcfg.CONTRACTS["usdg"]
+    try:
+        _, dec, have = held(client, contra, vault)
+    except Exception:
+        return {"ok": False, "why": "could not read the settlement balance",
+                "token": token}
+    want = usd / (quote_price_usd or 1.0)
+    if want > have:
+        want = have
+    qty_str = fmt_qty(want, dec)
+    if float(qty_str) <= 0:
+        return {"ok": False, "why": "no settlement balance to spend",
+                "token": token, "have": have}
+    try:
+        q = D.quicktrade_quote(target=token, contra=contra, qty=qty_str, side="buy")
+    except D.DefinitiveError as e:
+        # Definitive cannot price every fresh launch. That is a skip, not an
+        # error: the scan should move to the next candidate, not stop.
+        return {"ok": False, "why": "not quotable: %s" % e, "raw": e.raw,
+                "token": token, "qty": qty_str, "contra": contra}
+    return {"ok": True, "token": token, "contra": contra, "qty": qty_str,
+            "quote": q, "cost": D.quote_cost(q)}
+
+
+def execute_buy(plan: dict, *, slippage: float = 0.05, confirm: bool = False) -> dict:
+    """Submit a plan produced by `plan_buy`. Requires `confirm=True`."""
+    if not plan.get("ok"):
+        raise D.DefinitiveError("refusing to submit an unquotable buy: %s"
+                                % plan.get("why"))
+    return D.quicktrade_submit(target=plan["token"], contra=plan["contra"],
+                               qty=plan["qty"], side="buy",
+                               slippage_tolerance="%.4f" % slippage,
+                               confirm=confirm)
+
+
 def _f(x):
     try:
         return float(x)
