@@ -886,7 +886,41 @@ serial. Exits themselves are still submitted serially, which is deliberate:
 they are rarer, and a burst of concurrent submits is not a risk worth taking to
 save a second.
 
-## Exit policy
+## Exit policy — RETUNED, and the reasoning matters more than the numbers
+
+Owner's brief: *farm profit, or stop out fast if the entry is shit*, and *it
+should be buying and selling at a fairly consistent rate, not buying and
+holding — if there's no volume, just sell.* The defaults were generic; these are
+fitted to what these launches measurably are.
+
+**The anchor is that a round trip costs ~5%** (2.6% in, similar out, on an $8
+ticket into a $45k cap). `mult` is exit-value over cost, so a position marks at
+~0.95 the instant it fills and a flat token never reads 1.00. Read every
+threshold in those terms — as token moves they are off by the entry cost, in the
+dangerous direction.
+
+| Knob | Was | Now | Why |
+| --- | --- | --- | --- |
+| `STOP_FRAC` | 0.55 (−45%) | **0.80 (−20%)** | −45% is $3.60 of an $8 ticket gone before the desk reacts. These resolve in minutes. |
+| `RUNGS` | 2x/3x/5x @ 50/25/15% | **1.4x/2.5x/5x @ 33/25/20%** | The modal good outcome is +40-90% then fade. The old ladder banked **nothing** on every one of those. |
+| `TRAIL_ARM` | 1.35 | **1.25** | Arm sooner so a spike-and-fade does not round-trip to flat. |
+| `TRAIL_GIVE` | 0.22 | **0.30** | 22% off peak is noise on these, not a reversal. |
+| `MAX_HOLD_MIN` | 45 | **8** | Blocks are 100ms. 45 minutes is several lifetimes. |
+| `STALL_S` | — | **90s** | New. |
+
+**The stall exit is the one that makes the desk churn.** A position that has not
+made a *new high* in 90s has no buyers behind it — dead volume is a sell, not a
+wait, and the alternative to holding a flat bag is the next launch. It needs a
+clock, not a price: `Position.peak_at` is stamped **only on a new high**
+(re-stamping every mark would mean it never fires). Skipped once a rung has
+banked, so a winner consolidating into a moon bag is left alone.
+
+Priority is unchanged and deliberate: rug > stop > trail > rungs > liquidity
+collapse > **stall** > time stop. Every one of these is env-overridable
+(`RH_STOP_FRAC`, `RH_STALL_S`, …) and `cambrian.env` is the place to put them,
+since shell variables do not survive a new window.
+
+## Exit policy — mechanics
 
 Priority order in `exit_decision()`: stop → trailing stop → profit rungs →
 flow reversal → liquidity collapse → time stop.

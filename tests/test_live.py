@@ -62,6 +62,10 @@ def _state_with_position(**venue_kw):
 
 def test_mark_tick_values_positions_and_emits_no_intent_when_holding():
     st, _ = _state_with_position()
+    # Put the mark in the hold band: the fixture's venue values this position
+    # well above the first rung, and a rung firing is correct behaviour, not the
+    # thing under test here.
+    st.positions["0xtok"].cost_usd = 196.04 / 1.05   # ~+5%, inside the hold band
     intents = L.mark_tick(None, st, weth_usd=2000.0)
     assert intents == []
     assert st.positions["0xtok"].mark_usd is not None

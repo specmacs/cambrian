@@ -131,10 +131,11 @@ def test_hard_stop_fires_below_the_floor():
 
 
 def test_trailing_stop_protects_a_run():
-    # Armed at +35%, gives back 22% off peak. This is what stops a +80% winner
-    # round-tripping to flat.
-    pos = _pos(mark_usd=150.0, peak_usd=200.0)
-    action, frac, why = P.exit_decision(pos)
+    # Armed at +25%, gives back 30% off peak — what stops a winner
+    # round-tripping to flat. Marked BELOW the first rung so the trail is what
+    # fires: a rung outranks it on the way up, by design.
+    pos = _pos(mark_usd=130.0, peak_usd=200.0)
+    action, _frac, why = P.exit_decision(pos)
     assert action == "close" and "trail" in why
 
 
@@ -144,9 +145,11 @@ def test_trailing_stop_stays_disarmed_below_the_arm_level():
 
 
 def test_rungs_trim_once_each_on_the_way_up():
-    pos = _pos(mark_usd=250.0, peak_usd=250.0)   # 2.5x
+    # First rung at +40%: the modal good outcome is a launch that runs 40-90%
+    # and fades, and a ladder starting at 2x banked nothing on every one of them.
+    pos = _pos(mark_usd=150.0, peak_usd=150.0)   # 1.5x
     action, frac, why = P.exit_decision(pos)
-    assert action == "trim" and frac == 0.50 and "2x" in why
+    assert action == "trim" and frac == 0.33 and "1.4x" in why
     # the same rung must not fire twice
     assert P.exit_decision(pos)[0] is None
 
@@ -265,3 +268,54 @@ def test_curve_venues_never_pay_for_a_quote_they_do_not_need():
     P.mark(_pos(), _v(), quote_price_usd=2000.0,
            exit_quoter=lambda venue, tokens: calls.append(1) or (99.0, "ok"))
     assert calls == []
+
+
+# --- stall: dead volume is a sell, not a wait --------------------------------
+
+def test_a_position_making_no_new_highs_is_closed():
+    # The desk is meant to trade at a fairly consistent rate, not buy and hold.
+    # No new high means no buyers, and on a fresh launch that is the thesis gone.
+    import time as _t
+    pos = _pos(mark_usd=98.0, peak_usd=105.0)
+    pos.peak_at = _t.time() - (P.STALL_S + 5)
+    action, frac, why = P.exit_decision(pos)
+    assert action == "close" and frac == 1.0
+    assert "stalled" in why
+
+
+def test_a_fresh_position_is_given_its_time():
+    import time as _t
+    pos = _pos(mark_usd=98.0, peak_usd=105.0)
+    pos.peak_at = _t.time() - 5
+    assert P.exit_decision(pos)[0] is None
+
+
+def test_a_position_that_has_banked_is_left_to_consolidate():
+    # A winner going sideways after a rung is not a stall — it is a moon bag,
+    # and cutting it there is exactly the mistake the ladder exists to avoid.
+    import time as _t
+    pos = _pos(mark_usd=180.0, peak_usd=200.0)
+    pos.rungs_hit = [0]
+    pos.peak_at = _t.time() - (P.STALL_S + 60)
+    assert P.exit_decision(pos)[0] is None
+
+
+def test_the_peak_clock_only_resets_on_a_NEW_high():
+    # Re-stamping it on every mark would mean the stall never fires.
+    import time as _t
+    pos = _pos(mark_usd=100.0, peak_usd=100.0)
+    P.mark_from_exit_quote(pos, 120.0)
+    first = pos.peak_at
+    assert first > 0
+    _t.sleep(0.01)
+    P.mark_from_exit_quote(pos, 110.0)       # lower — not a new high
+    assert pos.peak_at == first
+    P.mark_from_exit_quote(pos, 130.0)       # new high
+    assert pos.peak_at > first
+
+
+def test_a_stop_still_outranks_a_stall():
+    import time as _t
+    pos = _pos(mark_usd=50.0, peak_usd=105.0)
+    pos.peak_at = _t.time() - (P.STALL_S + 5)
+    assert "stop" in P.exit_decision(pos)[2]

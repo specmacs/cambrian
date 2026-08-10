@@ -31,14 +31,55 @@ from dataclasses import dataclass, field, replace
 
 from . import venues as V
 
-# Exit policy. Same knobs and defaults the desk has always used.
-TRAIL_ARM = float(os.getenv("RH_TRAIL_ARM", "1.35"))     # arm the trail at +35%
-TRAIL_GIVE = float(os.getenv("RH_TRAIL_GIVE", "0.22"))   # give back 22% off peak
-MAX_HOLD_MIN = float(os.getenv("RH_MAX_HOLD_MIN", "45"))
+# --- Exit policy -------------------------------------------------------------
+#
+# Retuned for what these launches actually are, using numbers measured live this
+# session rather than the generic defaults the desk started with.
+#
+# **The anchor is that a round trip costs ~5%** (2.6% in, similar out, on an $8
+# ticket into a $45k market cap). `mult` is exit-value over cost, so a position
+# marks at ~0.95 the instant it fills and a flat token never reads 1.00. Every
+# threshold below is stated in those terms, because reading them as token moves
+# is off by the entry cost in the dangerous direction.
+#
+# The shape of the bet: most fresh launches go to zero, a few run hard. That
+# asymmetry says cut fast and bank early, then let the remainder run — which is
+# exactly the owner's "farm profit, or stop out fast if the entry is shit".
+
+# Hard stop at -20% on the position (~-15% on the token, after the 5% entry).
+# Was -45%, which on an $8 ticket is $3.60 gone before the desk reacts — far too
+# patient for something that resolves in minutes.
+STOP_FRAC = float(os.getenv("RH_STOP_FRAC", "0.80"))
+
+# Arm the trail at +25% and give back 30% of the peak. Armed EARLIER than before
+# (1.35 -> 1.25) so a spike-and-fade does not round-trip to flat, but with MORE
+# room (0.22 -> 0.30) because these move violently and a 22% pullback is noise,
+# not a reversal. Spike to 1.25 then fade exits at ~0.88 — ahead of the stop.
+TRAIL_ARM = float(os.getenv("RH_TRAIL_ARM", "1.25"))
+TRAIL_GIVE = float(os.getenv("RH_TRAIL_GIVE", "0.30"))
+
+# Bank a third at +40%, which is where the common winner actually tops out, and
+# it clears the round trip several times over. The old ladder started at 2x and
+# banked NOTHING on every launch that ran 40-90% and faded — the modal good
+# outcome. 22% rides to whatever it becomes.
+RUNGS: tuple[tuple[float, float], ...] = ((1.4, 0.33), (2.5, 0.25), (5.0, 0.20))
+
+# 8 minutes, not 45. Blocks are 100ms and these resolve in minutes; if nothing
+# has been banked by then the thesis was wrong and the capital is better used on
+# the next launch. Only fires when no rung has hit, so a winner is never cut by
+# the clock.
+MAX_HOLD_MIN = float(os.getenv("RH_MAX_HOLD_MIN", "8"))
+
+# **Stall exit — the one that keeps capital turning over.** A position that has
+# not made a new high in this long has no buyers behind it, and on a fresh launch
+# that is the whole thesis gone. The desk is meant to be trading at a fairly
+# consistent rate, not buying and holding: dead volume is a sell, not a wait. 90s
+# is deliberately short — these resolve in minutes, and the alternative to
+# holding a flat bag is the next launch.
+STALL_S = float(os.getenv("RH_STALL_S", "90"))
+
 RUG_FAILS = int(os.getenv("RH_RUG_FAILS", "3"))
 LIQ_COLLAPSE = float(os.getenv("RH_LIQ_COLLAPSE", "0.35"))
-STOP_FRAC = float(os.getenv("RH_STOP_FRAC", "0.55"))     # hard stop at -45%
-RUNGS: tuple[tuple[float, float], ...] = ((2.0, 0.50), (3.0, 0.25), (5.0, 0.15))
 
 
 @dataclass
@@ -55,6 +96,9 @@ class Position:
     fails: int = 0
     rungs_hit: list[int] = field(default_factory=list)
     liq0_usd: float | None = None
+    # When the peak was last set. A position making new highs is alive; one that
+    # is not is a bag, and telling those apart needs a clock, not a price.
+    peak_at: float = 0.0
     closed: bool = False
     # False when the mark came from spot rather than a real sell quote (V3
     # venues). Surfaced in the UI so an approximate mark is never mistaken for a
@@ -140,7 +184,8 @@ def mark(pos: Position, venue: V.Venue, *, quote_price_usd: float,
     pos.fails = 0
     pos.mark_usd = val
     pos.mark_is_exact = exact
-    pos.peak_usd = max(pos.peak_usd, val)
+    if val > pos.peak_usd:
+        pos.peak_usd, pos.peak_at = val, time.time()
     return pos
 
 
@@ -164,7 +209,8 @@ def mark_from_exit_quote(pos: Position, value_usd: float | None) -> Position:
     pos.fails = 0
     pos.mark_usd = value_usd
     pos.mark_is_exact = True
-    pos.peak_usd = max(pos.peak_usd, value_usd)
+    if value_usd > pos.peak_usd:
+        pos.peak_usd, pos.peak_at = value_usd, time.time()
     return pos
 
 
@@ -209,6 +255,13 @@ def exit_decision(pos: Position, *, liquidity_usd: float | None = None,
         elif liquidity_usd < pos.liq0_usd * LIQ_COLLAPSE:
             return "close", 1.0, "liquidity -%.0f%%" % (
                 100 * (1 - liquidity_usd / pos.liq0_usd))
+
+    # 4b. Stall — no new high for STALL_S. No buyers, no thesis; recycle the
+    # capital into the next launch rather than sitting in a flat bag. Skipped
+    # once a rung has banked, so a winner that is consolidating is left alone.
+    since_peak = t - (pos.peak_at or pos.opened_at)
+    if not pos.rungs_hit and since_peak > STALL_S:
+        return "close", 1.0, "stalled %.0fs — no new high" % since_peak
 
     # 5. Time stop, only if nothing has been banked yet.
     if (t - pos.opened_at) / 60.0 > MAX_HOLD_MIN and not pos.rungs_hit:
