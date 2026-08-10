@@ -231,12 +231,13 @@ animation-duration:.01ms!important}.flash-up{animation:flash-up var(--dur-flash)
   border-bottom:1px solid var(--line)">Automation halted — stops and take-profits will NOT fire.
   Positions are still marked, and Close still works.</div>
  <div class=kpis>
-  <div class="kpi hero"><div class=label-micro>Equity P&L</div><div class=v id=eq>$0.00</div></div>
+  <div class="kpi hero"><div class=label-micro>Equity</div><div class=v id=eq>$0.00</div></div>
   <div class=kpi><div class=label-micro>Realized</div><div class=v id=real>$0.00</div></div>
   <div class=kpi><div class=label-micro>Unrealized</div><div class=v id=unreal>$0.00</div></div>
   <div class=kpi><div class=label-micro>Open</div><div class=v id=open>0</div></div>
+  <div class=kpi><div class=label-micro>Book value</div><div class=v id=bookv>$0.00</div></div>
+  <div class=kpi><div class=label-micro>Cash</div><div class=v id=cash>$0.00</div></div>
   <div class=kpi><div class=label-micro>Win rate</div><div class=v id=wr>—</div></div>
-  <div class=kpi><div class=label-micro>Scouting</div><div class=v id=scn>0</div></div>
  </div>
  <div class=panes id=v-desk>
   <div class="pane fill">
@@ -349,7 +350,9 @@ async function tick(){let d;try{d=await(await fetch('/data')).json()}catch(e){re
  flash('unreal',d.unrealized);
  document.getElementById('open').textContent=d.positions.length;
  const t=d.wins+d.losses;document.getElementById('wr').textContent=t?Math.round(100*d.wins/t)+'%':'—';
- document.getElementById('scn').textContent=d.scouting.length;
+ const bv=document.getElementById('bookv');if(bv)bv.textContent=d$(d.book_value||0);
+ const csh=document.getElementById('cash');if(csh)csh.textContent=d$(d.cash_usd||0);
+ const sc=document.getElementById('scn');if(sc)sc.textContent=d.scouting.length;
  document.getElementById('posn').textContent=d.positions.length;
  document.getElementById('cblo').textContent=d.blotter.length;
  document.getElementById('cclo').textContent=d.closed.length;
@@ -365,7 +368,8 @@ async function tick(){let d;try{d=await(await fetch('/data')).json()}catch(e){re
   `<td class="num faint">${p.mc?d$(p.mc):'—'}</td><td class=num>${d$(p.cost)}</td><td class=num>${d$(p.value)}</td>`+
   `<td class="num ${sgn(p.chg)}">${p.chg>0?'+':''}${p.chg}%</td>`+
   `<td class="num faint" title="high-water mark / rungs banked">${p.peak_mult}x${p.rungs?' ·'+p.rungs:''}</td>`+`<td class="num ${sgn(p.upnl)}" data-k="u${p.token}" data-v="${p.upnl}">${d$(p.upnl)}</td><td class="num faint age" data-open="${p.opened}"></td>`+`<td><button class="btn xs danger" data-close="${p.token}">Close</button></td></tr>`).join(''):
-  '<tr><td colspan=10 class=empty>No open positions.</td></tr>';
+  (d.adopt_note?`<tr><td colspan=10 class=empty>${d.adopt_note}</td></tr>`
+   :'<tr><td colspan=10 class=empty>No open positions.</td></tr>');
  document.getElementById('blotter').innerHTML=d.blotter.length?d.blotter.map(b=>
   `<tr data-origin=agent><td class="num faint">${b.t}</td>`+
   `<td class="${b.side=='BUY'?'up':'down'}">${b.side=='BUY'?'Buy':'Sell'}</td>`+

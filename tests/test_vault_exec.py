@@ -205,3 +205,43 @@ def test_a_cooldown_must_not_burn_a_rung_either(monkeypatch):
                     slippage=0.05, VX=VX, quiet=True)
     assert pos.rungs_hit == []
     assert pos.mark_usd == 30.0                # still marked, just not decided
+
+
+# --- reading a response whose shape was never documented ---------------------
+
+def test_a_token_address_is_found_wherever_it_is_nested():
+    # The first cut guessed at `address` / `assetAddress` / `asset.address`. When
+    # the real response spells it differently the book comes back empty, the desk
+    # shows nothing, and it looks like you hold nothing — the worst way for a
+    # screen you trust with your money to be wrong.
+    row = {"qty": "5", "asset": {"contractAddress":
+                                 "0xd0f8a87e4402013f95bdc1a12433bfd487ccf31c"}}
+    assert VX.find_address(row) == "0xd0f8a87e4402013f95bdc1a12433bfd487ccf31c"
+
+
+def test_an_asset_keyed_address_wins_over_an_unrelated_one():
+    row = {"vaultAddress": "0x" + "1" * 40,
+           "asset": {"address": "0x" + "2" * 40}}
+    assert VX.find_address(row) == "0x" + "2" * 40
+
+
+def test_no_address_is_empty_rather_than_a_wrong_guess():
+    assert VX.find_address({"qty": "5", "notional": "8"}) == ""
+
+
+def test_a_symbol_is_found_but_prose_is_not():
+    assert VX.find_symbol({"asset": {"symbol": "MOON"}}) == "MOON"
+    assert VX.find_symbol({"description": "a very long marketing sentence"}) == ""
+
+
+def test_the_terminal_lock_is_reentrant():
+    # The engine holds it while adopting and calls _event inside that block. With
+    # a plain Lock the first successful adoption deadlocked every request, and
+    # the bug stayed invisible while adoption kept returning nothing.
+    import threading
+
+    from cambrian import terminal as T
+    assert isinstance(T._lock, type(threading.RLock()))
+    with T._lock:
+        with T._lock:
+            pass

@@ -35,6 +35,29 @@ from . import definitive as D
 # How long after submitting an exit before the same token may be exited again.
 EXIT_COOLDOWN_S = 60.0
 
+# The last positions payload seen, kept for diagnosis only. Never contains keys.
+LAST_RAW: dict = {}
+
+
+def cash(client, vault: str) -> dict:
+    """Settlement balances at the vault, read on chain.
+
+    The desk's P&L is meaningless without it: a book worth $8 next to $13 of
+    USDG is a very different picture from a book worth $8 and nothing else.
+    """
+    out = {}
+    for name in ("usdg", "weth"):
+        addr = rcfg.CONTRACTS.get(name)
+        if not addr:
+            continue
+        try:
+            raw, dec, human = held(client, addr, vault)
+        except Exception:
+            continue
+        out[name] = {"address": addr, "amount": human,
+                     "usd": human if name == "usdg" else None}
+    return out
+
 
 def vault_address(wallet: str, chain: str = D.CHAIN) -> str:
     """The vault that holds the funds. `wallet` is YOUR address, not the vault's."""
@@ -98,6 +121,65 @@ def execute_sell(plan: dict, *, slippage: float = 0.05, confirm: bool = False) -
                                confirm=confirm)
 
 
+_ADDR_RE = None
+
+
+def find_address(node) -> str:
+    """Pull a token address out of a response of unknown shape.
+
+    The positions payload is undocumented and the first cut guessed at
+    `address` / `assetAddress` / `asset.address`. When the real response nests
+    them somewhere else the book comes back empty, the desk shows nothing, and
+    it looks like you hold nothing — the worst possible failure mode for a
+    screen you trust to show your money.
+
+    A 40-hex address is unmistakable, so this walks the whole structure and
+    takes the first one rather than requiring the key to be spelled the way I
+    expected. Prefers keys that look like an asset address; falls back to any
+    address-shaped string.
+    """
+    global _ADDR_RE
+    if _ADDR_RE is None:
+        import re
+        _ADDR_RE = re.compile(r"^0x[0-9a-fA-F]{40}$")
+    preferred, fallback = [], []
+
+    def walk(n, key=""):
+        if isinstance(n, dict):
+            for k, v in n.items():
+                walk(v, k)
+        elif isinstance(n, (list, tuple)):
+            for v in n:
+                walk(v, key)
+        elif isinstance(n, str) and _ADDR_RE.match(n):
+            k = key.lower()
+            (preferred if ("address" in k or "asset" in k or "token" in k
+                           or "contract" in k) else fallback).append(n)
+
+    walk(node)
+    return (preferred or fallback or [""])[0]
+
+
+def find_symbol(node) -> str:
+    """Ticker from a response of unknown shape — same reasoning as above."""
+    found = []
+
+    def walk(n, key=""):
+        if isinstance(n, dict):
+            for k, v in n.items():
+                walk(v, k)
+        elif isinstance(n, (list, tuple)):
+            for v in n:
+                walk(v, key)
+        elif isinstance(n, str) and n and len(n) <= 16:
+            k = key.lower()
+            if k in ("symbol", "ticker", "assetsymbol"):
+                found.append(n)
+
+    walk(node)
+    return found[0] if found else ""
+
+
 def symbol_of(client, token: str) -> str:
     """Ticker from the chain, since the venue's own response often omits it.
 
@@ -147,12 +229,20 @@ def adopt(client, vault: str, *, exclude: tuple = (), now: float | None = None) 
     except D.DefinitiveError:
         payload = {}
     rows = payload.get("positions") or payload.get("data") or []
+    if isinstance(rows, dict):
+        rows = list(rows.values())
+    # Keep the raw payload when nothing adopts: "you hold nothing" and "I could
+    # not read the response" look identical on screen, and only one of them is
+    # a reason to relax.
+    LAST_RAW.clear()
+    LAST_RAW.update(payload if isinstance(payload, dict) else {"payload": payload})
 
     book: dict = {}
     for r in rows:
+        if not isinstance(r, dict):
+            continue
         asset = r.get("asset") or {}
-        token = (r.get("address") or asset.get("address") or r.get("assetAddress")
-                 or "")
+        token = find_address(r)
         if not token or token.lower() in skip:
             continue
         try:
@@ -161,8 +251,10 @@ def adopt(client, vault: str, *, exclude: tuple = (), now: float | None = None) 
             continue
         if raw <= 0:
             continue
-        value = _f(r.get("notional")) or _f(r.get("notionalValue")) \
-            or _f(r.get("usdValue"))
+        value = (_f(r.get("notional")) or _f(r.get("notionalValue"))
+                 or _f(r.get("usdValue")) or _f(r.get("notionalUsd"))
+                 or _f((r.get("value") or {}).get("usd")
+                       if isinstance(r.get("value"), dict) else r.get("value")))
         # Prefer a real basis if the venue reports one, directly or via PnL.
         basis = _f(r.get("costBasis")) or _f(r.get("cost")) or _f(r.get("totalCost"))
         pnl = _f(r.get("pnl")) or _f(r.get("unrealizedPnl"))
@@ -187,7 +279,7 @@ def adopt(client, vault: str, *, exclude: tuple = (), now: float | None = None) 
                        # against the remainder.
                        "basis0": float(basis), "banked": 0.0, "pad": "vault",
                        "symbol": (r.get("symbol") or asset.get("symbol")
-                                  or symbol_of(client, token))}
+                                  or find_symbol(r) or symbol_of(client, token))}
     return book
 
 

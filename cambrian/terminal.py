@@ -35,11 +35,16 @@ from .runners import vault_exec as VX
 PORT = int(os.getenv("RH_TERMINAL_PORT", "8799"))
 MAX_EVENTS = 200
 
-_lock = threading.Lock()
+# Reentrant, and not by accident: the engine holds the lock while adopting and
+# calls `_event` inside that block, which takes it again. With a plain Lock the
+# first successful adoption deadlocked the server — every request hung, and the
+# bug stayed invisible for as long as adoption kept returning nothing.
+_lock = threading.RLock()
 STATE: dict = {
     "vault": None, "wallet": None, "halted": False, "book": {}, "events": [],
     "marks": 0, "mark_ms": 0.0, "last_error": None, "started_at": time.time(),
     "auto_exit": True, "realized": 0.0, "closed": [], "fills": [], "block": 0,
+    "cash": {}, "adopt_note": "", "adopted_once": False,
 }
 
 
@@ -71,7 +76,21 @@ def _engine(client, *, slippage: float, interval: float) -> None:
             if time.time() - last_adopt > 30:
                 last_adopt = time.time()
                 fresh = VX.adopt(client, vault)
+                try:
+                    STATE["cash"] = VX.cash(client, vault)
+                except Exception:
+                    pass
                 with _lock:
+                    # "You hold nothing" and "I could not read the response"
+                    # render identically as an empty table, and only one of them
+                    # means everything is fine. Say which.
+                    if not fresh and not STATE["book"]:
+                        raw = json.dumps(VX.LAST_RAW)[:200]
+                        STATE["adopt_note"] = (
+                            "No positions adopted. Vault response: %s" % raw)
+                    else:
+                        STATE["adopt_note"] = ""
+                    STATE["adopted_once"] = True
                     for tok, entry in fresh.items():
                         if tok not in STATE["book"]:
                             STATE["book"][tok] = entry
@@ -214,6 +233,12 @@ def snapshot() -> dict:
                 "unsellable": pos.fails > 0,
             })
         positions.sort(key=lambda p: -p["upnl"])
+        book_value = sum(
+            (e["position"].mark_usd if e["position"].mark_usd is not None
+             else e["position"].cost_usd)
+            for e in STATE["book"].values() if not e["position"].closed)
+        cash_usd = sum(c["usd"] for c in STATE["cash"].values()
+                       if c.get("usd") is not None)
         closed = list(STATE["closed"])
         wins = sum(1 for c in closed if c["pnl"] > 0)
         return {
@@ -221,7 +246,12 @@ def snapshot() -> dict:
             "updated": time.strftime("%H:%M:%S"),
             "realized": round(STATE["realized"], 2),
             "unrealized": round(unreal, 2),
-            "equity": round(STATE["realized"] + unreal, 2),
+            # Account value, not a paper P&L that starts at zero: cash plus what
+            # the open book would fetch right now. That is the number you check
+            # to know where you stand.
+            "equity": round(cash_usd + book_value, 2),
+            "book_value": round(book_value, 2), "cash_usd": round(cash_usd, 2),
+            "adopt_note": STATE["adopt_note"],
             "wins": wins, "losses": len(closed) - wins,
             "positions": positions, "closed": closed,
             "blotter": list(STATE["fills"]),
