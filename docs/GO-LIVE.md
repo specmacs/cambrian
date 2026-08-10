@@ -5,6 +5,36 @@ here-strings. Paste keys **without quotes around them**.
 
 ---
 
+## Setup — get the code first
+
+`python -m cambrian` only works from **inside the repo folder**. Running it from
+your home directory gives `No module named cambrian`, which is what that error
+means: the package is not installed system-wide, it is run from the checkout.
+
+```
+cd C:\Users\JohnHouk
+git clone https://github.com/specmacs/cambrian.git
+cd cambrian
+git checkout claude/handoff-docs-review-h2ru4f
+pip install requests
+```
+
+`requests` is the only dependency any of this needs. `anthropic` and
+`python-dotenv` are listed in requirements.txt but are optional — nothing in the
+trading path imports them.
+
+**Every command below assumes you are in that `cambrian` folder.** If you open a
+new PowerShell window, `cd C:\Users\JohnHouk\cambrian` again first — and
+re-set the environment variables, because they do not survive a new window.
+
+Check it works:
+
+```
+python -m cambrian --help
+```
+
+---
+
 ## Which API you are using
 
 Definitive has two, and your dev was pointing you at the second one:
