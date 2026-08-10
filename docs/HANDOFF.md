@@ -920,12 +920,39 @@ ticket, `--max-positions` concurrent, `--buys-per-hour`. A launch missed costs
 nothing; a runaway loop costs everything. One entry per scan pass, and a token
 bought once is never re-entered in the same session.
 
+### ⚠️ The gate does NOT detect honeypots — the round trip does
+
+**The scanner bought a honeypot within seconds of going live.** Tax read 0%,
+liquidity was fine, market cap was fine, the pad was one of the eight on the
+owner's verified roster. None of that answers the only question that matters:
+*can the position be got out of*. A trap lives in transfer logic, not in a tax
+field, so a declared 0% tax is worth nothing.
+
+`examples/cambrian_desk.py` already had the answer — `honeypot_ok`: quote a buy,
+then quote selling back exactly what that buy would return, require ≥75% to come
+home. **The packaged gate never had it.** It does now
+(`vault_exec.round_trip_ok`, `--min-recovery`, default 0.75), and it runs on
+every candidate before any buy is submitted. Cost: one extra quote.
+
+Both honeypot shapes are covered: buyable-but-not-sellable (the sell quote
+errors) and sellable-for-nothing (the sell quote returns 3% of the ticket). A
+refused token is added to `bought_ever` so the scanner never retries it.
+
+**Lesson worth keeping: when porting an engine, port its safety checks first.**
+The scan loop was ported without `honeypot_ok` and the very first live trade paid
+for the omission.
+
 **Two traps found while wiring it, both silent:**
 
 - A just-submitted buy has a **zero on-chain balance until it settles**, and a
   zero balance otherwise means "sold elsewhere" — so the desk would abandon a
   position the instant it opened it. `seen_balance` guards that: a position is
   only ever closed as gone once a positive balance has actually been observed.
+  The same gap had a second, worse face: an unsettled buy **marked at zero**, so
+  `exit_decision` fired a stop at −100% against a position that did not exist
+  yet — and if the fill landed mid-way that stop would sell for real. An
+  unsettled position is now neither marked nor decided; it reads "awaiting
+  fill".
 - A buy sized off a bankroll setting that exceeds the vault balance is a
   rejected order, and it gets rejected exactly when a launch was worth catching.
   `plan_buy` caps the spend at what the vault actually holds.

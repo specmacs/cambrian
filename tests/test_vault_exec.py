@@ -354,3 +354,93 @@ def test_a_pending_fill_is_not_mistaken_for_a_sold_position(monkeypatch):
     thread.start()
     _t.sleep(0.4)
     assert T.STATE["book"][tok]["position"].closed is False
+
+
+# --- the honeypot check that was missing -------------------------------------
+# The scanner bought a honeypot within seconds of going live. Tax, liquidity and
+# price all looked fine — none of them answer whether the position can be got
+# out of, and only trying to sell does.
+
+def _buy_plan(tokens_out="1000", spend="8"):
+    return {"ok": True, "token": "0xt", "contra": "0xc",
+            "cost": {"buy_amount": tokens_out, "spend_usd": float(spend)}}
+
+
+def test_a_token_that_cannot_be_sold_back_is_refused(monkeypatch):
+    def boom(**kw):
+        raise D.DefinitiveError("no route", status=400)
+
+    monkeypatch.setattr(D, "quicktrade_quote", boom)
+    ok, recovery, why = VX.round_trip_ok(_buy_plan())
+    assert ok is False and recovery == 0.0
+    assert "cannot be sold back" in why
+
+
+def test_a_sell_worth_a_fraction_of_the_buy_is_refused(monkeypatch):
+    # The other honeypot shape: sellable, but the exit returns almost nothing.
+    monkeypatch.setattr(D, "quicktrade_quote",
+                        lambda **kw: {"metadata": {"toNotional": "0.40"}})
+    ok, recovery, why = VX.round_trip_ok(_buy_plan(spend="8"))
+    assert ok is False
+    assert abs(recovery - 0.05) < 1e-9
+    assert "round trip returns 5%" in why
+
+
+def test_a_healthy_round_trip_passes(monkeypatch):
+    monkeypatch.setattr(D, "quicktrade_quote",
+                        lambda **kw: {"metadata": {"toNotional": "7.6"}})
+    ok, recovery, why = VX.round_trip_ok(_buy_plan(spend="8"))
+    assert ok is True and why == ""
+    assert abs(recovery - 0.95) < 1e-9
+
+
+def test_the_sell_is_quoted_for_exactly_what_the_buy_returns(monkeypatch):
+    # Quoting a round number instead would measure a different trade than the
+    # one about to be taken, and honeypots are frequently size-dependent.
+    seen = {}
+
+    def fake(**kw):
+        seen.update(kw)
+        return {"metadata": {"toNotional": "7.6"}}
+
+    monkeypatch.setattr(D, "quicktrade_quote", fake)
+    VX.round_trip_ok(_buy_plan(tokens_out="1493431.0577"))
+    assert seen["qty"] == "1493431.0577"
+    assert seen["side"] == "sell"
+
+
+def test_a_buy_quote_that_hides_its_output_is_refused(monkeypatch):
+    monkeypatch.setattr(D, "quicktrade_quote",
+                        lambda **kw: pytest.fail("nothing to check against"))
+    ok, _r, why = VX.round_trip_ok({"ok": True, "token": "0xt", "contra": "0xc",
+                                    "cost": {}})
+    assert ok is False and "did not say what it returns" in why
+
+
+def test_an_unsettled_buy_is_not_marked_at_zero_and_stopped_out(monkeypatch):
+    # Seen live: a position opened by the scanner has no on-chain balance until
+    # the fill settles, so the mark read zero and exit_decision fired a stop at
+    # -100% against a position that did not exist yet. If the fill lands
+    # mid-way, that stop sells for real.
+    import time as _t
+
+    T = _fresh_terminal()
+    monkeypatch.setattr(D, "quicktrade_quote",
+                        lambda **kw: {"metadata": {"toNotional": "0"}})
+    monkeypatch.setattr(D, "positions", lambda **kw: {"positions": []})
+    monkeypatch.setattr(D, "quicktrade_submit",
+                        lambda **kw: pytest.fail("must not sell an unsettled buy"))
+    tok = "0xunsettled"
+    pos = _pos(cost=8.0)
+    T.STATE["vault"] = "0xv"
+    T.STATE["book"] = {tok: {"position": pos, "decimals": 18, "held": 0.0,
+                             "basis_known": True, "symbol": "U",
+                             "seen_balance": False}}
+    thread = __import__("threading").Thread(
+        target=T._engine, args=(FakeChain({}),),
+        kwargs={"slippage": 0.05, "interval": 0.05}, daemon=True)
+    thread.start()
+    _t.sleep(0.4)
+    assert pos.mark_usd is None                # never marked
+    assert pos.fails == 0                      # not counted as unsellable
+    assert T.STATE["book"][tok]["signal"] == "awaiting fill"

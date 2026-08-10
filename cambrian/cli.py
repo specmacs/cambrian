@@ -263,6 +263,10 @@ def _vault_tick(client, vault, book, guard, *, slippage, VX, quiet=False,
         pos = entry["position"]
         if plan.get("held") is not None:
             entry["held"] = plan["held"]
+        if plan.get("held", 0.0) > 0:
+            entry["seen_balance"] = True
+        if not entry.get("seen_balance", True):
+            continue        # bought, not settled — nothing to mark or decide
         if plan.get("held") == 0.0 and not plan.get("ok"):
             # Gone, not unsellable — sold through another surface.
             entry["position"] = P.apply(pos, "close", 1.0)
@@ -420,6 +424,7 @@ def cmd_terminal(args: argparse.Namespace) -> int:
     _T.STATE["buys_per_hour"] = args.buys_per_hour
     _T.STATE["scan_blocks"] = args.blocks
     _T.STATE["bankroll"] = args.bankroll
+    _T.STATE["min_recovery"] = args.min_recovery
     if args.no_auto_buy:
         _T.STATE["auto_buy"] = False
         print("entries OFF — manage-only")
@@ -1533,6 +1538,10 @@ def build_parser() -> argparse.ArgumentParser:
     tm.add_argument("--blocks", type=int, default=400,
                     help="scan window per sweep (400 blocks = ~40s of chain)")
     tm.add_argument("--bankroll", type=float, default=None)
+    tm.add_argument("--min-recovery", type=float, default=0.75,
+                    dest="min_recovery",
+                    help="fraction of a ticket that must survive an immediate "
+                         "round trip, or the token is refused (default 0.75)")
     tm.set_defaults(func=cmd_terminal)
 
     sl = sub.add_parser("sell", help="sell a position out of the vault")

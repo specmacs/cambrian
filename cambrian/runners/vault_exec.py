@@ -241,6 +241,44 @@ def plan_buy(client, *, token: str, vault: str, usd: float,
             "quote": q, "cost": D.quote_cost(q)}
 
 
+def round_trip_ok(plan: dict, *, min_recovery: float = 0.75) -> tuple[bool, float | None, str]:
+    """Simulate the exit BEFORE the entry. (ok, recovery, why).
+
+    This is `honeypot_ok` from `examples/cambrian_desk.py`, which the packaged
+    gate never had — and its absence bought a honeypot within seconds of the
+    scanner going live. The gate checks tax, liquidity and price; none of those
+    answer the only question that matters, which is whether the position can be
+    got out of at all.
+
+    Quote the buy, then quote selling back **exactly the amount that buy would
+    return**. A honeypot answers the first and refuses the second, or answers
+    both with a sell worth a fraction of the buy. A declared tax of 0% means
+    nothing here: the trap is usually in transfer logic, not in a tax field.
+
+    Cheap — one extra quote per candidate — and it measures the real thing
+    rather than a proxy for it.
+    """
+    cost = plan.get("cost") or {}
+    tokens_out = cost.get("buy_amount")
+    spend = cost.get("spend_usd")
+    if not tokens_out or not spend:
+        return False, None, "buy quote did not say what it returns"
+    try:
+        back = D.quicktrade_quote(target=plan["token"], contra=plan["contra"],
+                                  qty=str(tokens_out), side="sell")
+    except D.DefinitiveError as e:
+        # Buyable but not sellable is the textbook honeypot.
+        return False, 0.0, "cannot be sold back (%s)" % str(e)[:60]
+    out = D.quote_cost(back).get("receive_usd")
+    if not out:
+        return False, 0.0, "sell quote returned nothing"
+    recovery = out / spend
+    if recovery < min_recovery:
+        return False, recovery, "round trip returns %.0f%% (< %.0f%%)" % (
+            recovery * 100, min_recovery * 100)
+    return True, recovery, ""
+
+
 def execute_buy(plan: dict, *, slippage: float = 0.05, confirm: bool = False) -> dict:
     """Submit a plan produced by `plan_buy`. Requires `confirm=True`."""
     if not plan.get("ok"):

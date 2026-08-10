@@ -49,6 +49,10 @@ STATE: dict = {
     "auto_buy": True, "scouting": [], "trace": [], "scan_ms": 0.0,
     "buys_this_hour": [], "last_scan": 0.0, "eth": 0.0,
     "max_usd": 8.0, "max_positions": 3, "buys_per_hour": 6, "scan_blocks": 400,
+    # Fraction of a ticket that must survive an immediate round trip. 0.75 is
+    # the value the original desk used; below it the token is a trap or the tax
+    # is lying.
+    "min_recovery": 0.75,
 }
 
 
@@ -132,6 +136,13 @@ def _engine(client, *, slippage: float, interval: float) -> None:
                 # failures until the rug rule fired an exit against nothing.
                 if plan.get("held", 0.0) > 0:
                     entry["seen_balance"] = True
+                if not entry.get("seen_balance", True):
+                    # Bought, not settled. There is nothing on chain to quote,
+                    # so a mark here reads as zero and fires a stop at -100%
+                    # against a position that does not exist yet. Do not mark
+                    # and do not decide until a balance actually appears.
+                    entry["signal"] = "awaiting fill"
+                    continue
                 if (plan.get("held") == 0.0 and not plan.get("ok")
                         and entry.get("seen_balance", True)):
                     with _lock:
@@ -277,6 +288,18 @@ def _maybe_buy(client, rows, *, vault, usdg, slippage) -> None:
             _event("skip", "%s — %s" % ((r.get("symbol") or token[:10]),
                                         plan.get("why", "")[:80]), token)
             continue
+        # Simulate the EXIT before taking the entry. The gate's tax and
+        # liquidity checks cannot see a transfer-logic trap; only trying to sell
+        # can. This is the check that was missing when the scanner bought a
+        # honeypot in its first seconds.
+        sellable, recovery, why_not = VX.round_trip_ok(
+            plan, min_recovery=STATE["min_recovery"])
+        if not sellable:
+            _event("honeypot", "%s BLOCKED — %s"
+                   % (r.get("symbol") or token[:10], why_not), token)
+            with _lock:
+                STATE.setdefault("bought_ever", set()).add(token)   # never retry
+            continue
         cost = plan["cost"]
         spend = cost.get("spend_usd") or size
         if spend > STATE["max_usd"] * 1.05:
@@ -309,9 +332,10 @@ def _maybe_buy(client, rows, *, vault, usdg, slippage) -> None:
                 "token": token, "pad": r.get("pad") or "?", "agent": "scan",
                 "usd": round(spend, 2), "pnl": None})
             del STATE["fills"][60:]
-        _event("buy", "bought $%.2f of %s (%s, MC $%s)"
+        _event("buy", "bought $%.2f of %s (%s, MC $%s, round trip %.0f%%)"
                % (spend, sym, r.get("pad") or "?",
-                  ("%.0f" % r["market_cap_usd"]) if r.get("market_cap_usd") else "?"),
+                  ("%.0f" % r["market_cap_usd"]) if r.get("market_cap_usd") else "?",
+                  (recovery or 0) * 100),
                token)
         return          # one entry per scan, deliberately
 
