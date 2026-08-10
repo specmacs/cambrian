@@ -272,11 +272,33 @@ PAD_BY_SUFFIX: dict[str, str] = {
 # newer one silently misses launches — FRONG (the confirmed pools.trade flagship)
 # went through v3.0.0, which is why an earlier scan reported it as "not launched
 # via the launcher" at all. Always iterate the whole dict.
+# FOUR deployments exist, not two. The owner's roster numbers them as generations
+# of "Uniswap CCA"; Blockscout source-verifies the live ones as `LiquidityLauncher`.
+# Both names describe the same thing — the CCA product family, whose launcher
+# contract is called LiquidityLauncher — so the generation label is authoritative
+# for ORDER and the contract name for identity.
+#
+# gen4 is the active one (99 logs / 12k blocks); gen1 is nearly retired (2);
+# gen2 and gen3 are DEPLOYED BUT DORMANT — real contracts of the same code family
+# (4,064 and 4,128 bytes) with zero logs across a 72k-block / 2-hour deep scan.
+# They are watched anyway, and that is the whole point: the original sin recorded
+# in this repo was watching one launcher while another still emitted. A dormant
+# deployment that wakes up is exactly how that recurs, and two extra log filters
+# per sweep is nothing against silently losing a pad.
 UNI_LAUNCHERS = {
-    "v3.2.0": "0x0000fffFbe8efe702c8703ae3477ff5de3d319c0",   # 306 dists / 40k blocks
-    "v3.0.0": "0x00004c4ccc709ef590f7c81102c0689f0263d4e9",   # 8 dists / 40k blocks
+    "gen4": "0x0000fffFbe8efe702c8703ae3477ff5de3d319c0",   # ACTIVE — 99 logs/12k
+    "gen3": "0x7a6c474b4dcd35b72203d2b569eafe4c9b5c768e",   # dormant
+    "gen2": "0xe050309b2f42cd5f788ab6ee1a07467770c03bf7",   # dormant
+    "gen1": "0x00004c4ccc709ef590f7c81102c0689f0263d4e9",   # near-retired — 2 logs/12k
 }
-UNI_LAUNCHER = UNI_LAUNCHERS["v3.2.0"]                        # back-compat alias
+# Historical aliases kept so older notes and code still resolve.
+UNI_LAUNCHERS["v3.2.0"] = UNI_LAUNCHERS["gen4"]
+UNI_LAUNCHERS["v3.0.0"] = UNI_LAUNCHERS["gen1"]
+UNI_LAUNCHER = UNI_LAUNCHERS["gen4"]                          # back-compat alias
+
+# Deduplicated, in generation order — iterate THIS, never a single address.
+UNI_LAUNCHER_ADDRESSES = (UNI_LAUNCHERS["gen4"], UNI_LAUNCHERS["gen3"],
+                          UNI_LAUNCHERS["gen2"], UNI_LAUNCHERS["gen1"])
 
 # --- This launcher stack IS pools.trade -------------------------------------
 # pools.trade is Uniswap Labs' own launchpad (live 2026-08-05) and it runs on

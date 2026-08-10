@@ -55,10 +55,23 @@ filter, and whatever emitted it is the factory. Reuse that trick.
 **TWO** Liquidity Launcher deployments are live and both still emit. Watching
 only one silently loses launches.
 
+**FOUR deployments exist, not two.** From the owner's roster, cross-checked live:
+
 ```
-v3.2.0   0x0000fffFbe8efe702c8703ae3477ff5de3d319c0    330 dists / 40k blocks
-v3.0.0   0x00004c4ccc709ef590f7c81102c0689f0263d4e9      7 dists / 40k blocks
+gen4  0x0000fffFbe8efe702c8703ae3477ff5de3d319c0   ACTIVE      99 logs / 12k blocks
+gen3  0x7a6c474b4dcd35b72203d2b569eafe4c9b5c768e   dormant      0 logs / 72k blocks
+gen2  0xe050309b2f42cd5f788ab6ee1a07467770c03bf7   dormant      0 logs / 72k blocks
+gen1  0x00004c4ccc709ef590f7c81102c0689f0263d4e9   near-retired 2 logs / 12k blocks
 ```
+
+The owner numbers these as generations of "Uniswap CCA"; Blockscout source-verifies
+the live ones as `LiquidityLauncher`. Same thing — the CCA product family, whose
+launcher contract carries that name. gen2 and gen3 are real contracts of the same
+code family (4,064 and 4,128 bytes) that have simply never fired in any window
+scanned. **They are watched anyway.** The original sin recorded in this file was
+watching one launcher while another still emitted; a dormant deployment waking up
+is exactly how that recurs, and two extra log filters per sweep costs nothing
+against silently losing a pad. Iterate `UNI_LAUNCHER_ADDRESSES`, never one address.
 
 Event topic0s (keccak of the signatures declared in Uniswap's repos):
 
@@ -495,6 +508,27 @@ Live over 75s: 4 scans, 22 marks, 21 tokens — the cadence split working.
 mechanism at all — plain ERC-20s — which is exactly why v2 was built. Recording it
 as None would leave the gate trusting an absence rather than a certainty. Do not
 "fix" this by failing closed on v1.
+
+### pools.trade was never in the sweep
+
+Found by reconciling the owner's address roster: the scanner discovered pons-v1,
+pons-v2 and flap, and **nothing at all from pools.trade** — 36 launches in a
+20-minute window, completely invisible. Uniswap's own pad, and the one pad that
+mints plain ERC-20s with no per-token creator tax, so it is precisely the flow
+that sails through the 3% gate.
+
+Discovery is off the PoolManager's `Initialize`, filtered to **hookless** pools,
+rather than off the launchers' `TokenCreated`. Two reasons: a v4 pool has no
+address, so `TokenCreated` alone leaves nothing to price against, while
+`Initialize` yields the PoolId in the same read; and hookless is exactly what
+separates launcher launches from other pads sharing the singleton.
+
+`venues.from_v4_pool` prices them from slot0's sqrtPriceX96 via `extsload`, exact
+like the V3 path, with `tax_bps=0` as a known zero. `pool` carries the **PoolId**,
+not an address — which is why nothing tries `getReserves` or `balanceOf` on it.
+
+Live after wiring: **15 tradeable over 1,500 blocks against 5 before**, with
+pools.trade rows at $4.7k–$12.5k market caps and zero tax.
 
 ### The sweep — one command that does the whole job
 

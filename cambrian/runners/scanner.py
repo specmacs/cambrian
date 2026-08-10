@@ -59,6 +59,8 @@ def _discover(client, from_block: int, to_block: int) -> tuple[list[dict], int]:
     out: list[dict] = []
     failures = 0
 
+    weth = rcfg.CONTRACTS["weth"].lower()
+
     logs, f = chunked_logs(client, address=rcfg.PONS_V2["factory"],
                            topics=[rcfg.EVT_PONS_V2_TOKEN_LAUNCHED],
                            from_block=from_block, to_block=to_block)
@@ -68,7 +70,6 @@ def _discover(client, from_block: int, to_block: int) -> tuple[list[dict], int]:
         out.append({"pad": "pons-v2", "token": d["token"], "pool": d["curve"],
                     "quote_token": d["pair_token"], "block": int(lg["blockNumber"], 16)})
 
-    weth = rcfg.CONTRACTS["weth"].lower()
     logs, f = chunked_logs(client, address=rcfg.V2_FACTORY,
                            topics=[rcfg.EVT_V2_PAIR_CREATED],
                            from_block=from_block, to_block=to_block)
@@ -80,6 +81,33 @@ def _discover(client, from_block: int, to_block: int) -> tuple[list[dict], int]:
             continue
         out.append({"pad": "flap", "token": d["token1"] if t0 == weth else d["token0"],
                     "pool": d["pair"], "quote_token": rcfg.CONTRACTS["weth"],
+                    "block": int(lg["blockNumber"], 16)})
+
+    # pools.trade: launches settle into HOOKLESS v4 pools. Discovering them off
+    # the PoolManager's Initialize rather than the launchers' TokenCreated gets
+    # the PoolId in the same read — v4 pools have no address, so TokenCreated
+    # alone would leave nothing to price against. Hooked pools belong to other
+    # pads and are filtered out here.
+    from .uniswap_v4 import INITIALIZE_TOPIC0, decode_initialize
+    native = "0x" + "0" * 40
+    logs, f = chunked_logs(client, address=rcfg.CONTRACTS["pool_manager"],
+                           topics=[INITIALIZE_TOPIC0],
+                           from_block=from_block, to_block=to_block)
+    failures += f
+    for lg in logs:
+        d = decode_initialize(lg)
+        if d["hooks"].lower() != native:
+            continue                      # hooked pool -> a different pad
+        c0, c1 = d["currency0"].lower(), d["currency1"].lower()
+        quote = None
+        if c0 in (weth, native):
+            quote, token, q_is_0 = d["currency0"], d["currency1"], True
+        elif c1 in (weth, native):
+            quote, token, q_is_0 = d["currency1"], d["currency0"], False
+        if quote is None:
+            continue
+        out.append({"pad": "pools-trade", "token": token, "pool": d["pool_id"],
+                    "quote_token": quote, "quote_is_currency0": q_is_0,
                     "block": int(lg["blockNumber"], 16)})
 
     logs, f = chunked_logs(client, address=rcfg.LAUNCHPADS["pons"]["address"],
@@ -103,6 +131,10 @@ def _resolve(client, hit: dict) -> V.Venue | None:
                                   quote_token=hit["quote_token"])
         if hit["pad"] == "flap":
             return V.from_flap(client, token=hit["token"], pair=hit["pool"])
+        if hit["pad"] == "pools-trade":
+            return V.from_v4_pool(client, token=hit["token"], pool_id=hit["pool"],
+                                  quote_token=hit["quote_token"],
+                                  quote_is_currency0=hit["quote_is_currency0"])
         # Pons v1 launches into a Uniswap **V3** pool. Reading it with the V2
         # reader returns nothing, which failed 11 of 11 live launches as "no
         # price" — the gate was working, the resolver was not.

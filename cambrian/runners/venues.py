@@ -368,3 +368,44 @@ def _u_addr(client, to: str, selector: str) -> str | None:
     if not raw or len(raw) < 42:
         return None
     return "0x" + raw[-40:]
+
+
+# --- Uniswap v4 (pools.trade) ------------------------------------------------
+
+def from_v4_pool(client, *, token: str, pool_id: str, quote_token: str,
+                 quote_is_currency0: bool, kind: str = POOLS_TRADE) -> Venue:
+    """A hookless v4 pool — where pools.trade launches settle.
+
+    v4 has no pool address: state lives in the PoolManager singleton keyed by a
+    bytes32 PoolId, read through `extsload`. Price comes from slot0's
+    sqrtPriceX96 and is exact; like V3 there are no constant-product reserves, so
+    execution cost is Flash's job.
+
+    `pool` carries the PoolId rather than an address, which is correct for v4 and
+    is why nothing here tries `getReserves` or `balanceOf` on it.
+    """
+    from .uniswap_v4 import read_pool_liquidity_sqrt
+    sqrt_price = None
+    try:
+        _liq, sqrt_price = read_pool_liquidity_sqrt(
+            client, rcfg.CONTRACTS["pool_manager"], pool_id)
+    except Exception:
+        sqrt_price = None
+    qdec = _decimals(client, quote_token)
+    tdec = _decimals(client, token)
+    spot = None
+    if sqrt_price:
+        ratio = (sqrt_price / (1 << 96)) ** 2      # currency1 per currency0, raw
+        if ratio > 0:
+            spot = (1 / ratio) if quote_is_currency0 else ratio
+            spot *= 10 ** (tdec - qdec)
+    return Venue(
+        kind=kind, token=token, pool=pool_id, quote_token=quote_token,
+        quote_decimals=qdec, token_decimals=tdec,
+        pricing_reserves=None, real_backing_quote=None,
+        # pools.trade charges a pool fee, not a per-token creator tax: it is
+        # Uniswap's own launchpad and mints plain ERC-20s. Known zero, like v1.
+        fee_bps=None, tax_bps=0,
+        total_supply=_u(client, token, "0x18160ddd"),
+        spot_price_quote_per_token=spot,
+    )
