@@ -272,6 +272,241 @@ def cmd_watch(args: argparse.Namespace) -> int:
     return 0
 
 
+
+def cmd_trade(args: argparse.Namespace) -> int:
+    """Prepare (and optionally submit) ONE real trade. Guarded, small, explicit.
+
+    Two phases on purpose. Without --signature this only PREPARES: it quotes,
+    validates, and prints the EIP-712 payload for an external signer. With a
+    signature it submits. Nothing in this process ever holds a key.
+    """
+    from .chain import ChainClient
+    from .runners import config as rcfg
+    from .runners import execution as X
+    from .runners import router as R
+    from .runners import sizing as S
+    from .runners import stock_tokens as ST
+    from .runners import venues as V
+    from .runners.scanner import _resolve, sweep
+
+    if not args.funder or not args.funder.startswith("0x"):
+        print("--funder <your wallet address> is required")
+        return 2
+    client = ChainClient()
+    eth = args.weth_usd or X.live_eth_usd(fallback=rcfg.WETH_USD)
+    latest = client.block_number()
+
+    row = None
+    if args.token:
+        result = sweep(client, from_block=max(latest - args.blocks, 0), to_block=latest,
+                       quote_price_usd=eth, bankroll_usd=args.bankroll)
+        for r in result["rows"]:
+            if (r.get("token") or "").lower() == args.token.lower():
+                row = r
+                break
+        if row is None:
+            print("token %s not found in the last %d blocks" % (args.token, args.blocks))
+            return 1
+    else:
+        result = sweep(client, from_block=max(latest - args.blocks, 0), to_block=latest,
+                       quote_price_usd=eth, bankroll_usd=args.bankroll)
+        ok = [r for r in result["rows"] if r.get("ok")]
+        if not ok:
+            print("nothing cleared the gate in the last %d blocks" % args.blocks)
+            return 1
+        row = ok[0]
+
+    if not row.get("ok"):
+        print("BLOCKED: %s" % "; ".join(row.get("reasons") or ["unknown"]))
+        return 1
+
+    venue = _resolve(client, row)
+    if venue is None:
+        print("could not resolve a venue for %s" % row["token"])
+        return 1
+    route = X.route_for(venue)
+    size_usd = min(row.get("size_usd") or 0.0, args.max_usd)
+    if size_usd <= 0:
+        print("no size")
+        return 1
+
+    sym = ST.symbol_for(venue.quote_token) or "ETH"
+    print("")
+    print("  token       %s  (%s)" % (row["token"], row.get("pad")))
+    print("  venue       %s   route %s" % (venue.kind, route))
+    print("  quote asset %s" % sym)
+    print("  market cap  $%.0f" % (row.get("market_cap_usd") or 0))
+    print("  tax         %s" % (("%.1f%%" % (venue.tax_bps / 100))
+                                if venue.tax_bps is not None else "n/a"))
+    print("  size        $%.2f  (capped at --max-usd $%.2f)" % (size_usd, args.max_usd))
+    print("  entry route %s" % R.describe(R.plan_route(venue, settlement_asset=R.USDG)))
+    print("  exit route  %s" % R.describe(R.exit_route(venue, settlement_asset=R.USDG)))
+
+    if route == X.ROUTE_CURVE:
+        # A curve is not on Flash. Emit calldata for an external signer instead.
+        from .runners import curve_exec as CX
+        qin = int(size_usd / (ST.quote_price_usd(
+            venue.quote_token, weth_usd=eth, usdg=rcfg.CONTRACTS.get("usdg"),
+            weth=rcfg.CONTRACTS.get("weth")) or eth) * 10 ** venue.quote_decimals)
+        txs = CX.build_buy(venue, quote_in=qin, recipient=args.funder,
+                           client=client, owner=args.funder)
+        print("\n  CURVE-DIRECT — Flash does not route this. Send these in order:")
+        for i, tx in enumerate(txs, 1):
+            print("   %d. %s" % (i, tx.note))
+            print("      to    %s" % tx.to)
+            print("      value %d" % tx.value)
+            print("      data  %s" % tx.data)
+        print("\n  minOut is baked into the calldata at %d bps slippage."
+              % CX.DEFAULT_SLIPPAGE_BPS)
+        return 0
+
+    contra = venue.quote_token
+    if not contra or contra.lower() == V.NATIVE_ETH:
+        contra = X.NATIVE_SENTINEL
+    qty = size_usd / (ST.quote_price_usd(contra, weth_usd=eth,
+                                         usdg=rcfg.CONTRACTS.get("usdg"),
+                                         weth=rcfg.CONTRACTS.get("weth")) or eth)
+    try:
+        prepared = X.prepare(target=row["token"], contra=contra, qty="%.8f" % qty,
+                             funder=args.funder, max_slippage=args.max_slippage,
+                             max_price_impact=args.max_slippage,
+                             max_loss_pct=args.max_loss_pct)
+    except X.FlashError as e:
+        print("\n  REFUSED: %s" % e)
+        return 1
+
+    print("\n  quote %s" % prepared.quote_id)
+    print("  spend $%.2f -> receive $%.2f  (%.2f%% on the leg)"
+          % (prepared.spend_notional_usd or 0, prepared.receive_notional_usd or 0,
+             prepared.slippage_vs_quote_pct or 0))
+    for w in prepared.warnings:
+        print("  WARNING: %s" % w)
+    if prepared.wrap_tx:
+        print("\n  1. WRAP native ETH first:")
+        print("     to   %s" % prepared.wrap_tx.get("to"))
+        print("     data %s" % prepared.wrap_tx.get("data"))
+    if prepared.approve_tx:
+        print("\n  2. APPROVE the settlement contract (once per token):")
+        print("     to   %s" % prepared.approve_tx.get("to"))
+        print("     data %s" % prepared.approve_tx.get("data"))
+    if not args.signature:
+        print("\n  3. SIGN this EIP-712 payload with %s:" % args.funder)
+        print(prepared.order_typed_data)
+        print("\n  then re-run the same command adding:  --signature 0x<sig> --yes")
+        print("  NOTHING HAS BEEN SUBMITTED.")
+        return 0
+    if not args.yes:
+        print("\n  --signature given but --yes missing. Refusing to submit.")
+        return 2
+    out = X.submit(prepared, funder=args.funder, signature=args.signature,
+                   confirm=True)
+    print("\n  SUBMITTED: %s" % json.dumps(out)[:400])
+    return 0
+
+
+
+def cmd_vault(args: argparse.Namespace) -> int:
+    """Show the Definitive vault address to fund, and what is in it."""
+    from .runners import definitive as D
+    try:
+        addr = D.deposit_address(D.CHAIN)
+    except D.DefinitiveError as e:
+        print("  %s" % e)
+        if e.status == 401:
+            print("  -> check DEFINITIVE_API_KEY (dpka_...) and "
+                  "DEFINITIVE_API_SECRET (dpks_...)")
+        return 1
+    print("\n  Robinhood Chain vault: %s" % addr)
+    print("  Send ETH or USDG here. The vault is created on demand per chain.")
+    try:
+        pos = D.positions()
+        rows = pos.get("positions") or pos.get("data") or []
+        print("\n  %d position(s)" % len(rows))
+        for r in rows[:15]:
+            print("   %-12s %-18s %s" % (r.get("symbol") or "?",
+                                         r.get("balance") or r.get("amount") or "?",
+                                         r.get("notional") or ""))
+    except D.DefinitiveError as e:
+        print("  positions unavailable: %s" % e)
+    return 0
+
+
+def cmd_trade_vault(args: argparse.Namespace) -> int:
+    """Quote and (with --yes) execute ONE trade from the Definitive vault.
+
+    No wallet, no EIP-712, no approve: on this API the key IS the authorization,
+    which is exactly why --yes is mandatory and --max-usd is a hard cap.
+    """
+    from .chain import ChainClient
+    from .runners import config as rcfg
+    from .runners import definitive as D
+    from .runners import execution as X
+    from .runners import stock_tokens as ST
+    from .runners import venues as V
+    from .runners.scanner import _resolve, sweep
+
+    client = ChainClient()
+    eth = args.weth_usd or X.live_eth_usd(fallback=rcfg.WETH_USD)
+    latest = client.block_number()
+    result = sweep(client, from_block=max(latest - args.blocks, 0), to_block=latest,
+                   quote_price_usd=eth, bankroll_usd=args.bankroll)
+    rows = [r for r in result["rows"] if r.get("ok")]
+    if args.token:
+        rows = [r for r in result["rows"]
+                if (r.get("token") or "").lower() == args.token.lower()]
+    if not rows:
+        print("nothing cleared the gate in the last %d blocks" % args.blocks)
+        return 1
+    row = rows[0]
+    if not row.get("ok"):
+        print("BLOCKED: %s" % "; ".join(row.get("reasons") or ["unknown"]))
+        return 1
+    venue = _resolve(client, row)
+    size_usd = min(row.get("size_usd") or 0.0, args.max_usd)
+    if size_usd <= 0:
+        print("no size — check RH_BANKROLL_USD / RH_MIN_BUY_USD for a small wallet")
+        return 1
+
+    contra = args.contra or rcfg.CONTRACTS["weth"]
+    qprice = ST.quote_price_usd(contra, weth_usd=eth,
+                                usdg=rcfg.CONTRACTS.get("usdg"),
+                                weth=rcfg.CONTRACTS.get("weth")) or eth
+    qty = size_usd / qprice
+    print("\n  token      %s  (%s)" % (row["token"], row.get("pad")))
+    print("  market cap $%.0f   tax %s" % (
+        row.get("market_cap_usd") or 0,
+        ("%.1f%%" % (venue.tax_bps / 100)) if venue and venue.tax_bps is not None else "n/a"))
+    print("  spending   %.8f of %s  (~$%.2f, capped at $%.2f)"
+          % (qty, contra, size_usd, args.max_usd))
+    try:
+        q = D.quicktrade_quote(target=row["token"], contra=contra,
+                               qty="%.8f" % qty, side="buy")
+    except D.DefinitiveError as e:
+        print("\n  quote failed (%s): %s" % (e.status, e))
+        return 1
+    c = D.quote_cost(q)
+    print("\n  quote %s" % (c["quote_id"] or "-"))
+    print("  spend $%s -> receive $%s  (%s on the leg)" % (
+        c["spend_usd"], c["receive_usd"],
+        ("%.2f%%" % c["loss_pct"]) if c["loss_pct"] is not None else "?"))
+    print("  price impact %s   fee $%s   minOut %s"
+          % (c["price_impact"], c["fee_usd"], c["min_out"]))
+    for w in c["warnings"]:
+        print("  WARNING: %s" % w)
+    if c["loss_pct"] is not None and c["loss_pct"] > args.max_loss_pct:
+        print("\n  REFUSED: leg loses %.2f%% (> %.1f%% limit)"
+              % (c["loss_pct"], args.max_loss_pct))
+        return 1
+    if not args.yes:
+        print("\n  NOT SUBMITTED. Re-run with --yes to execute this trade.")
+        return 0
+    out = D.quicktrade_submit(target=row["token"], contra=contra,
+                              qty="%.8f" % qty, side="buy",
+                              quote_id=c["quote_id"], confirm=True)
+    print("\n  SUBMITTED: %s" % json.dumps(out)[:400])
+    return 0
+
+
 def cmd_scan_base(args: argparse.Namespace) -> int:
     from .feeds.cambrian_api import CambrianClient, CambrianError
     from . import base_config
@@ -855,6 +1090,36 @@ def build_parser() -> argparse.ArgumentParser:
     wt.add_argument("--seconds", type=float, default=None,
                     help="stop after N seconds (default: run until interrupted)")
     wt.set_defaults(func=cmd_watch)
+
+    td = sub.add_parser("trade",
+                        help="prepare (and with a signature, submit) ONE real trade")
+    td.add_argument("--funder", required=True, help="your wallet address")
+    td.add_argument("--token", default=None, help="specific token (default: best candidate)")
+    td.add_argument("--max-usd", type=float, default=15.0, dest="max_usd",
+                    help="hard cap on this trade (default 15)")
+    td.add_argument("--bankroll", type=float, default=None)
+    td.add_argument("--blocks", type=int, default=1500)
+    td.add_argument("--weth-usd", type=float, default=None, dest="weth_usd")
+    td.add_argument("--max-slippage", type=float, default=0.05, dest="max_slippage")
+    td.add_argument("--max-loss-pct", type=float, default=10.0, dest="max_loss_pct")
+    td.add_argument("--signature", default=None, help="EIP-712 signature from your wallet")
+    td.add_argument("--yes", action="store_true", help="required to actually submit")
+    td.set_defaults(func=cmd_trade)
+
+    vt = sub.add_parser("vault", help="show the Definitive vault address and positions")
+    vt.set_defaults(func=cmd_vault)
+
+    tv = sub.add_parser("trade-vault",
+                        help="quote/execute ONE trade from the Definitive vault")
+    tv.add_argument("--max-usd", type=float, default=8.0, dest="max_usd")
+    tv.add_argument("--token", default=None)
+    tv.add_argument("--contra", default=None, help="asset to spend (default WETH)")
+    tv.add_argument("--bankroll", type=float, default=None)
+    tv.add_argument("--blocks", type=int, default=1500)
+    tv.add_argument("--weth-usd", type=float, default=None, dest="weth_usd")
+    tv.add_argument("--max-loss-pct", type=float, default=10.0, dest="max_loss_pct")
+    tv.add_argument("--yes", action="store_true", help="required to execute")
+    tv.set_defaults(func=cmd_trade_vault)
 
     fd = sub.add_parser("field",
                         help="best APY across the whole field (LP + lending), ranked")
