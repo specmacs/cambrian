@@ -144,6 +144,30 @@ def mark(pos: Position, venue: V.Venue, *, quote_price_usd: float,
     return pos
 
 
+def mark_from_exit_quote(pos: Position, value_usd: float | None) -> Position:
+    """Mark a position at what a real sell quote says it would pay.
+
+    For a position held in an execution venue's own account, this is strictly
+    better than `mark()`: it needs no pool, no reserves and no venue resolution,
+    and the number IS the exit price rather than a model of it — tax, route and
+    the slippage of this exact size are all already inside it. So `mark_is_exact`
+    is True, not aspirationally but by construction.
+
+    `None` means the venue would not quote a sell, which is the same unsellable
+    signal `mark()` treats as a rug: fails increments and the mark goes to zero.
+    Preserving the last good mark is how a honeypot renders as a winner.
+    """
+    if value_usd is None:
+        pos.fails += 1
+        pos.mark_usd = 0.0
+        return pos
+    pos.fails = 0
+    pos.mark_usd = value_usd
+    pos.mark_is_exact = True
+    pos.peak_usd = max(pos.peak_usd, value_usd)
+    return pos
+
+
 def exit_decision(pos: Position, *, liquidity_usd: float | None = None,
                   now: float | None = None) -> tuple[str | None, float, str]:
     """(action, fraction, why) — action is 'close', 'trim' or None.

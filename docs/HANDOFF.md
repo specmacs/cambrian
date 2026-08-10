@@ -790,6 +790,40 @@ unsellable xN -> stop -> trailing stop -> profit rungs -> liq collapse -> time s
 The rungs never sum to 1.0, so a moon bag always survives; the trailing stop
 (arm 1.35x, give 22%) is what lets a winner run past them.
 
+## Exit EXECUTION — wired, exit-only (`runners/vault_exec.py`)
+
+The policy in `exit_decision` was complete for a long time and had nothing to
+submit through. It does now.
+
+**Marking a vault position needs no venue at all.** `positions.mark_from_exit_quote`
+takes what a real Definitive sell quote would pay. That is strictly better than
+`mark()` for anything held in the execution venue's own account: no pool, no
+reserves, no resolution, and the number IS the exit price rather than a model of
+one — route, tax and this exact size's slippage are already inside it. The thing
+that decides and the thing that would execute are the same call, so they cannot
+disagree. A refusal to quote is the unsellable signal the rug rule keys off.
+
+**`adopt()` builds the book from what the vault actually holds.** A loop that
+only knows about fills it personally saw will watch a hand-bought position go to
+zero without ever firing a stop — the worst failure available here. Cost basis
+comes from the venue's accounting when reported (directly, or `notional - pnl`);
+otherwise the current exit value stands in and `basis_known` is False, which
+`watch` prints in capitals, because every percentage rule then measures from
+adoption rather than entry and that is a materially different thing.
+
+**`watch --execute` is EXIT-ONLY and opt-in.** Selling what you already hold
+cannot increase exposure, so an unattended exit is the safe half of automation.
+Unattended *entry* is not, and remains a separate decision that has not been
+made.
+
+**The book updates on submit, not on fill** — deliberately breaking `live.py`'s
+usual rule. An intent stays true until the position changes, so waiting for
+confirmation re-sells every tick. `ExitGuard` (60s per token) is the backstop if
+a submit silently fails, and a *refused* exit starts the cooldown too, so a venue
+that cannot quote is not hammered forever.
+
+Manual half: `cambrian sell --token 0x.. --pct 50 [--yes]`.
+
 ## Exit policy
 
 Priority order in `exit_decision()`: stop → trailing stop → profit rungs →

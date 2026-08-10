@@ -233,6 +233,62 @@ def cmd_sweep(args: argparse.Namespace) -> int:
 
 
 
+def _vault_tick(client, vault, book, guard, *, slippage, VX, quiet=False):
+    """Mark everything the vault holds at its real sell quote, then act.
+
+    One quote per position per tick does double duty: it IS the mark, and a
+    refusal to quote is the unsellable signal the rug rule keys off. So the
+    thing that decides is the same thing that would execute — there is no model
+    standing between the two that could disagree.
+    """
+    from .runners import positions as P
+
+    for token, entry in list(book.items()):
+        pos = entry["position"]
+        if pos.closed:
+            continue
+        plan = VX.plan_sell(client, token=token, vault=vault)
+        if plan.get("held") is not None:
+            entry["held"] = plan["held"]
+            try:
+                pos.tokens = client.erc20_balance_of(token, vault)
+            except Exception:
+                pass
+        value = (plan.get("cost") or {}).get("receive_usd") if plan.get("ok") else None
+        P.mark_from_exit_quote(pos, value)
+        action, fraction, why = P.exit_decision(pos)
+        pnl = (100 * (pos.mark_usd / pos.cost_usd - 1)) if pos.cost_usd else 0.0
+        if not quiet:
+            print("  MARK %-12s %-6s $%-7.2f cost $%-7.2f %+7.1f%%  %s"
+                  % (token[:12], entry.get("symbol") or "", pos.mark_usd or 0.0,
+                     pos.cost_usd, pnl, why if action else ""), flush=True)
+        if not action:
+            continue
+        if not guard.allow(token):
+            continue
+        sell = VX.plan_sell(client, token=token, vault=vault, fraction=fraction)
+        if not sell["ok"]:
+            print("  EXIT FAILED %-12s %-20s — %s" % (token[:12], why, sell["why"]),
+                  flush=True)
+            guard.note(token)
+            continue
+        try:
+            out = VX.execute_sell(sell, slippage=slippage, confirm=True)
+        except Exception as e:
+            print("  EXIT FAILED %-12s — submit: %s" % (token[:12], str(e)[:80]),
+                  flush=True)
+            guard.note(token)
+            continue
+        guard.note(token)
+        # Applied on submit, not on fill: the intent stays true until the
+        # position changes, so waiting for confirmation re-sells every tick.
+        # The cooldown is the backstop if this submit never lands.
+        entry["position"] = P.apply(pos, action, fraction)
+        print("  EXIT SENT   %-12s %3.0f%% — %-22s (%+.1f%%)  %s"
+              % (token[:12], fraction * 100, why, pnl, json.dumps(out)[:80]),
+              flush=True)
+
+
 def cmd_watch(args: argparse.Namespace) -> int:
     """Run the desk live: discover on one cadence, mark and exit on a faster one."""
     import time as _t
@@ -245,9 +301,40 @@ def cmd_watch(args: argparse.Namespace) -> int:
     client = ChainClient()
     state = L.LiveState()
     eth = args.weth_usd or live_eth_usd(fallback=rcfg.WETH_USD)
-    print("watching — scan %gs / mark %gs — ETH $%.2f — DRY RUN (no signing)"
-          % (L.SCAN_INTERVAL_S, L.MARK_INTERVAL_S, eth))
+
+    # Execution is opt-in and EXIT-ONLY. Selling what you already hold cannot
+    # increase exposure, so an exit firing unattended is the safe half of
+    # automation; entering unattended is not, and stays a separate decision.
+    vault = guard = VX = None
+    if args.execute:
+        import os
+
+        from .runners import vault_exec as VX
+        wallet = args.wallet or os.getenv("RH_WALLET") or os.getenv("DEGEN_WALLET")
+        if not wallet:
+            print("--execute needs --wallet (or $env:RH_WALLET) to find the vault")
+            return 2
+        try:
+            vault = VX.vault_address(wallet)
+        except Exception as e:
+            print("vault lookup failed: %s" % e)
+            return 1
+        guard = VX.ExitGuard()
+        book = VX.adopt(client, vault)
+        print("adopted %d position(s) from the vault:" % len(book))
+        for tok, e in book.items():
+            print("   %-12s %-8s $%.2f basis%s"
+                  % (tok[:12], e.get("symbol") or "", e["position"].cost_usd,
+                     "" if e["basis_known"] else "  (ASSUMED — no cost basis "
+                     "reported; TP/SL measure from NOW, not from entry)"))
+        if not book:
+            print("   (none — nothing to manage)")
+    mode = ("LIVE EXITS -> vault %s" % vault[:10]) if args.execute \
+        else "DRY RUN (no signing)"
+    print("watching — scan %gs / mark %gs — ETH $%.2f — %s"
+          % (L.SCAN_INTERVAL_S, L.MARK_INTERVAL_S, eth, mode))
     deadline = _t.time() + args.seconds if args.seconds else None
+    last_vault_tick = 0.0
     try:
         while deadline is None or _t.time() < deadline:
             scan_due, mark_due = L.due(state)
@@ -265,12 +352,60 @@ def cmd_watch(args: argparse.Namespace) -> int:
             out = L.format_tick(fresh, intents, state)
             if out:
                 print(out, flush=True)
+            if args.execute and (_t.time() - last_vault_tick) >= args.mark_interval:
+                last_vault_tick = _t.time()
+                try:
+                    _vault_tick(client, vault, book, guard, VX=VX,
+                                slippage=args.max_slippage, quiet=args.quiet)
+                except Exception as e:      # never let a mark error kill the loop
+                    print("  vault tick error: %s" % str(e)[:120], flush=True)
             _t.sleep(min(L.MARK_INTERVAL_S, 1.0))
     except KeyboardInterrupt:
         print("\nstopped")
     print("%d scans, %d marks, %d tokens seen" % (state.scans, state.marks, len(state.seen)))
     return 0
 
+
+
+def cmd_sell(args: argparse.Namespace) -> int:
+    """Sell a position out of the vault — the other half of a round trip."""
+    import os
+
+    from .chain import ChainClient
+    from .runners import definitive as D
+    from .runners import vault_exec as VX
+
+    wallet = args.wallet or os.getenv("RH_WALLET") or os.getenv("DEGEN_WALLET")
+    if not wallet:
+        print("\n  need --wallet (or $env:RH_WALLET) to find the vault")
+        return 2
+    try:
+        vault = VX.vault_address(wallet)
+    except D.DefinitiveError as e:
+        print("\n  vault lookup failed (%s): %s" % (e.status, e))
+        return 1
+    client = ChainClient()
+    plan = VX.plan_sell(client, token=args.token, vault=vault,
+                        fraction=args.pct / 100.0, contra=args.contra)
+    print("\n  vault    %s" % vault)
+    print("  holding  %s of %s" % (plan.get("held"), args.token))
+    if not plan["ok"]:
+        print("\n  cannot sell: %s" % plan["why"])
+        if plan.get("raw"):
+            print("  raw: %s" % plan["raw"][:400])
+        return 1
+    c = plan["cost"]
+    print("  selling  %s  (%g%%) for %s" % (plan["qty"], args.pct, plan["contra"]))
+    print("\n  receive $%s   impact %s   minOut %s"
+          % (c["receive_usd"], c["price_impact"], c["min_out"]))
+    for w in c["warnings"]:
+        print("  WARNING: %s" % w)
+    if not args.yes:
+        print("\n  NOT SUBMITTED. Re-run with --yes to sell.")
+        return 0
+    out = VX.execute_sell(plan, slippage=args.max_slippage, confirm=True)
+    print("\n  SUBMITTED: %s" % json.dumps(out)[:400])
+    return 0
 
 
 def cmd_trade(args: argparse.Namespace) -> int:
@@ -1296,7 +1431,28 @@ def build_parser() -> argparse.ArgumentParser:
     wt.add_argument("--weth-usd", type=float, default=None, dest="weth_usd")
     wt.add_argument("--seconds", type=float, default=None,
                     help="stop after N seconds (default: run until interrupted)")
+    wt.add_argument("--execute", action="store_true",
+                    help="actually submit exits (TP/SL/trailing). EXIT-ONLY: "
+                         "never opens a position")
+    wt.add_argument("--wallet", default=None, help="your wallet, to find the vault")
+    wt.add_argument("--max-slippage", type=float, default=0.05, dest="max_slippage",
+                    help="slippage tolerance on exits (0.05 = 5%%)")
+    wt.add_argument("--mark-interval", type=float, default=10.0,
+                    dest="mark_interval",
+                    help="seconds between vault sell-quote marks (default 10)")
+    wt.add_argument("--quiet", action="store_true",
+                    help="only print exits, not every mark")
     wt.set_defaults(func=cmd_watch)
+
+    sl = sub.add_parser("sell", help="sell a position out of the vault")
+    sl.add_argument("--token", required=True)
+    sl.add_argument("--pct", type=float, default=100.0,
+                    help="percent of the held balance to sell (default 100)")
+    sl.add_argument("--contra", default=None, help="asset to receive (default USDG)")
+    sl.add_argument("--wallet", default=None)
+    sl.add_argument("--max-slippage", type=float, default=0.05, dest="max_slippage")
+    sl.add_argument("--yes", action="store_true", help="required to execute")
+    sl.set_defaults(func=cmd_sell)
 
     td = sub.add_parser("trade",
                         help="prepare (and with a signature, submit) ONE real trade")
