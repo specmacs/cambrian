@@ -142,14 +142,33 @@ def request(path: str, *, method: str = "GET", body: dict | None = None,
 
 # --- portfolio ---------------------------------------------------------------
 
-def deposit_address(chain: str = CHAIN, **kw) -> str | None:
-    """The vault address to fund. Vaults are created on demand per chain."""
-    out = request("/v2/portfolio/address/%s" % chain, **kw)
-    return out.get("address") or (out.get("data") or {}).get("address") or None
+def deposit_address(chain: str = CHAIN, *, wallet_address: str,
+                    **kw) -> tuple[str | None, str | None]:
+    """The vault address to fund. Vaults are created on demand per chain.
+
+    `wallet_address` is **required** and is YOUR wallet — the one that will send
+    the deposit — not the vault's. Omitting it returns a 400 ZodError naming
+    `walletAddress`, which is how this was found: the signature was already
+    correct and the request reached body validation.
+
+    Returns (address, vaultId).
+    """
+    out = request("/v2/portfolio/address/%s" % chain,
+                  query={"walletAddress": wallet_address}, **kw)
+    data = out if "address" in out else (out.get("data") or {})
+    return data.get("address"), data.get("vaultId")
 
 
-def positions(**kw) -> dict:
-    return request("/v2/portfolio/positions", **kw)
+def positions(*, limit: int | None = None, cursor: str | None = None,
+              include_dust: bool = False, **kw) -> dict:
+    query: dict = {}
+    if limit is not None:
+        query["limit"] = str(limit)
+    if cursor:
+        query["cursor"] = cursor
+    if include_dust:
+        query["includeDustBalances"] = "true"
+    return request("/v2/portfolio/positions", query=query or None, **kw)
 
 
 def portfolio(**kw) -> dict:
@@ -167,9 +186,20 @@ def quicktrade_quote(*, target: str, contra: str, qty: str,
 
 
 def quicktrade_submit(*, target: str, contra: str, qty: str, side: str = "buy",
-                      chain: str = CHAIN, quote_id: str | None = None,
+                      chain: str = CHAIN, slippage_tolerance: str | None = None,
+                      display_asset_price: str | None = None,
+                      seconds_to_expire: int | None = None,
                       confirm: bool = False, **kw) -> dict:
     """EXECUTE a trade from the vault. Requires `confirm=True`.
+
+    The path is `/v2/portfolio/quicktrade` — there is no `/submit` sibling, and
+    no quote ID is threaded through: QuickTrade re-quotes and executes
+    atomically, which is why it is the right primitive here. A quote taken first
+    is a preview for the operator, not an input to this call.
+
+    `slippage_tolerance` ("0.01" = 1%) is price protection and is passed on every
+    call the desk makes — the default is 1%, which is tighter than a memecoin
+    launch tolerates, so leaving it implicit would silently fail trades.
 
     This is the call that spends real money, and unlike the Flash path there is
     no wallet signature standing between the key and the fill — the key IS the
@@ -179,9 +209,18 @@ def quicktrade_submit(*, target: str, contra: str, qty: str, side: str = "buy",
         raise DefinitiveError("refusing to submit without confirm=True")
     body: dict = {"chain": chain, "targetAsset": target, "contraAsset": contra,
                   "qty": str(qty), "orderSide": side}
-    if quote_id:
-        body["quoteId"] = quote_id
-    return request("/v2/portfolio/quicktrade/submit", method="POST", body=body, **kw)
+    if slippage_tolerance is not None:
+        body["slippageTolerance"] = str(slippage_tolerance)
+    if display_asset_price is not None:
+        body["displayAssetPrice"] = str(display_asset_price)
+    if seconds_to_expire is not None:
+        body["secondsToExpire"] = int(seconds_to_expire)
+    return request("/v2/portfolio/quicktrade", method="POST", body=body, **kw)
+
+
+def order(order_id: str, **kw) -> dict:
+    """State of a submitted order. QuickTrade returns only an orderId."""
+    return request("/v2/portfolio/orders/%s" % order_id, **kw)
 
 
 def quote_cost(q: dict) -> dict:
@@ -201,6 +240,11 @@ def quote_cost(q: dict) -> dict:
         "price_impact": _f(meta.get("estimatedPriceImpact")),
         "fee_usd": _f(meta.get("estimatedFeeNotional")),
         "min_out": meta.get("minAmountOut"),
+        "min_out_usd": _f(meta.get("minAmountOutNotional")),
+        "buy_amount": meta.get("buyAmount"),
+        "sell_amount": meta.get("sellAmount"),
+        "price": _f(meta.get("price")),
+        "marketable": meta.get("isMarketable"),
         "warnings": tuple(meta.get("warnings") or ()),
         "quote_id": ((q.get("quote") or {}).get("quote") or {}).get("id"),
     }

@@ -344,6 +344,33 @@ an ERC-20 called AAPL and pair a launch against it; that launch would look
 stock-backed while its quote asset is worthless — and would inherit the looser
 tax ceiling. `is_stock_token()` checks the registry, never the name.
 
+### Definitive Client API — endpoint shapes, verified against the real docs
+
+**The signature implementation is CONFIRMED CORRECT.** A live call came back
+`400 ZodError: walletAddress Required`, which only happens after auth passes and
+the request reaches body validation. HMAC-SHA256, the prehash format, the
+`dpks_` strip, JSON-quoted header values, compact body serialisation — all of it
+is right. That was the last unverified piece of the execution path.
+
+The *shapes* were wrong, and the docs are at `ddp.definitive.fi` (page list at
+`/api/portfolio-info/positions`; `WebFetch` 404s on them, plain `curl` works).
+Corrections now in `runners/definitive.py`:
+
+- `GET /v2/portfolio/address/{chain}` needs **`?walletAddress=0x...`**, and it is
+  YOUR wallet — the address that will send the deposit, not the vault's. Returns
+  `{vaultId, address}`. Vaults are auto-created per chain.
+- Execution is `POST /v2/portfolio/quicktrade` — **there is no `/submit`
+  sibling**, and no `quoteId` is threaded in. QuickTrade re-quotes and executes
+  atomically, so a quote is an operator preview, not an input.
+- `slippageTolerance` defaults to **1%**, which a fresh launch will not fill
+  inside. The desk passes it explicitly (5%) on every submit.
+- `chain: "robinhood"` is on the published supported-networks list.
+- `qty` is documented only as "Amount to trade", and Definitive's own two
+  examples read inconsistently about whether it denominates the target or the
+  contra asset. Do not guess: `trade-vault` quotes first and **refuses if
+  `metadata.fromNotional` exceeds the ticket cap**, so backwards units cost a
+  refused trade rather than an oversized one.
+
 ### Execution — Definitive Flash
 
 `runners/execution.py`. Flow from Flash's OpenAPI spec (`/v1/openapi.json`, v2.0.0):

@@ -407,9 +407,20 @@ def cmd_trade(args: argparse.Namespace) -> int:
 
 def cmd_vault(args: argparse.Namespace) -> int:
     """Show the Definitive vault address to fund, and what is in it."""
+    import os
+
     from .runners import definitive as D
+    # YOUR wallet, not the vault's — the endpoint wants the address that will
+    # send the deposit. It is not a secret, so the shell is a fine place for it.
+    wallet = args.wallet or os.getenv("RH_WALLET") or os.getenv("DEGEN_WALLET")
+    if not wallet:
+        print("\n  need your own wallet address (the one you will send from):")
+        print("    python -m cambrian vault --wallet 0xYourAddress")
+        print("  or set it once:  $env:RH_WALLET=\"0xYourAddress\"")
+        return 2
     try:
-        addr = D.deposit_address(D.CHAIN, debug=args.debug)
+        addr, vault_id = D.deposit_address(D.CHAIN, wallet_address=wallet,
+                                           debug=args.debug)
     except D.DefinitiveError as e:
         print("\n  vault lookup failed (HTTP %s): %s" % (e.status or "?", e))
         k, s = D.api_key(), D.api_secret()
@@ -432,6 +443,8 @@ def cmd_vault(args: argparse.Namespace) -> int:
             print("  -> a 5xx usually means a malformed key rather than a wrong one")
         return 1
     print("\n  Robinhood Chain vault: %s" % addr)
+    if vault_id:
+        print("  vault id %s" % vault_id)
     print("  Send ETH or USDG here. The vault is created on demand per chain.")
     try:
         pos = D.positions()
@@ -508,6 +521,19 @@ def cmd_trade_vault(args: argparse.Namespace) -> int:
           % (c["price_impact"], c["fee_usd"], c["min_out"]))
     for w in c["warnings"]:
         print("  WARNING: %s" % w)
+    # `qty` is documented only as "Amount to trade", and Definitive's own two
+    # examples read inconsistently about whether it denominates the target or the
+    # contra asset. Rather than guess, check what the quote says we are actually
+    # spending: if the units are backwards, fromNotional lands nowhere near the
+    # ticket and this refuses. Cheap, and it fails toward not trading.
+    if c["spend_usd"] is None:
+        print("\n  REFUSED: the quote did not say what this spends.")
+        return 1
+    if c["spend_usd"] > args.max_usd * 1.05:
+        print("\n  REFUSED: quote spends $%.2f, above the $%.2f cap — the qty "
+              "units are\n  not what was assumed. Nothing submitted."
+              % (c["spend_usd"], args.max_usd))
+        return 1
     if c["loss_pct"] is not None and c["loss_pct"] > args.max_loss_pct:
         print("\n  REFUSED: leg loses %.2f%% (> %.1f%% limit)"
               % (c["loss_pct"], args.max_loss_pct))
@@ -517,8 +543,10 @@ def cmd_trade_vault(args: argparse.Namespace) -> int:
         return 0
     out = D.quicktrade_submit(target=row["token"], contra=contra,
                               qty="%.8f" % qty, side="buy",
-                              quote_id=c["quote_id"], confirm=True)
+                              slippage_tolerance="%.4f" % args.max_slippage,
+                              confirm=True)
     print("\n  SUBMITTED: %s" % json.dumps(out)[:400])
+    print("  track it:  python -m cambrian vault --wallet <your address>")
     return 0
 
 
@@ -1180,6 +1208,8 @@ def build_parser() -> argparse.ArgumentParser:
     td.set_defaults(func=cmd_trade)
 
     vt = sub.add_parser("vault", help="show the Definitive vault address and positions")
+    vt.add_argument("--wallet", default=None,
+                    help="your own wallet address (required by the API)")
     vt.add_argument("--debug", action="store_true",
                     help="print the signed string (key redacted) to diagnose a 401")
     vt.set_defaults(func=cmd_vault)
@@ -1196,6 +1226,10 @@ def build_parser() -> argparse.ArgumentParser:
     tv.add_argument("--blocks", type=int, default=1500)
     tv.add_argument("--weth-usd", type=float, default=None, dest="weth_usd")
     tv.add_argument("--max-loss-pct", type=float, default=10.0, dest="max_loss_pct")
+    # Definitive defaults slippageTolerance to 1%, which a fresh launch will not
+    # fill inside. 5% is the desk's own cap and is passed explicitly.
+    tv.add_argument("--max-slippage", type=float, default=0.05, dest="max_slippage",
+                    help="slippage tolerance sent to Definitive (0.05 = 5%%)")
     tv.add_argument("--yes", action="store_true", help="required to execute")
     tv.set_defaults(func=cmd_trade_vault)
 

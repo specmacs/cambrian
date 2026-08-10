@@ -107,8 +107,12 @@ $env:RH_RPC_URL="https://rpc.mainnet.chain.robinhood.com"
 ## 2. Find the vault and fund it
 
 ```
-python -m cambrian vault
+python -m cambrian vault --wallet 0xYourOwnWalletAddress
 ```
+
+`--wallet` is **your** address — the one you will send the deposit from, not the
+vault's. The API requires it and returns a 400 naming `walletAddress` without it.
+Set it once instead if you prefer: `$env:RH_WALLET="0xYourOwnWalletAddress"`.
 
 Prints your Robinhood Chain vault address (created on demand) and any positions.
 Send **$20 of ETH** to it.
@@ -192,14 +196,12 @@ Not covered — read these before funding:
 
 - **No position has ever been opened by this system.** Every exit rule is tested
   against synthetic marks. This is the first real test of the whole loop.
-- **My signature implementation is unverified.** The endpoints, paths and headers
-  are confirmed live (they return a clean `401 Invalid API Authentication` to a
-  fake key), but a *wrong signature* also returns 401 — so I cannot tell a
-  correct implementation from a broken one without your real keys. If step 2
-  returns 401 with valid keys, that is the bug, and it is mine. Run
-  `python -m cambrian vault --debug` and send me that output: it prints the exact
-  string being signed with the key redacted and never touches the secret, which
-  is enough for me to fix it without ever seeing a credential.
+- ~~My signature implementation is unverified.~~ **The signature is confirmed
+  working** against live keys. A 400 `ZodError` naming `walletAddress` came back
+  from the address endpoint, which only happens after auth passes and the request
+  reaches body validation. HMAC, prehash, compact-JSON body and header ordering
+  are all correct. If you ever do see a 401, `vault --debug` prints the exact
+  signed string with the key redacted and the secret untouched.
 - **`~spot` marks.** pons-v1 and pools.trade have no local sell math, so between
   Flash refreshes (30s) they mark at spot, ignoring exit slippage. Slightly
   optimistic. Curve and V2 venues are exact.

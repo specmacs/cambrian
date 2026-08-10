@@ -234,3 +234,60 @@ def test_debug_redacts_the_key_and_never_prints_the_secret(capsys, monkeypatch):
     assert "dpka_publicish" not in out
     assert "dpks_verysecret" not in out
     assert "<KEY:14 chars>" in out          # length disclosed, value not
+
+
+# --- endpoint shapes, pinned against the published docs ----------------------
+# These were wrong until a live 400 ZodError proved the signature was already
+# correct and the *shape* was not. Pinning them so a doc-drift regression shows
+# up as a failing test rather than a refused trade.
+
+def _capture(monkeypatch):
+    seen = {}
+
+    def fake(path, *, method="GET", body=None, query=None, **kw):
+        seen.update(path=path, method=method, body=body, query=query)
+        return {"address": "0xVAULT", "vaultId": "uuid-1"}
+
+    monkeypatch.setattr(D, "request", fake)
+    return seen
+
+
+def test_deposit_address_sends_the_required_walletAddress_query(monkeypatch):
+    seen = _capture(monkeypatch)
+    addr, vault_id = D.deposit_address("robinhood", wallet_address="0xMine")
+    assert seen["path"] == "/v2/portfolio/address/robinhood"
+    assert seen["query"] == {"walletAddress": "0xMine"}
+    assert (addr, vault_id) == ("0xVAULT", "uuid-1")
+
+
+def test_deposit_address_requires_a_wallet(monkeypatch):
+    _capture(monkeypatch)
+    with pytest.raises(TypeError):
+        D.deposit_address("robinhood")
+
+
+def test_quicktrade_submits_to_the_bare_path_with_no_quote_id(monkeypatch):
+    # There is no /quicktrade/submit sibling: QuickTrade re-quotes and executes
+    # atomically, so a quote id is a preview artefact, not an input.
+    seen = _capture(monkeypatch)
+    D.quicktrade_submit(target="0xT", contra="0xC", qty="1.5",
+                        slippage_tolerance="0.05", confirm=True)
+    assert seen["path"] == "/v2/portfolio/quicktrade"
+    assert seen["method"] == "POST"
+    assert "quoteId" not in seen["body"]
+    assert seen["body"]["slippageTolerance"] == "0.05"
+    assert seen["body"]["chain"] == "robinhood"
+
+
+def test_quicktrade_still_refuses_without_confirm(monkeypatch):
+    _capture(monkeypatch)
+    with pytest.raises(D.DefinitiveError):
+        D.quicktrade_submit(target="0xT", contra="0xC", qty="1")
+
+
+def test_positions_query_is_omitted_when_empty(monkeypatch):
+    seen = _capture(monkeypatch)
+    D.positions()
+    assert seen["query"] is None
+    D.positions(limit=20, include_dust=True)
+    assert seen["query"] == {"limit": "20", "includeDustBalances": "true"}
