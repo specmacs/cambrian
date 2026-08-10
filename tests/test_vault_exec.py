@@ -490,3 +490,42 @@ def test_a_stale_book_is_reported_as_an_error():
     snap = T.snapshot()
     assert "STALE" in (snap["err"] or "")
     assert snap["marked"] >= 45          # AGE, not how long the mark took
+
+
+# --- a stop that does not fill is not a stop ---------------------------------
+# We were rugged for -92% with a -20% stop rule that was firing correctly. Two
+# reasons, both here: the exit was submitted with the ENTRY's 5% slippage (it
+# reverts while the price falls), and a failed exit then waited a full minute
+# before trying again.
+
+def test_an_evacuation_accepts_far_more_slippage_than_a_rung():
+    assert VX.exit_slippage_for("stop -20%") >= 0.5
+    assert VX.exit_slippage_for("unsellable x3 — rug") >= 0.5
+    assert VX.exit_slippage_for("trail 30% off 1.4x") >= 0.5
+    assert VX.exit_slippage_for("manual close") >= 0.5
+    # A rung can be picky: if it does not fill the position is still winning and
+    # the rung fires again next tick.
+    assert VX.exit_slippage_for("rung 1.1x") < VX.exit_slippage_for("stop -20%")
+
+
+def test_a_failed_exit_retries_in_seconds_not_a_minute():
+    # That minute is the difference between -20% and -92%.
+    g = VX.ExitGuard(cooldown_s=60, retry_s=3)
+    g.note("0xa", now=1000, ok=False)
+    assert g.allow("0xa", now=1002) is False
+    assert g.allow("0xa", now=1004) is True
+
+
+def test_a_successful_exit_still_holds_the_long_cooldown():
+    # Otherwise one stop becomes a stream of duplicate sells.
+    g = VX.ExitGuard(cooldown_s=60, retry_s=3)
+    g.note("0xa", now=1000, ok=True)
+    assert g.allow("0xa", now=1030) is False
+    assert g.allow("0xa", now=1061) is True
+
+
+def test_the_urgent_tolerance_is_wide_enough_to_actually_clear_a_collapse():
+    # A token that has fallen far enough to trip the stop is not going to fill
+    # inside a few percent.
+    assert VX.URGENT_SLIPPAGE >= 0.5
+    assert VX.EXIT_SLIPPAGE > 0.10

@@ -27,13 +27,45 @@ if a submit silently fails.
 
 from __future__ import annotations
 
+import os
 import time
 
 from . import config as rcfg
 from . import definitive as D
 
-# How long after submitting an exit before the same token may be exited again.
+# How long after a SUCCESSFUL exit before the same token may be exited again.
 EXIT_COOLDOWN_S = 60.0
+
+# How long after a FAILED exit before retrying. This must be short. A stop that
+# fails and then waits a full minute is not a stop — on a collapsing token that
+# minute is the difference between -20% and -92%. Failure means the exit still
+# has not happened, so the urgency is higher than before it was attempted, not
+# lower.
+EXIT_RETRY_S = float(os.getenv("RH_EXIT_RETRY_S", "3"))
+
+# Slippage tolerance for EXITS, and it is deliberately nothing like the entry's.
+# An entry that fails costs you a launch you did not need; an exit that fails
+# costs you the position. A stop-loss submitted with 5% tolerance simply reverts
+# while the price is falling — which is how a position rides from -20% to -92%
+# with a stop rule that "fired" every tick.
+EXIT_SLIPPAGE = float(os.getenv("RH_EXIT_SLIPPAGE", "0.25"))
+
+# For a stop, a trail, or a rug: get out at any price the book will give. This
+# is not a trade any more, it is an evacuation.
+URGENT_SLIPPAGE = float(os.getenv("RH_URGENT_SLIPPAGE", "0.60"))
+
+URGENT_REASONS = ("stop", "rug", "trail", "unsellable", "liquidity", "manual")
+
+
+def exit_slippage_for(why: str) -> float:
+    """How much slippage this exit should accept, from WHY it is exiting.
+
+    A profit rung can be picky — if it does not fill, the position is still
+    winning and the rung fires again next tick. A stop cannot: there is no next
+    tick worth waiting for.
+    """
+    w = (why or "").lower()
+    return URGENT_SLIPPAGE if any(k in w for k in URGENT_REASONS) else EXIT_SLIPPAGE
 
 # The last positions payload seen, kept for diagnosis only. Never contains keys.
 LAST_RAW: dict = {}
@@ -390,16 +422,21 @@ class ExitGuard:
     stop becomes a stream of duplicate sells.
     """
 
-    def __init__(self, cooldown_s: float = EXIT_COOLDOWN_S):
+    def __init__(self, cooldown_s: float = EXIT_COOLDOWN_S,
+                 retry_s: float = EXIT_RETRY_S):
         self.cooldown_s = cooldown_s
+        self.retry_s = retry_s
         self.last: dict[str, float] = {}
+        self.wait: dict[str, float] = {}
 
     def allow(self, token: str, *, now: float | None = None) -> bool:
         t = time.time() if now is None else now
         key = token.lower()
-        if t - self.last.get(key, 0.0) < self.cooldown_s:
-            return False
-        return True
+        return (t - self.last.get(key, 0.0)) >= self.wait.get(key, self.cooldown_s)
 
-    def note(self, token: str, *, now: float | None = None) -> None:
-        self.last[token.lower()] = time.time() if now is None else now
+    def note(self, token: str, *, now: float | None = None,
+             ok: bool = True) -> None:
+        """Record an attempt. A FAILED exit comes back in seconds, not a minute."""
+        key = token.lower()
+        self.last[key] = time.time() if now is None else now
+        self.wait[key] = self.cooldown_s if ok else self.retry_s

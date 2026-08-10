@@ -376,16 +376,21 @@ def _submit_exit(client, token, entry, fraction, why, guard, *, slippage,
     sell = plan if (plan and plan.get("ok") and fraction >= 1.0) else \
         VX.plan_sell(client, token=token, vault=vault, fraction=fraction)
     if not sell.get("ok"):
-        guard.note(token)
+        guard.note(token, ok=False)      # failed -> retry in seconds
         _event("fail", "exit refused (%s): %s" % (why, sell.get("why")), token)
         return {"ok": False, "why": sell.get("why")}
+    # A stop takes whatever the book gives; a rung can afford to be picky. The
+    # tolerance comes from the reason, because an exit that reverts on slippage
+    # is an exit that did not happen — and that is how a -20% stop becomes -92%.
+    tol = VX.exit_slippage_for(why)
     try:
-        out = VX.execute_sell(sell, slippage=slippage, confirm=True)
+        out = VX.execute_sell(sell, slippage=tol, confirm=True)
     except Exception as e:
-        guard.note(token)
-        _event("fail", "submit failed: %s" % str(e)[:120], token)
+        guard.note(token, ok=False)
+        _event("fail", "submit failed at %.0f%% slippage: %s"
+               % (tol * 100, str(e)[:100]), token)
         return {"ok": False, "why": str(e)[:200]}
-    guard.note(token)
+    guard.note(token, ok=True)
     pos = entry["position"]
     # Applied on submit rather than on fill: the intent stays true until the
     # position changes, so waiting for confirmation re-sells every tick.

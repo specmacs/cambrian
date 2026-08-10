@@ -886,6 +886,35 @@ serial. Exits themselves are still submitted serially, which is deliberate:
 they are rarer, and a burst of concurrent submits is not a risk worth taking to
 save a second.
 
+### ⚠️ A STOP THAT DOES NOT FILL IS NOT A STOP — rugged for -92%
+
+A position ran to **-92%** with a -20% stop rule that was firing correctly every
+tick. The rule was never the problem. Two things underneath it were:
+
+1. **Exits were submitted with the ENTRY's slippage tolerance (5%).** A sell into
+   a collapsing book does not fill inside 5% — it reverts, the position is still
+   held, and the "stop" fires again next tick and reverts again. The stop was
+   working perfectly and achieving nothing. Exits now derive tolerance from the
+   REASON: `URGENT_SLIPPAGE` 60% for a stop, trail, rug, liquidity collapse or
+   manual close; `EXIT_SLIPPAGE` 25% otherwise. A profit rung can afford to be
+   picky — if it does not fill, the position is still winning and it fires again.
+   A stop cannot: there is no next tick worth waiting for.
+2. **A failed exit started the SIXTY SECOND cooldown.** The cooldown exists to
+   stop one signal becoming thirty duplicate sells — but that logic only applies
+   to an exit that *worked*. A failed exit means the position is still open and
+   the urgency is now higher, not lower. Failures retry in **3 seconds**
+   (`EXIT_RETRY_S`), successes still hold the full minute.
+
+Asymmetry worth keeping in mind everywhere: **an entry that fails costs a launch
+you did not need; an exit that fails costs the position.** They should never
+share a tolerance, a retry policy, or a cooldown.
+
+What this still cannot prevent: a rug that removes liquidity inside a single
+100ms block. Nothing polling can. The next real defence is watching for the LP
+removal itself rather than its effect on price — `exit_decision` already takes a
+`liquidity_usd` argument and the vault path never passes one. **Another decoded-
+but-unused check; that is now four this session.**
+
 ## Exit policy — PER SETUP, not one ladder for everything
 
 Owner: *there should be different decisions for different setups.* Right — and

@@ -295,16 +295,17 @@ def _vault_tick(client, vault, book, guard, *, slippage, VX, quiet=False,
         if not sell["ok"]:
             print("  EXIT FAILED %-12s %-20s — %s" % (token[:12], why, sell["why"]),
                   flush=True)
-            guard.note(token)
+            guard.note(token, ok=False)
             continue
+        tol = VX.exit_slippage_for(why)
         try:
-            out = VX.execute_sell(sell, slippage=slippage, confirm=True)
+            out = VX.execute_sell(sell, slippage=tol, confirm=True)
         except Exception as e:
             print("  EXIT FAILED %-12s — submit: %s" % (token[:12], str(e)[:80]),
                   flush=True)
-            guard.note(token)
+            guard.note(token, ok=False)
             continue
-        guard.note(token)
+        guard.note(token, ok=True)
         # Applied on submit, not on fill: the intent stays true until the
         # position changes, so waiting for confirmation re-sells every tick.
         # The cooldown is the backstop if this submit never lands.
