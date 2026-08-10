@@ -142,7 +142,15 @@ def find_address(node) -> str:
     if _ADDR_RE is None:
         import re
         _ADDR_RE = re.compile(r"^0x[0-9a-fA-F]{40}$")
-    preferred, fallback = [], []
+    # Ranked, because "address-ish" is not good enough: a row can carry both
+    # `vaultAddress` and `asset.address`, and taking the first one that merely
+    # contains "address" picks the vault — then every balance lookup asks what
+    # the vault holds *of itself*. Asset-ish keys win outright; anything naming
+    # a counterparty is excluded from the middle tier rather than merely
+    # outranked.
+    NOT_THE_ASSET = ("vault", "wallet", "owner", "user", "account", "recipient",
+                     "sender", "spender", "portfolio", "deposit")
+    tiers: dict[int, list] = {0: [], 1: [], 2: []}
 
     def walk(n, key=""):
         if isinstance(n, dict):
@@ -153,11 +161,15 @@ def find_address(node) -> str:
                 walk(v, key)
         elif isinstance(n, str) and _ADDR_RE.match(n):
             k = key.lower()
-            (preferred if ("address" in k or "asset" in k or "token" in k
-                           or "contract" in k) else fallback).append(n)
+            if any(w in k for w in ("asset", "token", "contract", "mint")):
+                tiers[0].append(n)
+            elif "address" in k and not any(w in k for w in NOT_THE_ASSET):
+                tiers[1].append(n)
+            elif not any(w in k for w in NOT_THE_ASSET):
+                tiers[2].append(n)
 
     walk(node)
-    return (preferred or fallback or [""])[0]
+    return (tiers[0] or tiers[1] or tiers[2] or [""])[0]
 
 
 def find_symbol(node) -> str:

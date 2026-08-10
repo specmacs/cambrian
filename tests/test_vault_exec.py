@@ -245,3 +245,10 @@ def test_the_terminal_lock_is_reentrant():
     with T._lock:
         with T._lock:
             pass
+
+
+def test_a_counterparty_address_is_never_mistaken_for_the_asset():
+    # Taking the vault's own address would make every balance lookup ask what
+    # the vault holds of itself — zero, silently, for every position.
+    for key in ("vaultAddress", "walletAddress", "ownerAddress", "portfolioId"):
+        assert VX.find_address({key: "0x" + "1" * 40}) == ""
