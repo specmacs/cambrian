@@ -265,13 +265,18 @@ def _vault_tick(client, vault, book, guard, *, slippage, VX, quiet=False,
             entry["held"] = plan["held"]
         value = (plan.get("cost") or {}).get("receive_usd") if plan.get("ok") else None
         P.mark_from_exit_quote(pos, value)
-        action, fraction, why = P.exit_decision(pos)
         pnl = (100 * (pos.mark_usd / pos.cost_usd - 1)) if pos.cost_usd else 0.0
+        # exit_decision MUTATES — a rung it reports is a rung it records as
+        # taken — so it must not be called unless the answer can be acted on.
+        # Checking the cooldown afterwards consumed rungs that were never sold.
+        cooling = not guard.allow(token)
+        action, fraction, why = (None, 0.0, "cooling down") if cooling \
+            else P.exit_decision(pos)
         if not quiet:
             print("  MARK %-12s %-6s $%-7.2f cost $%-7.2f %+7.1f%%  %s"
                   % (token[:12], entry.get("symbol") or "", pos.mark_usd or 0.0,
                      pos.cost_usd, pnl, why if action else ""), flush=True)
-        if not action or not guard.allow(token):
+        if not action:
             continue
         # Re-quote for the actual exit size: the mark priced a full exit, and a
         # partial rung is a different trade at a different price.
@@ -390,6 +395,24 @@ def cmd_watch(args: argparse.Namespace) -> int:
     print("%d scans, %d marks, %d tokens seen" % (state.scans, state.marks, len(state.seen)))
     return 0
 
+
+
+def cmd_terminal(args: argparse.Namespace) -> int:
+    """Serve the live terminal: what the vault holds, and the controls to act."""
+    import os
+
+    from .chain import ChainClient
+    from . import terminal as T
+
+    wallet = args.wallet or os.getenv("RH_WALLET") or os.getenv("DEGEN_WALLET")
+    if not wallet:
+        print("\n  need --wallet (or $env:RH_WALLET) to find the vault")
+        return 2
+    if args.no_auto_exit:
+        T.STATE["auto_exit"] = False
+        print("auto-exit OFF — marks and signals only, nothing will be sold")
+    return T.serve(ChainClient(), wallet=wallet, slippage=args.max_slippage,
+                   interval=args.mark_interval, port=args.port)
 
 
 def cmd_sell(args: argparse.Namespace) -> int:
@@ -1475,6 +1498,18 @@ def build_parser() -> argparse.ArgumentParser:
     wt.add_argument("--quiet", action="store_true",
                     help="only print exits, not every mark")
     wt.set_defaults(func=cmd_watch)
+
+    tm = sub.add_parser("terminal",
+                        help="live web terminal with close + stop controls")
+    tm.add_argument("--wallet", default=None)
+    tm.add_argument("--port", type=int, default=8799)
+    tm.add_argument("--max-slippage", type=float, default=0.05, dest="max_slippage")
+    tm.add_argument("--mark-interval", type=float, default=0.0,
+                    dest="mark_interval",
+                    help="seconds between marks; 0 = continuous (default)")
+    tm.add_argument("--no-auto-exit", action="store_true", dest="no_auto_exit",
+                    help="mark and signal, but never sell automatically")
+    tm.set_defaults(func=cmd_terminal)
 
     sl = sub.add_parser("sell", help="sell a position out of the vault")
     sl.add_argument("--token", required=True)

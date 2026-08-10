@@ -139,3 +139,69 @@ def test_the_peak_survives_a_drawdown_so_a_trailing_stop_can_fire():
     P.mark_from_exit_quote(pos, 20.0)
     assert pos.peak_usd == 30.0
     assert pos.mark_usd == 20.0
+
+
+# --- exit_decision is stateful, and that has consequences ---------------------
+
+def test_a_reported_rung_is_a_consumed_rung():
+    # Pinning the property that made the next two tests necessary: asking the
+    # question changes the answer, so the question must only be asked when the
+    # answer can be acted on.
+    pos = _pos(cost=10.0)
+    P.mark_from_exit_quote(pos, 30.0)
+    assert P.exit_decision(pos)[0] == "trim"
+    assert pos.rungs_hit                      # recorded as taken
+    P.mark_from_exit_quote(pos, 30.0)
+    assert P.exit_decision(pos)[2] != "rung 2x"
+
+
+def test_halting_must_not_burn_the_take_profits(monkeypatch):
+    # Observed live in the terminal: while halted the engine still called
+    # exit_decision to render a signal, so 2x and 3x were marked hit with
+    # nothing sold, and on resume they could never fire again. Halting has to
+    # skip the decision entirely, not skip only the submission.
+    import time as _time
+
+    from cambrian import terminal as T
+
+    monkeypatch.setattr(D, "quicktrade_quote",
+                        lambda **kw: {"metadata": {"toNotional": "30.00"}})
+    monkeypatch.setattr(D, "positions", lambda **kw: {"positions": []})
+    monkeypatch.setattr(D, "quicktrade_submit",
+                        lambda **kw: pytest.fail("halted must not submit"))
+
+    tok = "0xhalt"
+    pos = _pos(cost=10.0)
+    T.STATE["vault"] = "0xv"
+    T.STATE["halted"] = True
+    T.STATE["book"] = {tok: {"position": pos, "decimals": 18, "held": 1.0,
+                             "basis_known": True, "symbol": "H"}}
+    thread = __import__("threading").Thread(
+        target=T._engine, args=(FakeChain({tok: 10 ** 18}),),
+        kwargs={"slippage": 0.05, "interval": 0.05}, daemon=True)
+    thread.start()
+    _time.sleep(0.6)
+    assert pos.rungs_hit == []                 # nothing consumed while halted
+    assert T.STATE["book"][tok]["signal"] == "halted"
+    T.STATE["halted"] = False                  # leave global state clean
+
+
+def test_a_cooldown_must_not_burn_a_rung_either(monkeypatch):
+    # Same class of bug in `watch`: the guard was checked after the decision,
+    # so a rung that arrived during a cooldown was consumed and never sold.
+    from cambrian import cli
+
+    monkeypatch.setattr(D, "quicktrade_quote",
+                        lambda **kw: {"metadata": {"toNotional": "30.00"}})
+    monkeypatch.setattr(D, "quicktrade_submit",
+                        lambda **kw: pytest.fail("cooling down must not submit"))
+    tok = "0xcool"
+    pos = _pos(cost=10.0)
+    book = {tok: {"position": pos, "decimals": 18, "held": 1.0,
+                  "basis_known": True, "symbol": "C"}}
+    guard = VX.ExitGuard(cooldown_s=999)
+    guard.note(tok)                            # already cooling
+    cli._vault_tick(FakeChain({tok: 10 ** 18}), "0xv", book, guard,
+                    slippage=0.05, VX=VX, quiet=True)
+    assert pos.rungs_hit == []
+    assert pos.mark_usd == 30.0                # still marked, just not decided

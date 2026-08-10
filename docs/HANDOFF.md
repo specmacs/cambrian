@@ -898,6 +898,45 @@ required; plain `/v1` is wrong.
 
 ---
 
+## The live terminal — `cambrian terminal`
+
+`examples/cambrian_paper.py` answers "would this have worked". `cambrian/terminal.py`
+answers "what am I in right now, and how do I get out": every number on it is a
+real Definitive sell quote against real vault holdings.
+
+It lives **inside the package**, not in `examples/`, because the owner runs the
+single-file bundle and `tools_build_bundle.py` only embeds `cambrian/**`. Anything
+in `examples/` is unreachable on his machine. The design system moved to
+`cambrian/ui_css.py` (fonts + tokens, lifted verbatim) for the same reason — and
+so the paper and live terminals cannot drift apart. **Zero external resources**:
+78 KB page, fonts embedded, only click-through links leave the box.
+
+- `STOP` halts automation. It does **not** sell. Those are different intentions
+  and conflating them turns a panic click into a market sell. Manual `Close`
+  keeps working while halted — halting is about the automation, not your hands.
+- `Close` / `Close all` sell at market, both behind a confirm, both bypassing the
+  cooldown (which exists to stop a repeating *automatic* signal, not a person).
+- The engine runs whether or not a browser is open. Closing the tab stops
+  nothing; a desk that only manages positions while you are looking at it is not
+  managing them.
+- It re-adopts every 30s, so anything bought by hand or by `trade-vault` starts
+  being managed without a restart.
+- 127.0.0.1 only. Any local process can reach the controls — personal desk, not
+  a shared one.
+
+### ⚠️ `exit_decision` MUTATES — asking the question consumes the answer
+
+Caught live: `exit_decision` appends to `pos.rungs_hit` when a rung fires, so
+calling it merely to *render a signal* marks that rung taken. The terminal did
+exactly that while halted — 2x and 3x were recorded as hit, nothing was sold, and
+on resume they could never fire again. `watch` had the same bug from the other
+direction: it checked the cooldown *after* the decision, so a rung arriving during
+a cooldown was consumed and never sold.
+
+**Rule: never call `exit_decision` unless the result can be acted on.** Check
+halted and cooldown first. Three tests pin this — including one that runs the
+real engine thread halted and asserts `rungs_hit == []`.
+
 ## UI / design
 
 **The entire UI lives inside `examples/cambrian_desk.py`** as the `PAGE`
