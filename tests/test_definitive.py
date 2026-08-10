@@ -314,3 +314,22 @@ def test_qty_truncates_rather_than_rounds_up():
 def test_qty_keeps_full_precision_for_an_18_decimal_asset():
     from cambrian.cli import _fmt_qty
     assert _fmt_qty(0.004229852543810322, 18) == "0.004229852543810322"
+
+
+def test_the_rpc_url_has_a_working_default():
+    # A new shell window does not carry environment variables, and "RPC_URL is
+    # not set" was the result three times. The endpoint is public and constant.
+    from cambrian import config as appcfg
+    assert appcfg.RPC_URL.startswith("https://")
+    assert "robinhood" in appcfg.RPC_URL
+
+
+def test_an_explicit_rpc_url_still_wins(monkeypatch):
+    monkeypatch.setenv("RH_RPC_URL", "https://example.invalid/rpc")
+    import importlib
+
+    from cambrian import config as appcfg
+    importlib.reload(appcfg)
+    assert appcfg.RPC_URL == "https://example.invalid/rpc"
+    monkeypatch.delenv("RH_RPC_URL")
+    importlib.reload(appcfg)

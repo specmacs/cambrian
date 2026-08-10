@@ -162,7 +162,12 @@ except ImportError:
 
 CHAIN_ID = 4663                       # Robinhood Chain mainnet
 CHAIN_NAME = "Robinhood Chain"
-RPC_URL = os.getenv("RH_RPC_URL", "")  # public: https://rpc.mainnet.chain.robinhood.com
+# Defaulted, not left empty. Failing closed on an unset RPC made sense while the
+# chain was unknown; it is now a public, constant, documented endpoint, and the
+# only thing the empty default actually produced was "RPC_URL is not set" every
+# time a new shell window forgot an environment variable. Override still works.
+DEFAULT_RPC_URL = "https://rpc.mainnet.chain.robinhood.com"
+RPC_URL = os.getenv("RH_RPC_URL") or DEFAULT_RPC_URL
 EXPLORER = "https://robinhoodchain.blockscout.com"  # official Blockscout instance
 NATIVE_GAS_TOKEN = "ETH"
 BLOCK_TIME_MS = 100
