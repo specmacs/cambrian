@@ -411,10 +411,23 @@ def cmd_vault(args: argparse.Namespace) -> int:
     try:
         addr = D.deposit_address(D.CHAIN)
     except D.DefinitiveError as e:
-        print("  %s" % e)
+        print("\n  vault lookup failed (HTTP %s): %s" % (e.status or "?", e))
+        k, s = D.api_key(), D.api_secret()
+        if not k or not s:
+            print("  -> DEFINITIVE_API_KEY / DEFINITIVE_API_SECRET are not set in "
+                  "this window")
+        else:
+            print("  -> key starts %s..., secret starts %s..."
+                  % (k[:9], (s or "")[:6]))
+            if not k.startswith("dpka_"):
+                print("  -> the KEY should start with dpka_ — are the two swapped?")
+            if not s.startswith("dpks_"):
+                print("  -> the SECRET should start with dpks_ — are the two swapped?")
         if e.status == 401:
-            print("  -> check DEFINITIVE_API_KEY (dpka_...) and "
-                  "DEFINITIVE_API_SECRET (dpks_...)")
+            print("  -> 401 means the signature did not match. If both keys are "
+                  "correct and unswapped, this is my bug — send me this output.")
+        elif e.status and e.status >= 500:
+            print("  -> a 5xx usually means a malformed key rather than a wrong one")
         return 1
     print("\n  Robinhood Chain vault: %s" % addr)
     print("  Send ETH or USDG here. The vault is created on demand per chain.")

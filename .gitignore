@@ -20,3 +20,6 @@ dist/
 # paper portfolio state
 positions.json
 runners_seen.json
+
+# generated single-file bundle
+dist/
