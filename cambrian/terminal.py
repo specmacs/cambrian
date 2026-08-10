@@ -122,6 +122,24 @@ def _engine(client, *, slippage: float, interval: float) -> None:
                 pos = entry["position"]
                 if plan.get("held") is not None:
                     entry["held"] = plan["held"]
+                # Sold somewhere else — through Definitive's own UI, or by hand.
+                # A zero balance means the position is GONE, not that it cannot
+                # be sold, and conflating the two would count unsellable
+                # failures until the rug rule fired an exit against nothing.
+                if plan.get("held") == 0.0 and not plan.get("ok"):
+                    with _lock:
+                        entry["position"] = P.apply(pos, "close", 1.0)
+                        STATE["closed"].insert(0, {
+                            "token": token, "sym": entry.get("symbol") or "",
+                            "pad": entry.get("pad") or "vault",
+                            "cost": round(entry.get("basis0", pos.cost_usd), 2),
+                            # Proceeds are unknown: the sale did not go through
+                            # this desk. Better blank than a fabricated P&L.
+                            "exit_value": None, "pnl": None,
+                            "why": "closed outside the desk"})
+                        del STATE["closed"][30:]
+                    _event("close", "left the vault — sold outside the desk", token)
+                    continue
                 value = (plan.get("cost") or {}).get("receive_usd") \
                     if plan.get("ok") else None
                 P.mark_from_exit_quote(pos, value)

@@ -263,6 +263,12 @@ def _vault_tick(client, vault, book, guard, *, slippage, VX, quiet=False,
         pos = entry["position"]
         if plan.get("held") is not None:
             entry["held"] = plan["held"]
+        if plan.get("held") == 0.0 and not plan.get("ok"):
+            # Gone, not unsellable — sold through another surface.
+            entry["position"] = P.apply(pos, "close", 1.0)
+            print("  CLOSED %-12s — left the vault (sold outside the desk)"
+                  % token[:12], flush=True)
+            continue
         value = (plan.get("cost") or {}).get("receive_usd") if plan.get("ok") else None
         P.mark_from_exit_quote(pos, value)
         pnl = (100 * (pos.mark_usd / pos.cost_usd - 1)) if pos.cost_usd else 0.0

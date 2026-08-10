@@ -252,3 +252,23 @@ def test_a_counterparty_address_is_never_mistaken_for_the_asset():
     # the vault holds of itself — zero, silently, for every position.
     for key in ("vaultAddress", "walletAddress", "ownerAddress", "portfolioId"):
         assert VX.find_address({key: "0x" + "1" * 40}) == ""
+
+
+def test_a_position_sold_outside_the_desk_is_closed_not_called_a_rug(monkeypatch):
+    # Happened for real: the token was sold by hand through Definitive's UI.
+    # A zero balance means GONE, not unsellable — treating it as unsellable
+    # counts failures until the rug rule fires an exit against nothing.
+    from cambrian import cli
+
+    monkeypatch.setattr(D, "quicktrade_quote",
+                        lambda **kw: pytest.fail("nothing to quote"))
+    monkeypatch.setattr(D, "quicktrade_submit",
+                        lambda **kw: pytest.fail("nothing to sell"))
+    tok = "0xgone"
+    pos = _pos(cost=8.0)
+    book = {tok: {"position": pos, "decimals": 18, "held": 1.0,
+                  "basis_known": True, "symbol": "G"}}
+    cli._vault_tick(FakeChain({}), "0xv", book, VX.ExitGuard(),
+                    slippage=0.05, VX=VX, quiet=True)
+    assert book[tok]["position"].closed is True
+    assert pos.fails == 0                      # not a rug, just gone
