@@ -824,6 +824,33 @@ that cannot quote is not hammered forever.
 
 Manual half: `cambrian sell --token 0x.. --pct 50 [--yes]`.
 
+### How fast can the exit loop actually be
+
+Asked directly, and worth pinning because the intuitive answer is wrong.
+
+**100ms is the information floor.** Robinhood Chain produces a block every
+100ms. Polling faster than that re-reads identical state — it is not a faster
+desk, it is the same desk making more requests.
+
+**~300ms is the practical floor**, because a mark is an HTTPS round trip.
+Measured: Definitive ~290-340ms, the public RPC ~320-680ms. Unlimited request
+quota does not help here; the constraint is latency, not throughput, and the two
+are not the same resource.
+
+**No WebSocket was found on the public RPC** (`wss://rpc.mainnet...` 400,
+`/ws` 404), so `eth_subscribe` push — open-work item 6, and the only thing that
+would actually beat polling — has no endpoint to attach to yet. Worth asking
+Robinhood or the sniper contact whether a WS endpoint exists.
+
+So the loop polls **continuously** (`--mark-interval 0`, the default) rather than
+on a timer, and marks **concurrently**. Concurrency is the part that matters:
+serial marking makes the loop's period the SUM of every position's round trip, so
+with ten positions the tenth is three seconds stale — and the tenth is the one
+whose stop misses. Measured 8 positions in **306ms** parallel against 2,400ms
+serial. Exits themselves are still submitted serially, which is deliberate:
+they are rarer, and a burst of concurrent submits is not a risk worth taking to
+save a second.
+
 ## Exit policy
 
 Priority order in `exit_decision()`: stop → trailing stop → profit rungs →

@@ -233,27 +233,36 @@ def cmd_sweep(args: argparse.Namespace) -> int:
 
 
 
-def _vault_tick(client, vault, book, guard, *, slippage, VX, quiet=False):
+def _vault_tick(client, vault, book, guard, *, slippage, VX, quiet=False,
+                workers: int = 8):
     """Mark everything the vault holds at its real sell quote, then act.
 
-    One quote per position per tick does double duty: it IS the mark, and a
-    refusal to quote is the unsellable signal the rug rule keys off. So the
-    thing that decides is the same thing that would execute — there is no model
-    standing between the two that could disagree.
+    One quote per position does double duty: it IS the mark, and a refusal to
+    quote is the unsellable signal the rug rule keys off. So the call that
+    decides and the call that would execute are the same one, and cannot
+    disagree.
+
+    **Marks run concurrently.** Every mark is an HTTPS round trip of a few
+    hundred milliseconds, so marking serially makes the loop's period the SUM of
+    them — ten positions would be three seconds behind by the time the last one
+    is priced, and the tenth position is the one whose stop misses. In parallel
+    the period is the slowest single quote instead.
     """
+    from concurrent.futures import ThreadPoolExecutor
+
     from .runners import positions as P
 
-    for token, entry in list(book.items()):
+    live = [(tok, e) for tok, e in book.items() if not e["position"].closed]
+    if not live:
+        return 0
+    with ThreadPoolExecutor(max_workers=max(1, min(workers, len(live)))) as pool:
+        plans = list(pool.map(
+            lambda item: VX.plan_sell(client, token=item[0], vault=vault), live))
+
+    for (token, entry), plan in zip(live, plans):
         pos = entry["position"]
-        if pos.closed:
-            continue
-        plan = VX.plan_sell(client, token=token, vault=vault)
         if plan.get("held") is not None:
             entry["held"] = plan["held"]
-            try:
-                pos.tokens = client.erc20_balance_of(token, vault)
-            except Exception:
-                pass
         value = (plan.get("cost") or {}).get("receive_usd") if plan.get("ok") else None
         P.mark_from_exit_quote(pos, value)
         action, fraction, why = P.exit_decision(pos)
@@ -262,11 +271,12 @@ def _vault_tick(client, vault, book, guard, *, slippage, VX, quiet=False):
             print("  MARK %-12s %-6s $%-7.2f cost $%-7.2f %+7.1f%%  %s"
                   % (token[:12], entry.get("symbol") or "", pos.mark_usd or 0.0,
                      pos.cost_usd, pnl, why if action else ""), flush=True)
-        if not action:
+        if not action or not guard.allow(token):
             continue
-        if not guard.allow(token):
-            continue
-        sell = VX.plan_sell(client, token=token, vault=vault, fraction=fraction)
+        # Re-quote for the actual exit size: the mark priced a full exit, and a
+        # partial rung is a different trade at a different price.
+        sell = plan if fraction >= 1.0 else VX.plan_sell(
+            client, token=token, vault=vault, fraction=fraction)
         if not sell["ok"]:
             print("  EXIT FAILED %-12s %-20s — %s" % (token[:12], why, sell["why"]),
                   flush=True)
@@ -287,6 +297,7 @@ def _vault_tick(client, vault, book, guard, *, slippage, VX, quiet=False):
         print("  EXIT SENT   %-12s %3.0f%% — %-22s (%+.1f%%)  %s"
               % (token[:12], fraction * 100, why, pnl, json.dumps(out)[:80]),
               flush=True)
+    return len(live)
 
 
 def cmd_watch(args: argparse.Namespace) -> int:
@@ -335,6 +346,7 @@ def cmd_watch(args: argparse.Namespace) -> int:
           % (L.SCAN_INTERVAL_S, L.MARK_INTERVAL_S, eth, mode))
     deadline = _t.time() + args.seconds if args.seconds else None
     last_vault_tick = 0.0
+    marks, mark_ms = 0, 0.0
     try:
         while deadline is None or _t.time() < deadline:
             scan_due, mark_due = L.due(state)
@@ -353,13 +365,26 @@ def cmd_watch(args: argparse.Namespace) -> int:
             if out:
                 print(out, flush=True)
             if args.execute and (_t.time() - last_vault_tick) >= args.mark_interval:
-                last_vault_tick = _t.time()
+                t0 = _t.time()
+                last_vault_tick = t0
                 try:
-                    _vault_tick(client, vault, book, guard, VX=VX,
-                                slippage=args.max_slippage, quiet=args.quiet)
+                    n = _vault_tick(client, vault, book, guard, VX=VX,
+                                    slippage=args.max_slippage, quiet=args.quiet)
                 except Exception as e:      # never let a mark error kill the loop
                     print("  vault tick error: %s" % str(e)[:120], flush=True)
-            _t.sleep(min(L.MARK_INTERVAL_S, 1.0))
+                    n = 0
+                if n:
+                    marks += 1
+                    mark_ms += (_t.time() - t0) * 1000
+                    if marks % 25 == 0:
+                        print("  [%d marks, %.0fms each — %.1f/s, the round trip "
+                              "is the floor]"
+                              % (marks, mark_ms / marks, 1000.0 * marks / mark_ms),
+                              flush=True)
+            # Never sleep past the mark interval — a fixed 1s sleep would make
+            # "--mark-interval 0" a lie.
+            _t.sleep(min(L.MARK_INTERVAL_S, 1.0, args.mark_interval)
+                     if args.execute else min(L.MARK_INTERVAL_S, 1.0))
     except KeyboardInterrupt:
         print("\nstopped")
     print("%d scans, %d marks, %d tokens seen" % (state.scans, state.marks, len(state.seen)))
@@ -1441,9 +1466,12 @@ def build_parser() -> argparse.ArgumentParser:
     # memecoin is a stop that did not fire; one quote per position per tick is
     # well inside Definitive's quicktrade rate limits, which are documented as
     # deliberately higher than the standard endpoints for exactly this.
-    wt.add_argument("--mark-interval", type=float, default=2.0,
+    # 0 means "as fast as the round trips allow". Robinhood Chain produces a
+    # block every 100ms, so nothing below that carries new information, and a
+    # quote round trip is ~300ms anyway — that, not the interval, is the floor.
+    wt.add_argument("--mark-interval", type=float, default=0.0,
                     dest="mark_interval",
-                    help="seconds between vault sell-quote marks (default 2)")
+                    help="seconds between vault marks; 0 = continuous (default)")
     wt.add_argument("--quiet", action="store_true",
                     help="only print exits, not every mark")
     wt.set_defaults(func=cmd_watch)
