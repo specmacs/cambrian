@@ -52,10 +52,10 @@ filter, and whatever emitted it is the factory. Reuse that trick.
 
 ### Launch path — the important part
 
-**TWO** Liquidity Launcher deployments are live and both still emit. Watching
-only one silently loses launches.
+Watching only some of these silently loses launches — the mistake this file was
+originally written to prevent.
 
-**FOUR deployments exist, not two.** From the owner's roster, cross-checked live:
+**FOUR deployments exist, not two** (an earlier version of this file said two). From the owner's roster, cross-checked live:
 
 ```
 gen4  0x0000fffFbe8efe702c8703ae3477ff5de3d319c0   ACTIVE      99 logs / 12k blocks
