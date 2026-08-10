@@ -116,10 +116,28 @@ def _discover(client, from_block: int, to_block: int) -> tuple[list[dict], int]:
     failures += f
     for lg in logs:
         # v1: topic1 token, topic2 deployer (NOT the pool); pool is data word 1.
+        #
+        # Word 5 is `restrictionsEndBlock`, and reading it is the difference
+        # between a working desk and one that buys tokens it cannot sell. Pons
+        # holds launch restrictions for a window after deployment — an
+        # anti-sniper measure, not a scam — and inside that window a sell is
+        # refused. A buy at t=0 therefore looks EXACTLY like a honeypot: the
+        # token is real, the pad is legitimate, the tax is 0%, and you cannot
+        # get out. This field was documented in config and used nowhere, and
+        # that omission is what got the first live position stuck.
         data = lg["data"][2:]
+
+        def _word(i, d=data):
+            try:
+                return int(d[i * 64:(i + 1) * 64], 16)
+            except ValueError:
+                return 0
+
         out.append({"pad": "pons-v1", "token": "0x" + lg["topics"][1][26:],
                     "pool": "0x" + data[64:128][24:],
                     "quote_token": rcfg.CONTRACTS["weth"],
+                    "restrictions_end_block": _word(5),
+                    "initial_buy_wei": _word(6),
                     "block": int(lg["blockNumber"], 16)})
     return out, failures
 
@@ -142,6 +160,18 @@ def _resolve(client, hit: dict) -> V.Venue | None:
                               quote_token=hit["quote_token"], kind=V.PONS_V1)
     except Exception:
         return None
+
+
+def _restricted(hit: dict, latest_block: int) -> int:
+    """Blocks remaining before this launch can be SOLD, 0 if unrestricted.
+
+    Pons enforces a post-launch restriction window. Inside it a sell reverts, so
+    buying at t=0 buys a position you cannot exit — indistinguishable from a
+    honeypot from the outside, and the reason the first live scanner entry got
+    stuck.
+    """
+    end = int(hit.get("restrictions_end_block") or 0)
+    return max(end - latest_block, 0) if end else 0
 
 
 def sweep(client, *, from_block: int, to_block: int, quote_price_usd: float,
@@ -174,7 +204,16 @@ def sweep(client, *, from_block: int, to_block: int, quote_price_usd: float,
                 continue
             plan = S.plan_entry(venue, quote_price_usd=qp,
                                 bankroll_usd=bankroll_usd)
-            rows.append({**hit, **plan,
+            blocks_left = _restricted(hit, to_block)
+            if blocks_left:
+                # ~100ms blocks, so this is also roughly the wait in tenths of a
+                # second. Blocked rather than skipped: it becomes tradeable on
+                # its own, and the next sweep will pick it up.
+                plan = {**plan, "ok": False,
+                        "reasons": ["sells restricted for %d more blocks (~%.0fs)"
+                                    % (blocks_left, blocks_left * 0.1)]
+                                   + list(plan.get("reasons") or [])}
+            rows.append({**hit, **plan, "blocks_restricted": blocks_left,
                          "quote_symbol": ST.symbol_for(venue.quote_token),
                          "quote_price_usd": qp,
                          "stock_paired": V.is_stock_paired(venue)})

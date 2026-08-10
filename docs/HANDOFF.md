@@ -920,7 +920,32 @@ ticket, `--max-positions` concurrent, `--buys-per-hour`. A launch missed costs
 nothing; a runaway loop costs everything. One entry per scan pass, and a token
 bought once is never re-entered in the same session.
 
-### ⚠️ The gate does NOT detect honeypots — the round trip does
+### ⚠️ IT WAS NOT A HONEYPOT — it was Pons's launch restriction window
+
+The first thing the live scanner bought could not be sold, and it looked exactly
+like a honeypot: real token, verified pad, 0% tax, sell refused. The owner's
+objection was the clue — **you cannot get honeypotted from these four pads** —
+and he was right.
+
+**Pons enforces a post-launch restriction window.** `restrictionsEndBlock` is a
+field in `TokenLaunched`, it was documented in `config.py`, and it was read by
+**nothing**. Inside that window a sell reverts. Buying at t=0 buys a position
+that cannot be exited, from a completely legitimate launch. It is an
+anti-sniper measure, not a scam — which is precisely why every honeypot heuristic
+in the world would pass it.
+
+`scanner` now decodes word 5 (`restrictionsEndBlock`) and word 6
+(`initialBuyAmount`, the creator's own opening buy — an entry signal available at
+t=0 and still unused), and `sweep` **blocks** a restricted launch with
+`sells restricted for N more blocks (~Xs)`. Blocked rather than dropped: at
+~100ms blocks the wait is usually seconds, it becomes tradeable on its own, and
+the next sweep picks it up.
+
+**The deeper lesson: a field you decode and do not act on is not a feature, it is
+a liability wearing a comment.** That value sat in the config docstring for the
+whole project and cost the first live position.
+
+### The gate does NOT detect honeypots either — the round trip does
 
 **The scanner bought a honeypot within seconds of going live.** Tax read 0%,
 liquidity was fine, market cap was fine, the pad was one of the eight on the
