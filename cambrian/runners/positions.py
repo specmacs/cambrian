@@ -108,17 +108,35 @@ def exit_value_usd(venue: V.Venue, tokens: int, *,
     return None, False
 
 
-def mark(pos: Position, venue: V.Venue, *, quote_price_usd: float) -> Position:
+def mark(pos: Position, venue: V.Venue, *, quote_price_usd: float,
+         exit_quoter=None) -> Position:
     """Re-value a position at its real exit price.
 
     A failed quote marks to ZERO and counts a failure. Preserving the last good
     mark is how a honeypot renders as a winner — see correction #1.
+
+    `exit_quoter(venue, tokens) -> (usd, status)` is required to close a hole that
+    the spot fallback opened. On a venue with no local sell quote, spot ALWAYS
+    returns a number, so `fails` never increments and the rug check can never
+    fire — a V3 or v4 honeypot would mark healthy forever, because spot reflects
+    the pool's price rather than whether you personally can sell. When a quoter is
+    supplied it is authoritative for those venues: status "unsellable" drives the
+    rug path, "error" leaves the mark alone (a network blip is not a rug, and
+    closing good positions on a bad connection is its own kind of loss).
     """
     val, exact = exit_value_usd(venue, pos.tokens, quote_price_usd=quote_price_usd)
     if val is None:
         pos.fails += 1
         pos.mark_usd = 0.0
         return pos
+    if not exact and exit_quoter is not None:
+        quoted, status = exit_quoter(venue, pos.tokens)
+        if status == "unsellable":
+            pos.fails += 1
+            pos.mark_usd = 0.0
+            return pos
+        if status == "ok" and quoted is not None:
+            val, exact = quoted, True
     pos.fails = 0
     pos.mark_usd = val
     pos.mark_is_exact = exact

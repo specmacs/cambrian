@@ -291,3 +291,35 @@ USDG_ON_RH = "0x5fc5360D0400a0Fd4f2af552ADD042D716F1d168"
 # only as a pricing anchor for the ETH leg — the target asset is irrelevant, the
 # `from` leg's notional/amount is what carries ETH/USD.
 PRICE_ANCHOR = "0xaF3D76f1834A1d425780943C99Ea8A608f8a93f9"
+
+
+def sell_quote_usd(*, token: str, contra: str, qty_tokens: float,
+                   key: str | None = None) -> tuple[float | None, str]:
+    """(usd_out, status) for selling `qty_tokens` — the authoritative exit mark.
+
+    This exists because a spot price is not proof of an exit. For venues with no
+    local sell quote (Uniswap V3, v4), marking at spot always returns a number,
+    so `fails` never increments and the rug check can never fire — a honeypot
+    would mark healthy forever. Flash is the path those trades would really take,
+    so its refusal to quote a sell IS the unsellable signal.
+
+    status: "ok" | "unsellable" | "error". Only "unsellable" should count toward
+    the rug counter; a network blip is not a rug, and treating it as one would
+    close good positions on a bad connection.
+    """
+    try:
+        q = quote(target=token, contra=contra, qty=str(qty_tokens), side="sell",
+                  quick_trade=False, key=key)
+    except FlashError as e:
+        msg = str(e).lower()
+        if "notional" in msg or "no route" in msg or "liquidity" in msg \
+                or "failedprecondition" in msg or "invalid" in msg:
+            return None, "unsellable"
+        return None, "error"
+    except Exception:
+        return None, "error"
+    to = q.get("to") or {}
+    try:
+        return float(to.get("notional")), "ok"
+    except (TypeError, ValueError):
+        return None, "unsellable"

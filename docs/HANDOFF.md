@@ -661,6 +661,34 @@ was stale relative to the owner's local file — check that before trusting it.*
 
 ---
 
+## ⚠️ The spot fallback reopened correction #1 — and how it was closed
+
+Worth reading before touching `positions.mark`. Fixing the fake -100% on V3
+venues introduced a spot fallback, which quietly undid the rug detector for every
+venue that uses it:
+
+**Spot ALWAYS returns a number.** So `fails` never incremented, `RUG_FAILS` never
+tripped, and a Uniswap V3 or v4 honeypot marked healthy indefinitely — because
+spot reflects the POOL's price, not whether you personally can sell. That is
+correction #1 arriving through a side door, and it landed on pons-v1 and
+pools.trade, which are now most of the tradeable flow and take the biggest
+tickets.
+
+Closed with `exit_quoter`: on a spot-marked venue, ask **Flash** what selling the
+position would really pay. Flash is the path those trades would actually execute
+through, so its refusal to quote a sell IS the unsellable signal, and it is the
+only one available for a pool with no local sell math.
+
+- status `unsellable` -> rug path (mark 0, `fails` += 1)
+- status `error` -> mark untouched. **A network blip is not a rug**, and closing
+  good positions on a bad connection is its own kind of loss.
+- status `ok` -> the mark is upgraded to exact, at the real exit value
+
+Throttled to `EXIT_QUOTE_INTERVAL_S` (30s) per token — the aim is to catch an
+unsellable position within a minute, not to pay for a network call every 2s.
+Curve and V2 venues never pay for it at all, since their local quote is already
+exact. Live: real sell quotes returned for pools.trade and pons-v1 tokens.
+
 ## Position tracking — mark at the EXIT, not the mid
 
 `runners/positions.py`. Two rules, both corrections to how this desk used to work.

@@ -220,3 +220,48 @@ def test_portfolio_summary_reports_pnl_and_unmarked_exposure():
     assert s["cost_usd"] == 250.0 and s["value_usd"] == 150.0
     assert s["pnl_usd"] == -100.0
     assert s["unmarked"] == 1 and s["at_risk"] == 1
+
+
+# --- the rug check must reach spot-marked venues too -------------------------
+
+def test_spot_marked_venues_can_still_be_caught_as_unsellable():
+    # The hole the spot fallback opened: spot ALWAYS returns a number, so `fails`
+    # never incremented and a V3/v4 honeypot marked healthy forever. Spot reflects
+    # the pool's price, not whether you personally can sell.
+    v3 = _v(kind=V.PONS_V1, pricing_reserves=None, spot_price_quote_per_token=1e-8)
+    pos = _pos(cost_usd=20.0, tokens=10**24, peak_usd=20.0)
+    quoter = lambda venue, tokens: (None, "unsellable")
+    for _ in range(P.RUG_FAILS):
+        P.mark(pos, v3, quote_price_usd=2000.0, exit_quoter=quoter)
+    assert pos.fails == P.RUG_FAILS and pos.mark_usd == 0.0
+    action, frac, why = P.exit_decision(pos)
+    assert action == "close" and "rug" in why
+
+
+def test_a_network_error_is_not_treated_as_a_rug():
+    # Closing good positions on a bad connection is its own kind of loss.
+    v3 = _v(kind=V.PONS_V1, pricing_reserves=None, spot_price_quote_per_token=1e-8)
+    pos = _pos(cost_usd=20.0, tokens=10**24, peak_usd=20.0)
+    quoter = lambda venue, tokens: (None, "error")
+    for _ in range(P.RUG_FAILS + 2):
+        P.mark(pos, v3, quote_price_usd=2000.0, exit_quoter=quoter)
+    assert pos.fails == 0
+    assert pos.mark_usd > 0
+    assert P.exit_decision(pos)[0] is None
+
+
+def test_a_real_flash_quote_upgrades_the_mark_to_exact():
+    v3 = _v(kind=V.PONS_V1, pricing_reserves=None, spot_price_quote_per_token=1e-8)
+    pos = _pos(cost_usd=20.0, tokens=10**24, peak_usd=20.0)
+    P.mark(pos, v3, quote_price_usd=2000.0,
+           exit_quoter=lambda venue, tokens: (17.5, "ok"))
+    assert pos.mark_usd == 17.5          # the real exit, below the $20 spot
+    assert pos.mark_is_exact is True
+
+
+def test_curve_venues_never_pay_for_a_quote_they_do_not_need():
+    # An exact local quote must not be overridden by a network call.
+    calls = []
+    P.mark(_pos(), _v(), quote_price_usd=2000.0,
+           exit_quoter=lambda venue, tokens: calls.append(1) or (99.0, "ok"))
+    assert calls == []

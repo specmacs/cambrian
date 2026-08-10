@@ -37,6 +37,10 @@ SCAN_INTERVAL_S = float(os.getenv("RH_SCAN_INTERVAL_S", "20"))
 MARK_INTERVAL_S = float(os.getenv("RH_MARK_INTERVAL_S", "2"))
 SCAN_BLOCKS = int(os.getenv("RH_SCAN_BLOCKS", "1200"))
 SEEN_MAX = int(os.getenv("RH_SEEN_MAX", "5000"))
+# How often to pay for an authoritative Flash sell quote on a spot-marked venue.
+# Slower than MARK_INTERVAL_S on purpose: it is a network call, and the point is
+# to catch an unsellable position within a minute, not on every tick.
+EXIT_QUOTE_INTERVAL_S = float(os.getenv("RH_EXIT_QUOTE_INTERVAL_S", "30"))
 
 
 @dataclass
@@ -47,6 +51,7 @@ class LiveState:
     _seen_set: set[str] = field(default_factory=set)
     last_scan_at: float = 0.0
     last_mark_at: float = 0.0
+    last_exit_quote: dict[str, float] = field(default_factory=dict)
     scans: int = 0
     marks: int = 0
 
@@ -105,7 +110,16 @@ def mark_tick(client, state: LiveState, *, weth_usd: float,
         # An unpriceable quote asset is not a zero mark — it is an unknown one,
         # and `mark` already treats a failed valuation as a rug signal. Skipping
         # here would instead freeze the mark, which is the bug correction #1 was.
-        P.mark(pos, venue, quote_price_usd=qp if qp is not None else weth_usd)
+        # Spot-marked venues (V3, v4) need an authoritative sell quote or the rug
+        # check can never fire for them — see positions.mark. Throttled per token
+        # so a 2s mark loop does not hammer the API.
+        quoter = None
+        if not V.price_quote_per_token(venue) or venue.pricing_reserves is None:
+            if t - state.last_exit_quote.get(token, 0.0) >= EXIT_QUOTE_INTERVAL_S:
+                state.last_exit_quote[token] = t
+                quoter = _flash_exit_quoter
+        P.mark(pos, venue, quote_price_usd=qp if qp is not None else weth_usd,
+               exit_quoter=quoter)
         action, fraction, why = P.exit_decision(pos, now=t)
         if action:
             intents.append({"token": token, "action": action, "fraction": fraction,
@@ -166,3 +180,18 @@ def format_tick(fresh: list[dict], intents: list[dict], state: LiveState) -> str
                  % (summary["open"], summary["cost_usd"], summary["value_usd"],
                     ("%+.1f%%" % summary["pnl_pct"]) if summary["pnl_pct"] is not None else "n/a"))
     return "\n".join(lines)
+
+
+def _flash_exit_quoter(venue: V.Venue, tokens: int):
+    """Ask Flash what selling this position would really pay.
+
+    Flash is the path these venues would actually execute through, so its refusal
+    to quote a sell is the honest unsellable signal — and the only one available
+    for a pool with no local sell math.
+    """
+    from .execution import NATIVE_SENTINEL, sell_quote_usd
+    contra = venue.quote_token
+    if not contra or contra.lower() == V.NATIVE_ETH:
+        contra = NATIVE_SENTINEL
+    return sell_quote_usd(token=venue.token, contra=contra,
+                          qty_tokens=tokens / (10 ** venue.token_decimals))
