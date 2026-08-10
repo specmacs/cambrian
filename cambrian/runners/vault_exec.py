@@ -371,6 +371,9 @@ def adopt(client, vault: str, *, exclude: tuple = (), now: float | None = None) 
                        # has to measure against what was actually paid, not
                        # against the remainder.
                        "basis0": float(basis), "banked": 0.0, "pad": "vault",
+                       # Best available: basis over units held. For a position
+                       # adopted rather than opened here it is the honest one.
+                       "entry_px": (float(basis) / human) if human else None,
                        "symbol": (r.get("symbol") or asset.get("symbol")
                                   or find_symbol(r) or symbol_of(client, token))}
     return book

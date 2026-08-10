@@ -444,3 +444,49 @@ def test_an_unsettled_buy_is_not_marked_at_zero_and_stopped_out(monkeypatch):
     assert pos.mark_usd is None                # never marked
     assert pos.fails == 0                      # not counted as unsellable
     assert T.STATE["book"][tok]["signal"] == "awaiting fill"
+
+
+def test_one_failing_position_does_not_freeze_every_mark(monkeypatch):
+    # This is why the screen went stale while a token ran 25%: pool.map re-raises
+    # the first exception when results are iterated, so one RPC timeout aborted
+    # the whole cycle. Every position kept its last mark and nothing said so.
+    import time as _t
+
+    T = _fresh_terminal()
+    good, bad = "0xgood", "0xbad"
+
+    class HalfBrokenChain(FakeChain):
+        def erc20_balance_of(self, token, holder):
+            if token == bad:
+                raise RuntimeError("rpc timeout")
+            return 10 ** 18
+
+    monkeypatch.setattr(D, "quicktrade_quote",
+                        lambda **kw: {"metadata": {"toNotional": "12.00"}})
+    monkeypatch.setattr(D, "positions", lambda **kw: {"positions": []})
+    T.STATE["vault"] = "0xv"
+    T.STATE["book"] = {t: {"position": _pos(cost=10.0), "decimals": 18,
+                           "held": 1.0, "basis_known": True, "symbol": t,
+                           "seen_balance": True} for t in (good, bad)}
+    thread = __import__("threading").Thread(
+        target=T._engine, args=(HalfBrokenChain(),),
+        kwargs={"slippage": 0.05, "interval": 0.05}, daemon=True)
+    thread.start()
+    _t.sleep(0.5)
+    assert T.STATE["book"][good]["position"].mark_usd == 12.0   # still marked
+    assert T.STATE["book"][bad]["signal"] == "mark failed"
+    assert T.STATE["book"][bad]["position"].fails == 0          # not a rug
+
+
+def test_a_stale_book_is_reported_as_an_error():
+    # A frozen number and a fresh one looked identical: the status bar was fed
+    # the mark DURATION where it renders "N seconds ago".
+    import time as _t
+
+    T = _fresh_terminal()
+    T.STATE["book"] = {"0xa": {"position": _pos(), "decimals": 18}}
+    T.STATE["last_mark_at"] = _t.time() - 45
+    T.STATE["last_error"] = None
+    snap = T.snapshot()
+    assert "STALE" in (snap["err"] or "")
+    assert snap["marked"] >= 45          # AGE, not how long the mark took

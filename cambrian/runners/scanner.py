@@ -52,6 +52,16 @@ def chunked_logs(client, *, address: str, topics: list, from_block: int,
     return logs, failed
 
 
+# Verified-token cache. A launch is a fact, not a snapshot, so this only grows.
+_PROV_CACHE: dict = {"verified": {"pools-trade": set(), "flap": set()}, "to": 0}
+
+
+def reset_provenance_cache() -> None:
+    """Forget everything verified. For tests, and for a chain reorg."""
+    _PROV_CACHE["verified"] = {"pools-trade": set(), "flap": set()}
+    _PROV_CACHE["to"] = 0
+
+
 def _provenance(client, from_block: int, to_block: int) -> tuple[dict, int]:
     """Tokens that PROVABLY came from a launchpad, by pad.
 
@@ -69,9 +79,19 @@ def _provenance(client, from_block: int, to_block: int) -> tuple[dict, int]:
     after its token was created, and a launch that scrolled out of the discovery
     window is still a real launch.
     """
+    # Incremental. Re-scanning the whole backfill window every sweep is what
+    # made discovery cost seconds — and on a fresh launch the entry is decided in
+    # the first seconds, so that cost came straight out of the edge. A token that
+    # was launched is launched forever, so the verified set only ever grows:
+    # backfill once, then scan the handful of blocks since the last pass.
     span = int(os.getenv("RH_PROVENANCE_BLOCKS", "6000"))
-    lo = max(from_block - span, 0)
-    verified: dict = {"pools-trade": set(), "flap": set()}
+    verified = _PROV_CACHE["verified"]
+    if _PROV_CACHE["to"] and to_block > _PROV_CACHE["to"]:
+        lo = _PROV_CACHE["to"] + 1
+    else:
+        lo = max(from_block - span, 0)
+    if lo > to_block:
+        return verified, 0                     # already current
     failures = 0
 
     for addr in rcfg.UNI_LAUNCHER_ADDRESSES:
@@ -97,6 +117,11 @@ def _provenance(client, from_block: int, to_block: int) -> tuple[dict, int]:
         data = (lg.get("data") or "0x")[2:]
         if len(data) >= 256:
             verified["flap"].add("0x" + data[192:256][-40:].lower())
+    # Only advance the watermark on a CLEAN pass. A failed chunk means blocks
+    # went unread, and treating them as scanned would permanently mark a real
+    # launch unverified — the gate would then refuse a good token forever.
+    if not failures:
+        _PROV_CACHE["to"] = to_block
     return verified, failures
 
 

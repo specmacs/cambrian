@@ -36,6 +36,16 @@ class FakeClient:
         return []
 
 
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _clean_cache():
+    SC.reset_provenance_cache()
+    yield
+    SC.reset_provenance_cache()
+
+
 def test_a_launcher_token_is_verified():
     verified, _f = SC._provenance(FakeClient(), 1000, 2000)
     assert REAL.lower() in verified["pools-trade"]
@@ -72,3 +82,43 @@ def test_provenance_looks_further_back_than_the_sweep():
 def test_every_pad_gets_a_provenance_bucket_it_can_be_checked_against():
     verified, _f = SC._provenance(FakeClient(), 1000, 2000)
     assert set(verified) == {"pools-trade", "flap"}
+
+
+def test_provenance_is_scanned_incrementally():
+    # Re-scanning the backfill window every sweep cost seconds, and on a fresh
+    # launch those seconds are the entry.
+    spans = []
+
+    class Recorder(FakeClient):
+        def get_logs(self, *, address, topics, from_block, to_block):
+            spans.append(int(to_block, 16) - int(from_block, 16))
+            return []
+
+    SC._provenance(Recorder(), 100_000, 100_400)
+    first = max(spans)
+    spans.clear()
+    SC._provenance(Recorder(), 100_400, 100_450)
+    assert max(spans) < first / 10            # only the new blocks
+
+
+def test_a_failed_chunk_does_not_advance_the_watermark():
+    # Blocks that went unread must be re-read: marking them scanned would leave
+    # a real launch permanently unverified, and the gate would refuse it forever.
+    class Broken(FakeClient):
+        def get_logs(self, **kw):
+            raise RuntimeError("rpc down")
+
+    _v, failures = SC._provenance(Broken(), 100_000, 100_400)
+    assert failures > 0
+    assert SC._PROV_CACHE["to"] == 0
+
+
+def test_the_verified_set_persists_across_sweeps():
+    SC._provenance(FakeClient(), 100_000, 100_400)
+
+    class Empty(FakeClient):
+        def get_logs(self, **kw):
+            return []
+
+    verified, _f = SC._provenance(Empty(), 100_400, 100_450)
+    assert REAL.lower() in verified["pools-trade"]

@@ -824,6 +824,41 @@ that cannot quote is not hammered forever.
 
 Manual half: `cambrian sell --token 0x.. --pct 50 [--yes]`.
 
+### Speed — where the seconds actually went
+
+The owner's requirement: *you need to be trading at milliseconds sometimes on
+these fresh launches.* What was costing time was not the loop interval.
+
+**Provenance was re-scanning 6,000 blocks on every sweep.** A launch is a fact,
+not a snapshot, so the verified set only ever grows: backfill once, then read the
+handful of blocks since the last pass. `_PROV_CACHE` does that, and the watermark
+**only advances on a clean pass** — a failed chunk means blocks went unread, and
+marking them scanned would leave a real launch permanently unverified, with the
+gate refusing a good token forever.
+
+With that cached, the scan interval drops from 8s to **1s** (`RH_SCAN_INTERVAL_S`,
+floor 0.2s). The remaining floor is what one sweep costs in log reads, not an
+arbitrary sleep.
+
+### Marks froze while a token ran 25% — three causes, all mine
+
+1. **`pool.map` re-raises on iteration**, so a single RPC timeout aborted the
+   whole mark cycle. Every position kept its last mark and nothing said so. Marks
+   are now caught per position; a failed read is neither "sold" nor "unsellable"
+   (closing a good position on a bad connection is its own kind of loss).
+2. **The status bar was fed the mark DURATION where it renders "N seconds ago".**
+   A frozen mark and a fresh one looked identical. It now reports the AGE of the
+   last successful mark, and a book unmarked for >10s reports `MARKS STALE`.
+3. **Cash refreshed only every 30s**, inside the adopt block — so "how much can I
+   still spend", the first question anyone asks a desk, was up to half a minute
+   stale. It now refreshes every cycle, including when the book is empty, which
+   is exactly when you are deciding what to buy next.
+
+Also: **Δ is the TOKEN's move, Unreal is the position's P&L.** Merging them is
+why a token that ran 25% could read negative — the position carries the ~5% round
+trip, the token does not. Entry price comes from the fill itself
+(`spend / buyAmount`); an adopted position uses basis over units held.
+
 ### How fast can the exit loop actually be
 
 Asked directly, and worth pinning because the intuitive answer is wrong.

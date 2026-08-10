@@ -43,6 +43,7 @@ _lock = threading.RLock()
 STATE: dict = {
     "vault": None, "wallet": None, "halted": False, "book": {}, "events": [],
     "marks": 0, "mark_ms": 0.0, "last_error": None, "started_at": time.time(),
+    "last_mark_at": 0.0,
     "auto_exit": True, "realized": 0.0, "closed": [], "fills": [], "block": 0,
     "cash": {}, "adopt_note": "", "adopted_once": False,
     # --- entry side ---------------------------------------------------------
@@ -84,10 +85,6 @@ def _engine(client, *, slippage: float, interval: float) -> None:
             if time.time() - last_adopt > 30:
                 last_adopt = time.time()
                 fresh = VX.adopt(client, vault)
-                try:
-                    STATE["cash"] = VX.cash(client, vault)
-                except Exception:
-                    pass
                 with _lock:
                     # "You hold nothing" and "I could not read the response"
                     # render identically as an empty table, and only one of them
@@ -108,26 +105,49 @@ def _engine(client, *, slippage: float, interval: float) -> None:
                                       "" if entry["basis_known"] else ", assumed"),
                                    tok)
 
+            try:
+                STATE["cash"] = VX.cash(client, vault)
+            except Exception:
+                pass            # a stale cash line is better than a dead loop
             with _lock:
                 live = [(t, e) for t, e in STATE["book"].items()
                         if not e["position"].closed]
             if not live:
                 time.sleep(max(interval, 1.0))
-                continue
+                continue        # cash was refreshed above
+
+            # Per position, not per cycle. `pool.map` re-raises the first
+            # exception when the results are iterated, so a single RPC timeout
+            # aborted the ENTIRE mark cycle — every position kept its last mark,
+            # the numbers froze, and the only symptom was a stale screen. With
+            # the scanner hammering the same RPC every few seconds, a timeout is
+            # not an edge case.
+            def _safe(it):
+                try:
+                    return VX.plan_sell(client, token=it[0], vault=vault)
+                except Exception as exc:
+                    return {"ok": False, "error": True,
+                            "why": "mark failed: %s" % str(exc)[:80]}
 
             t0 = time.time()
             with ThreadPoolExecutor(max_workers=min(8, len(live))) as pool:
-                plans = list(pool.map(
-                    lambda it: VX.plan_sell(client, token=it[0], vault=vault), live))
+                plans = list(pool.map(_safe, live))
             elapsed = (time.time() - t0) * 1000
 
             with _lock:
                 STATE["marks"] += 1
                 STATE["mark_ms"] = elapsed
+                STATE["last_mark_at"] = time.time()
                 STATE["last_error"] = None
 
             for (token, entry), plan in zip(live, plans):
                 pos = entry["position"]
+                if plan.get("error"):
+                    # Could not read it. That is neither "sold" nor "unsellable"
+                    # — closing a good position on a bad connection is its own
+                    # kind of loss. Keep the last mark and say it is stale.
+                    entry["signal"] = "mark failed"
+                    continue
                 if plan.get("held") is not None:
                     entry["held"] = plan["held"]
                 # Sold somewhere else — through Definitive's own UI, or by hand.
@@ -234,7 +254,11 @@ def _scanner(client, *, slippage: float) -> None:
         except Exception as e:
             with _lock:
                 STATE["last_error"] = "scan: %s" % str(e)[:160]
-        time.sleep(max(float(os.getenv("RH_SCAN_INTERVAL_S", "8")), 2.0))
+        # Fresh launches are won or lost in the first seconds, so the scan
+        # cadence is the entry edge. The floor is what one sweep costs, not an
+        # arbitrary interval — with provenance cached, a sweep is a handful of
+        # log reads over ~40 seconds of chain.
+        time.sleep(max(float(os.getenv("RH_SCAN_INTERVAL_S", "1")), 0.2))
 
 
 def _scout_row(r: dict) -> dict:
@@ -323,6 +347,9 @@ def _maybe_buy(client, rows, *, vault, usdg, slippage) -> None:
                 "basis_known": True, "basis0": float(spend), "banked": 0.0,
                 "pad": r.get("pad") or "?", "symbol": sym,
                 "mc": r.get("market_cap_usd"),
+                # From the fill itself: what one token cost, all-in.
+                "entry_px": (float(spend) / float(cost.get("buy_amount"))
+                             if cost.get("buy_amount") else None),
                 # Until the fill lands the on-chain balance is zero, and a zero
                 # balance is otherwise read as "sold elsewhere". This says the
                 # position has never been seen on chain yet, so do not close it.
@@ -408,13 +435,23 @@ def snapshot() -> dict:
             mark = pos.mark_usd if pos.mark_usd is not None else pos.cost_usd
             basis = entry.get("basis0", pos.cost_usd)
             upnl = (mark + entry.get("banked", 0.0)) - basis
+            # Two different questions, and merging them is why a token that ran
+            # 25% could read negative: the P&L on the position carries the round
+            # trip, the token's move does not.
+            held_now = entry.get("held") or 0.0
+            entry_px = entry.get("entry_px")
+            cur_px = (mark / held_now) if held_now else None
+            token_chg = (100 * (cur_px / entry_px - 1)
+                         if (cur_px and entry_px) else None)
             unreal += mark - pos.cost_usd
             positions.append({
                 "token": token, "sym": entry.get("symbol") or token[:6],
                 "pad": entry.get("pad") or "vault", "agent": "exit-policy",
                 "cost": round(pos.cost_usd, 2), "value": round(mark, 2),
                 "upnl": round(upnl, 2),
-                "chg": round(100 * (mark / pos.cost_usd - 1), 1) if pos.cost_usd else 0.0,
+                # Δ is the TOKEN's move. Unreal is the position's P&L.
+                "chg": round(token_chg, 1) if token_chg is not None else (
+                    round(100 * (mark / pos.cost_usd - 1), 1) if pos.cost_usd else 0.0),
                 "opened": int(pos.opened_at), "mc": entry.get("mc"),
                 "peak_mult": round(max(pos.peak_usd / pos.cost_usd, 1.0), 2)
                              if pos.cost_usd else 1.0,
@@ -429,7 +466,7 @@ def snapshot() -> dict:
         cash_usd = sum(c["usd"] for c in STATE["cash"].values()
                        if c.get("usd") is not None)
         closed = list(STATE["closed"])
-        wins = sum(1 for c in closed if c["pnl"] > 0)
+        wins = sum(1 for c in closed if (c.get("pnl") or 0) > 0)
         return {
             "mode": "Vault", "halted": STATE["halted"],
             "updated": time.strftime("%H:%M:%S"),
@@ -454,8 +491,17 @@ def snapshot() -> dict:
                        {"name": "Mark loop", "on": True}],
             "block": STATE["block"], "model": "gate+exit-policy",
             "size": STATE["max_usd"], "eth": round(STATE["eth"], 2),
-            "marked": int(STATE["mark_ms"] / 1000) if STATE["mark_ms"] else 0,
-            "scan_ms": STATE["scan_ms"], "err": STATE["last_error"],
+            "marked": (int(time.time() - STATE["last_mark_at"])
+                       if STATE["last_mark_at"] else None),
+            "scan_ms": STATE["scan_ms"],
+            "err": (STATE["last_error"] or
+                    ("MARKS STALE — %ds since the last successful mark"
+                     % int(time.time() - STATE["last_mark_at"]))
+                    if (STATE["last_mark_at"]
+                        and time.time() - STATE["last_mark_at"] > 10
+                        and any(not e["position"].closed
+                                for e in STATE["book"].values()))
+                    else STATE["last_error"]),
             "now": int(time.time()), "wallets": 0,
             "vault": STATE["vault"],
         }
