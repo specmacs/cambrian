@@ -344,6 +344,32 @@ an ERC-20 called AAPL and pair a launch against it; that launch would look
 stock-backed while its quote asset is worthless — and would inherit the looser
 tax ceiling. `is_stock_token()` checks the registry, never the name.
 
+### FIRST LIVE TRADE — the loop is proven
+
+`orderId 44e96922-707a-4265-98cb-bb92c1404b30`, 2026-08-10. $8 of USDG into a
+pools.trade launch at a $5,044 market cap, 0% tax, 1.13% lost on the leg
+(0.39% price impact, no fee). Discover -> gate -> size -> quote -> execute, on
+chain, with real money. Every exit rule in this repo had until now only ever
+been tested against synthetic marks; there is finally a real position to manage.
+
+What the path to that first fill actually cost, worth remembering because none
+of it was trading logic:
+
+1. Credentials could not be got onto a Windows box through a shell. Solved by a
+   file plus prefix-salvage (see Environment notes).
+2. A hand-copied bundle went stale and its output was misread as a code bug.
+   Solved by stamping every build.
+3. `walletAddress` was missing from the address endpoint — but the resulting
+   `400 ZodError` is what PROVED the HMAC signature was correct all along.
+4. `"8.00000000"` against six-decimal USDG returns `400 "Internal server error"`.
+   `"8"` works. Two hours of the wrong suspicion lived in that message.
+5. Definitive could not price the top-ranked candidate, and quoting only the top
+   pick threw away the whole scan.
+
+Four of those five produced a misleading error message. When a live call fails
+here, distrust the message and get the raw body first — `quote --raw`,
+`vault --raw`, `--debug` all exist for exactly that reason.
+
 ### Definitive Client API — endpoint shapes, verified against the real docs
 
 **The signature implementation is CONFIRMED CORRECT.** A live call came back

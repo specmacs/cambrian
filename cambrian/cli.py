@@ -447,15 +447,34 @@ def cmd_vault(args: argparse.Namespace) -> int:
         print("  vault id %s" % vault_id)
     print("  Send ETH or USDG here. The vault is created on demand per chain.")
     try:
-        pos = D.positions()
-        rows = pos.get("positions") or pos.get("data") or []
-        print("\n  %d position(s)" % len(rows))
-        for r in rows[:15]:
-            print("   %-12s %-18s %s" % (r.get("symbol") or "?",
-                                         r.get("balance") or r.get("amount") or "?",
-                                         r.get("notional") or ""))
+        pos = D.positions(include_dust=True)
     except D.DefinitiveError as e:
         print("  positions unavailable: %s" % e)
+        return 0
+    if args.raw:
+        print("\n%s" % json.dumps(pos, indent=2)[:4000])
+        return 0
+    rows = pos.get("positions") or pos.get("data") or []
+    print("\n  %d position(s)" % len(rows))
+    print("   %-10s %-24s %10s %10s" % ("SYMBOL", "AMOUNT", "USD", "PNL"))
+    total = 0.0
+    for r in rows[:25]:
+        asset = r.get("asset") or {}
+        # The shape is not documented, so read the plausible spellings rather
+        # than printing "?" next to a real balance the way the first cut did.
+        sym = (r.get("symbol") or asset.get("symbol") or asset.get("name")
+               or (r.get("address") or asset.get("address") or "?")[:10])
+        amt = r.get("balance") or r.get("amount") or r.get("qty") or ""
+        usd = r.get("notional") or r.get("notionalValue") or r.get("usdValue") or ""
+        pnl = r.get("pnl") or r.get("unrealizedPnl") or ""
+        try:
+            total += float(usd)
+        except (TypeError, ValueError):
+            pass
+        print("   %-10s %-24s %10s %10s" % (str(sym)[:10], str(amt)[:24],
+                                            str(usd)[:10], str(pnl)[:10]))
+    if total:
+        print("\n  book value $%.2f" % total)
     return 0
 
 
@@ -1297,6 +1316,8 @@ def build_parser() -> argparse.ArgumentParser:
     vt = sub.add_parser("vault", help="show the Definitive vault address and positions")
     vt.add_argument("--wallet", default=None,
                     help="your own wallet address (required by the API)")
+    vt.add_argument("--raw", action="store_true",
+                    help="dump the raw positions response")
     vt.add_argument("--debug", action="store_true",
                     help="print the signed string (key redacted) to diagnose a 401")
     vt.set_defaults(func=cmd_vault)
