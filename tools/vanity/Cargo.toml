@@ -1,0 +1,26 @@
+[package]
+name = "vanity"
+version = "0.1.0"
+edition = "2021"
+description = "Multi-threaded EVM vanity address generator"
+license = "MIT"
+
+[[bin]]
+name = "vanity"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+secp256k1 = { version = "0.31", features = ["rand", "std"] }
+tiny-keccak = { version = "2", features = ["keccak"] }
+rand = "0.9"
+regex = "1"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+
+[dev-dependencies]
+hex = "0.4"
