@@ -24,9 +24,11 @@ async function record(token: string, over: Record<string, any> = {}) {
     creatorTaxBps: 0n,
     buybackEnabled: false,
     phase: 2n, // PoolCreated
-    sweptQuote: ETH("4.2"),
+    // The live factory leaves all three swept* fields at zero even on graduated launches,
+    // so the mock does too — nothing on-chain may depend on them.
+    sweptQuote: 0n,
     sweptTokens: 0n,
-    sweptAt: BigInt(now),
+    sweptAt: 0n,
     exists: true,
     ...over,
   };
@@ -220,7 +222,7 @@ describe("IPO — Initial Pons Offering", () => {
     it("caps how many coins one epoch may buy", async () => {
       const f = await loadFixture(deployFixture);
       await fundTreasury(f, ETH("1"));
-      await f.treasury.setPolicy(HOUR, 10_000, ETH("5"), 1, 0, 12 * HOUR, ETH("4.2"), 0);
+      await f.treasury.setPolicy(HOUR, 10_000, ETH("5"), 1, 0, 12 * HOUR, ETH("4.2"));
 
       await expect(runEpoch(f, [f.coinA, f.coinB]))
         .to.be.revertedWithCustomError(f.treasury, "TooManyOrders")
@@ -231,7 +233,7 @@ describe("IPO — Initial Pons Offering", () => {
       const f = await loadFixture(deployFixture);
       await fundTreasury(f, ETH("1"));
       // 25% per epoch.
-      await f.treasury.setPolicy(HOUR, 2_500, ETH("5"), 10, 0, 12 * HOUR, ETH("4.2"), 0);
+      await f.treasury.setPolicy(HOUR, 2_500, ETH("5"), 10, 0, 12 * HOUR, ETH("4.2"));
 
       expect(await f.treasury.epochBudget()).to.equal(ETH("0.25"));
       await expect(runEpoch(f, [f.coinA])).to.emit(f.treasury, "EpochRun").withArgs(1, 1, ETH("0.25"));
@@ -247,7 +249,7 @@ describe("IPO — Initial Pons Offering", () => {
     it("never spends the reserve", async () => {
       const f = await loadFixture(deployFixture);
       await fundTreasury(f, ETH("1"));
-      await f.treasury.setPolicy(HOUR, 10_000, ETH("5"), 10, ETH("1"), 12 * HOUR, ETH("4.2"), 0);
+      await f.treasury.setPolicy(HOUR, 10_000, ETH("5"), 10, ETH("1"), 12 * HOUR, ETH("4.2"));
 
       expect(await f.treasury.spendable()).to.equal(0n);
       await expect(runEpoch(f, [f.coinA])).to.be.revertedWithCustomError(
@@ -346,20 +348,27 @@ describe("IPO — Initial Pons Offering", () => {
       await expect(runEpoch(f, [f.coinA])).to.be.revertedWithCustomError(f.treasury, "ThresholdTooLow");
     });
 
-    it("buys a coin that trends long after it bonded, since recency is off by default", async () => {
+    it("buys a coin that bonded long ago, since trending is not about recency", async () => {
       const f = await loadFixture(deployFixture);
       await fundTreasury(f, ETH("1"));
-      expect(await f.treasury.maxGraduationAge()).to.equal(0n);
       await time.increase(30 * 24 * HOUR);
       await expect(runEpoch(f, [f.coinA])).to.emit(f.treasury, "EpochRun");
     });
 
-    it("honours a recency window once one is configured", async () => {
+    it("does not depend on sweptAt, which the live factory never populates", async () => {
       const f = await loadFixture(deployFixture);
       await fundTreasury(f, ETH("1"));
-      await f.treasury.setPolicy(HOUR, 10_000, ETH("5"), 10, 0, 12 * HOUR, ETH("4.2"), 24 * HOUR);
-      await time.increase(25 * HOUR);
-      await expect(runEpoch(f, [f.coinA])).to.be.revertedWithCustomError(f.treasury, "TooOld");
+      const addr = await f.coinA.getAddress();
+
+      // Exactly what mainnet reports for a graduated launch: phase 2, every swept* field zero.
+      await f.factory.setRecord(
+        addr,
+        await record(addr, { phase: 2n, sweptQuote: 0n, sweptTokens: 0n, sweptAt: 0n })
+      );
+
+      const [ok] = await f.treasury.eligibility(addr);
+      expect(ok).to.equal(true);
+      await expect(runEpoch(f, [f.coinA])).to.emit(f.treasury, "EpochRun");
     });
 
     it("reports eligibility off-chain the same way it enforces it on-chain", async () => {

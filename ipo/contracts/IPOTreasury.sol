@@ -33,6 +33,10 @@ struct BuyOrder {
 ///      settled once, which is both cheaper and atomic — either the entire hour's basket lands or
 ///      none of it does.
 ///
+///      Graduation recency is deliberately not enforced here. Pons leaves `sweptAt` at zero even
+///      on fully graduated launches, so there is no on-chain timestamp to test against; the keeper
+///      applies any recency filter using the `PoolGraduated` block instead.
+///
 ///      "Trending" is not observable on-chain, so the keeper chooses which coins to buy. The
 ///      contract constrains *what* it will accept — a real Pons launch, graduated, ETH-paired,
 ///      above a graduation floor, off cooldown — and *how much* can be spent, but not which coin
@@ -73,10 +77,10 @@ contract IPOTreasury is Ownable2Step, ReentrancyGuard, Pausable, IUnlockCallback
     /// @notice Minimum gap before the same coin can be bought again.
     uint256 public tokenCooldown = 12 hours;
     /// @notice Minimum quote a launch had to raise on its curve to be worth buying.
+    /// @dev Denominated in the launch's pair asset. Pons currently exposes a single launch config
+    ///      whose threshold is exactly 4.2 ETH, so combined with the ETH-pair requirement this is
+    ///      a no-op today; it exists so that cheaper configs cannot slip through if Pons adds them.
     uint256 public minGraduationThreshold = 4.2 ether;
-    /// @notice Optional recency window after graduation. Zero disables it.
-    /// @dev Left at zero for a trending strategy, where a coin may trend well after it bonds.
-    uint256 public maxGraduationAge;
     /// @notice Share of each purchase retained by the vault as permanent backing. Zero distributes
     ///         everything to holders.
     uint256 public vaultBps;
@@ -102,8 +106,7 @@ contract IPOTreasury is Ownable2Step, ReentrancyGuard, Pausable, IUnlockCallback
         uint256 maxTokensPerEpoch,
         uint256 minReserve,
         uint256 tokenCooldown,
-        uint256 minGraduationThreshold,
-        uint256 maxGraduationAge
+        uint256 minGraduationThreshold
     );
     event VaultBpsSet(uint256 vaultBps);
     event TaxClaimed(uint256 amount);
@@ -119,7 +122,6 @@ contract IPOTreasury is Ownable2Step, ReentrancyGuard, Pausable, IUnlockCallback
     error NotGraduated(address token, uint8 phase);
     error NotEthPaired(address token);
     error TokenOnCooldown(address token);
-    error TooOld(address token);
     error ThresholdTooLow(address token);
     error EpochNotElapsed(uint256 nextEpochAt);
     error NoOrders();
@@ -196,8 +198,7 @@ contract IPOTreasury is Ownable2Step, ReentrancyGuard, Pausable, IUnlockCallback
         uint256 maxTokensPerEpoch_,
         uint256 minReserve_,
         uint256 tokenCooldown_,
-        uint256 minGraduationThreshold_,
-        uint256 maxGraduationAge_
+        uint256 minGraduationThreshold_
     ) external onlyOwner {
         if (epochSpendBps_ > BPS) revert InvalidBps();
         epochDuration = epochDuration_;
@@ -207,7 +208,6 @@ contract IPOTreasury is Ownable2Step, ReentrancyGuard, Pausable, IUnlockCallback
         minReserve = minReserve_;
         tokenCooldown = tokenCooldown_;
         minGraduationThreshold = minGraduationThreshold_;
-        maxGraduationAge = maxGraduationAge_;
         emit PolicySet(
             epochDuration_,
             epochSpendBps_,
@@ -215,8 +215,7 @@ contract IPOTreasury is Ownable2Step, ReentrancyGuard, Pausable, IUnlockCallback
             maxTokensPerEpoch_,
             minReserve_,
             tokenCooldown_,
-            minGraduationThreshold_,
-            maxGraduationAge_
+            minGraduationThreshold_
         );
     }
 
@@ -293,9 +292,6 @@ contract IPOTreasury is Ownable2Step, ReentrancyGuard, Pausable, IUnlockCallback
         if (record.pairToken != NATIVE) return (false, "not eth paired");
         if (record.graduationThreshold < minGraduationThreshold) return (false, "threshold too low");
         if (block.timestamp < lastBoughtAt[token] + tokenCooldown) return (false, "token on cooldown");
-        if (maxGraduationAge != 0 && (record.sweptAt == 0 || block.timestamp > record.sweptAt + maxGraduationAge)) {
-            return (false, "too old");
-        }
         return (true, "");
     }
 
@@ -317,9 +313,6 @@ contract IPOTreasury is Ownable2Step, ReentrancyGuard, Pausable, IUnlockCallback
         if (record.pairToken != NATIVE) revert NotEthPaired(token);
         if (record.graduationThreshold < minGraduationThreshold) revert ThresholdTooLow(token);
         if (block.timestamp < lastBoughtAt[token] + tokenCooldown) revert TokenOnCooldown(token);
-        if (maxGraduationAge != 0 && (record.sweptAt == 0 || block.timestamp > record.sweptAt + maxGraduationAge)) {
-            revert TooOld(token);
-        }
     }
 
     // ---------------------------------------------------------------------

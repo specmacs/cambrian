@@ -8,7 +8,8 @@
     "test": "hardhat test",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "start": "tsx bot/runner.ts",
-    "deploy": "hardhat run script/deploy.ts --network robinhood"
+    "deploy": "hardhat run script/deploy.ts --network robinhood",
+    "verify": "tsx script/verify.ts"
   },
   "devDependencies": {
     "@nomicfoundation/hardhat-toolbox": "^5.0.0",

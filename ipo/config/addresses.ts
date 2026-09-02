@@ -10,7 +10,10 @@ export const robinhoodChain = defineChain({
 
 /**
  * Pons v2 deployment on Robinhood Chain.
- * Source: https://docs.ponsfamily.com/v2 — verify on-chain before mainnet use.
+ *
+ * Every address below was confirmed to hold code on mainnet, and the factory's own
+ * `feeEscrow()`, `memeHook()`, `buybackVault()` and `poolManager()` getters agree with them.
+ * Re-verify with `npx tsx script/probe.ts`.
  */
 export const PONS = {
   factory: "0x7eD598BcEf8bd9Edd8C97A195C6d13f40801EC7e",
@@ -22,19 +25,34 @@ export const PONS = {
 } as const;
 
 /**
- * Uniswap v4 PoolManager on Robinhood Chain.
- * NOT yet verified — populate from https://docs.uniswap.org/contracts/v4/deployments
- * (or the deployments.json feed) before deploying. Deployment will refuse a zero address.
+ * Uniswap v4 on Robinhood Chain.
+ *
+ * Read directly off-chain from both `PonsFactory.poolManager()` and `PonsMemeHook.poolManager()`,
+ * which agree. Its `Swap` topic0 is 0x40e9cecb…, matching the standard v4 signature
+ * `Swap(bytes32,address,int128,int128,uint160,uint128,int24,uint24)`.
  */
 export const UNISWAP_V4 = {
-  poolManager: process.env.POOL_MANAGER ?? "",
+  poolManager: process.env.POOL_MANAGER ?? "0x8366a39cc670b4001a1121b8f6a443a643e40951",
 } as const;
+
+/**
+ * Protocol ceiling on `creatorTaxBps`, read from `PonsFactory.maxCreatorTaxBps()`.
+ * IPO's 4% sits well inside it; live launches already carry 400.
+ */
+export const MAX_CREATOR_TAX_BPS = 1000; // 10%
+
+/**
+ * The only launch config Pons currently exposes (`launchConfigCount()` returns 1).
+ *   supply 1e27 (1B x 1e18), curveFee 1%, phantomQuote 1.68 ETH,
+ *   graduationThreshold 4.2 ETH, poolFee 0, tickSpacing 200.
+ */
+export const LAUNCH_CONFIG_ID = 0;
 
 /** IPO launch parameters. */
 export const IPO_LAUNCH = {
   name: "Initial Pons Offering",
   symbol: "IPO",
-  /** 4% creator tax, charged by Pons on the quote side of every buy and sell. */
+  /** 4% creator tax, charged by Pons on the quote side of every buy and sell. Cap is 1000. */
   creatorTaxBps: 400,
   /** Pons pays the creator tax to this address; it must be the IPOTreasury. */
   creatorFeeRecipientEnv: "TREASURY_ADDRESS",

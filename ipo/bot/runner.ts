@@ -48,6 +48,8 @@ const KEEPER_KEY = env("KEEPER_PRIVATE_KEY") as Hex;
 
 /** Blocks of swap history that define "trending". Robinhood Chain targets ~0.25s blocks. */
 const TREND_WINDOW_BLOCKS = BigInt(process.env.TREND_WINDOW_BLOCKS ?? 14_400);
+/** Optional recency filter on graduations, in blocks. Zero (default) buys coins of any age. */
+const MAX_AGE_BLOCKS = BigInt(process.env.MAX_AGE_BLOCKS ?? 0);
 /** Where to start scanning for graduations and IPO transfers. */
 const PONS_FROM_BLOCK = BigInt(process.env.PONS_FROM_BLOCK ?? 0);
 const IPO_DEPLOY_BLOCK = BigInt(process.env.IPO_DEPLOY_BLOCK ?? PONS_FROM_BLOCK);
@@ -135,7 +137,8 @@ async function selectCoins(limit: number): Promise<Address[]> {
     POOL_MANAGER,
     TREND_WINDOW_BLOCKS,
     PONS_FROM_BLOCK,
-    limit * 4 // over-fetch: some will fail eligibility
+    limit * 4, // over-fetch: some will fail eligibility
+    MAX_AGE_BLOCKS
   );
   log(`trending candidates: ${scored.length}`);
 

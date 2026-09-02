@@ -23,6 +23,8 @@ import { getLogsChunked, graduatedLaunches, poolManagerAbi, type Launch } from "
 export interface TrendScore {
   token: Address;
   score: number;
+  /** Block the launch graduated in — the only usable graduation time Pons exposes. */
+  graduatedAtBlock: bigint;
   volumeEth: bigint;
   swaps: number;
   buys: number;
@@ -107,6 +109,7 @@ export async function scoreTrending(
     const priceChangePct = first > 0 ? ((last / first) ** 2 - 1) * 100 : 0;
     return {
       token: launch.token,
+      graduatedAtBlock: launch.graduatedAtBlock,
       volumeEth: a.volumeEth,
       swaps: a.swaps,
       buys: a.buys,
@@ -146,12 +149,18 @@ export async function topTrending(
   poolManager: Address,
   windowBlocks: bigint,
   launchFromBlock: bigint,
-  limit: number
+  limit: number,
+  /** Optional recency filter, in blocks. Zero keeps coins of any age. */
+  maxAgeBlocks = 0n
 ): Promise<TrendScore[]> {
   const head = await client.getBlockNumber();
   const from = head > windowBlocks ? head - windowBlocks : 0n;
   const scores = await scoreTrending(client, poolManager, from, head, launchFromBlock);
-  return scores.slice(0, limit);
+  const fresh =
+    maxAgeBlocks > 0n
+      ? scores.filter((s) => head - s.graduatedAtBlock <= maxAgeBlocks)
+      : scores;
+  return fresh.slice(0, limit);
 }
 
 export { PONS };

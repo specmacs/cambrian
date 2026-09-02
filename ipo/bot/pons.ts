@@ -14,7 +14,8 @@ import { PONS } from "../config/addresses";
 
 export const factoryAbi = parseAbi([
   "event TokenLaunched(address indexed token, address indexed curve, address indexed deployer, address pairToken, uint256 launchConfigId, uint256 graduationThreshold)",
-  "event PoolGraduated(address indexed token, address indexed curve, address pairToken)",
+  // Verified on-chain: one indexed arg, three words of data (topic0 0x0a44ef75…).
+  "event PoolGraduated(address indexed token, uint256 positionId, uint256 tokenAmount, uint256 quoteAmount)",
   "function getLaunchedToken(address token) view returns ((address token,address curve,address deployer,address creatorFeeRecipient,address pairToken,uint256 graduationThreshold,uint24 poolFee,int24 tickSpacing,uint16 creatorTaxBps,bool buybackEnabled,uint8 phase,uint256 sweptQuote,uint256 sweptTokens,uint256 sweptAt,bool exists))",
 ]);
 
@@ -26,6 +27,13 @@ export const poolManagerAbi = parseAbi([
 export const NATIVE: Address = "0x0000000000000000000000000000000000000000";
 
 export interface Launch {
+  /**
+   * Block the `PoolGraduated` event landed in.
+   *
+   * This is the only usable graduation timestamp: the factory's `sweptAt` field is left at zero
+   * even on launches that have fully graduated, so nothing may derive recency from it.
+   */
+  graduatedAtBlock: bigint;
   token: Address;
   curve: Address;
   poolFee: number;
@@ -120,6 +128,7 @@ export async function graduatedLaunches(
       if (!r.exists || r.phase !== 2 || r.pairToken !== NATIVE) continue;
       const poolId = poolIdFor(token, r.poolFee, r.tickSpacing);
       byPool.set(poolId, {
+        graduatedAtBlock: log.blockNumber as bigint,
         token,
         curve: r.curve,
         poolFee: r.poolFee,

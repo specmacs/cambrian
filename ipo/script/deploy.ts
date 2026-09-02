@@ -9,19 +9,20 @@
  *     npx hardhat run script/deploy.ts --network robinhood
  */
 import { ethers } from "hardhat";
-import { PONS, IPO_LAUNCH } from "../config/addresses";
+import { PONS, IPO_LAUNCH, UNISWAP_V4, LAUNCH_CONFIG_ID } from "../config/addresses";
 
 const CREATOR_TAX_BPS = IPO_LAUNCH.creatorTaxBps; // 400 = 4%
 
 async function main() {
   const [deployer] = await ethers.getSigners();
-  const poolManager = process.env.POOL_MANAGER;
+  const poolManager = process.env.POOL_MANAGER ?? UNISWAP_V4.poolManager;
   const keeper = process.env.KEEPER_ADDRESS ?? deployer.address;
-  const launchConfigId = BigInt(process.env.LAUNCH_CONFIG_ID ?? 0);
+  const launchConfigId = BigInt(process.env.LAUNCH_CONFIG_ID ?? LAUNCH_CONFIG_ID);
 
   if (!poolManager || poolManager === ethers.ZeroAddress) {
     throw new Error("POOL_MANAGER is required (Uniswap v4 PoolManager on Robinhood Chain)");
   }
+  console.log("run `npm run verify` first if you have not — it re-checks every Pons assumption");
   if (process.env.CONFIRM_LAUNCH !== "yes") {
     throw new Error("refusing to launch: set CONFIRM_LAUNCH=yes to broadcast");
   }

@@ -23,6 +23,9 @@ struct LaunchedToken {
     uint16 creatorTaxBps;
     bool buybackEnabled;
     uint8 phase;
+    /// @dev The three `swept*` fields are present in the ABI but left at zero by the live
+    ///      factory, including on launches that have fully graduated. Nothing on-chain may
+    ///      depend on them; graduation recency has to come from the `PoolGraduated` block.
     uint256 sweptQuote;
     uint256 sweptTokens;
     uint256 sweptAt;
@@ -58,7 +61,15 @@ interface IPonsFactory {
     );
 
     /// @notice Emitted once a launch's liquidity has been migrated into a locked v4 pool.
-    event PoolGraduated(address indexed token, address indexed curve, address pairToken);
+    /// @dev Verified against the live factory: topic0
+    ///      0x0a44ef75df69c534f43cd6c1aa3ef8983065fe5fe79ef9e79f6494e6f258c259, one indexed
+    ///      argument and three words of data. Every token seen carrying it reports phase 2.
+    /// @param positionId The locked full-range v4 position minted at graduation.
+    /// @param tokenAmount Reserved supply deposited as liquidity (~20.4% of supply).
+    /// @param quoteAmount Quote asset deposited alongside it (4.2 ETH for ETH-paired launches).
+    event PoolGraduated(
+        address indexed token, uint256 positionId, uint256 tokenAmount, uint256 quoteAmount
+    );
 
     function launchToken(TokenParams calldata params, uint256 launchConfigId, address pairToken)
         external

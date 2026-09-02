@@ -175,9 +175,11 @@ from the entitlement history. Serve it publicly and back it up.
 | `maxTokensPerEpoch` | 10 | Coins bought per epoch. |
 | `minReserve` | 0 | ETH never spent. |
 | `tokenCooldown` | 12 hours | Gap before the same coin can be bought again. |
-| `minGraduationThreshold` | 4.2 ETH | Curve raise a launch needed to qualify. |
-| `maxGraduationAge` | 0 (off) | Optional recency window. Off, because a coin can trend well after it bonds. |
+| `minGraduationThreshold` | 4.2 ETH | Curve raise a launch needed to qualify. A no-op while Pons has one config. |
 | `vaultBps` | 0 | Share retained as permanent backing instead of distributed. |
+
+Graduation recency is deliberately *not* a treasury parameter — see below. Set `MAX_AGE_BLOCKS` on
+the keeper instead.
 
 ## Layout
 
@@ -196,6 +198,7 @@ bot/
   merkle.ts               cumulative tree + proofs
   pons.ts                 launch registry and pool-id derivation
 script/deploy.ts          launches IPO on Pons and wires everything up
+script/verify.ts          re-checks every Pons assumption against the live chain
 config/addresses.ts       chain + Pons v2 deployment addresses
 test/ipo.test.ts          42 tests
 ```
@@ -207,6 +210,7 @@ npm install
 npm run build
 npm test
 npm run typecheck
+npm run verify     # checks the integration against live Robinhood Chain
 ```
 
 ## Deploy
@@ -217,8 +221,11 @@ there. If it does not, the script prints the `transferCreatorFeeRecipient` call 
 Nothing is broadcast without `CONFIRM_LAUNCH=yes`.
 
 ```bash
-CONFIRM_LAUNCH=yes POOL_MANAGER=0x... KEEPER_ADDRESS=0x... PRIVATE_KEY=0x... npm run deploy
+CONFIRM_LAUNCH=yes KEEPER_ADDRESS=0x... PRIVATE_KEY=0x... npm run deploy
 ```
+
+`POOL_MANAGER` and `LAUNCH_CONFIG_ID` now default to the verified mainnet values, and the script
+still asserts 400bps clears `maxCreatorTaxBps()` before broadcasting.
 
 It prints the fully populated keeper command on success:
 
@@ -231,22 +238,50 @@ KEEPER_PRIVATE_KEY=0x... npm start
 The runner polls `epochReady()` every 5 minutes rather than sleeping for exactly an hour, so a
 restart or an RPC outage costs one poll interval instead of skipping the hour.
 
+## Verified against mainnet
+
+Everything this repo assumes about Pons was checked against the live deployment on Robinhood Chain.
+`npm run verify` re-runs all of it — read-only, no keys — and exits non-zero on any mismatch. Run it
+before deploying, and again after any Pons upgrade.
+
+| Assumption | Verified |
+| --- | --- |
+| Pons contract addresses | All hold code; the factory's own `feeEscrow()`, `memeHook()`, `buybackVault()` getters agree |
+| Uniswap v4 PoolManager | `0x8366a39cc670b4001a1121b8f6a443a643e40951` — read from `PonsFactory.poolManager()` **and** `PonsMemeHook.poolManager()`, which agree |
+| `maxCreatorTaxBps()` | **1000** (10%). IPO's 400 is well inside it; live launches already carry 400 |
+| `TokenLaunched` | `(address,address,address,address,uint256,uint256)` — topic `0x8d4aad49…` |
+| `PoolGraduated` | `(address indexed token, uint256 positionId, uint256 tokenAmount, uint256 quoteAmount)` — topic `0x0a44ef75…` |
+| v4 `Swap` | `(bytes32,address,int128,int128,uint160,uint128,int24,uint24)` — topic `0x40e9cecb…`, ~1900 in 300 blocks |
+| `LaunchedToken` field order | Decodes to itself on real graduated launches, all reporting `phase == 2` |
+| Launch config | `launchConfigCount() == 1`; config 0 is supply 1e27, curve fee 1%, phantom quote 1.68 ETH, threshold 4.2 ETH, tickSpacing 200, poolFee 0 |
+
+Two findings changed the code:
+
+**`PoolGraduated` is not what the docs imply.** It carries one indexed argument and three words of
+data — the locked position id, the reserved token amount, and the quote deposited — not
+`(token, curve, pairToken)`. A watcher built on the documented shape would have matched nothing and
+silently bought nothing, forever.
+
+**`sweptQuote`, `sweptTokens` and `sweptAt` are always zero**, including on launches that have fully
+graduated. An earlier revision gated purchases on `sweptAt + maxGraduationAge`, which would have
+rejected every coin on the chain the moment that parameter was switched on. There is no on-chain
+graduation timestamp, so the check was removed rather than left as a trap; recency, if wanted, is a
+keeper-side filter (`MAX_AGE_BLOCKS`) using the `PoolGraduated` block. A regression test now pins
+eligibility against a record with every `swept*` field zeroed, and `verify` flags it if Pons ever
+starts populating them.
+
+One consequence worth knowing: with a single launch config, `graduationThreshold` is *always* 4.2
+ETH for ETH-paired launches, so `minGraduationThreshold` is a no-op today. It stays as a guard
+against cheaper configs Pons may add later.
+
 ## Before mainnet
 
-- [ ] **Fill in `UNISWAP_V4.poolManager`** in `config/addresses.ts`. It is the one address I could
-      not verify for Robinhood Chain; `deploy.ts` refuses to run without it.
-- [ ] **Confirm the `PoolGraduated` and v4 `Swap` event signatures.** The Pons docs name
-      `PoolGraduated` but not its parameters. `bot/pons.ts` assumes
-      `(address indexed token, address indexed curve, address pairToken)` and the standard v4
-      `Swap`. A mismatch means the bot silently sees nothing — verify against the deployed ABIs.
-- [ ] **Confirm the `LaunchedToken` field order** in `interfaces/IPons.sol`. It is decoded from the
-      docs, and a reordered struct would misread `phase`.
-- [ ] Check `maxCreatorTaxBps()` on-chain. `deploy.ts` asserts 400 clears it, but knowing the
-      number in advance is worth a single `eth_call`.
-- [ ] Decide the launch config id (`LAUNCH_CONFIG_ID`), which fixes supply, curve fee, phantom
-      quote, graduation threshold, and tick spacing.
+- [ ] `npm run verify` — should print **all checks passed**.
+- [ ] Decide keeper and publisher key custody, and move ownership to a multisig.
 - [ ] Calibrate `TREND_WINDOW_BLOCKS` to a real hour of Robinhood Chain blocks, and tune the
       trending weights against real graduation data.
+- [ ] Tune `setPolicy(...)` against real volume — the defaults are a starting point, not a
+      recommendation.
 - [ ] Back up `data/` and serve `proofs.json` publicly. Holders cannot claim without it.
-- [ ] Move ownership to a multisig; run the keeper on redundant infrastructure.
+- [ ] Run the keeper on redundant infrastructure.
 - [ ] External audit. None of this has been audited.
