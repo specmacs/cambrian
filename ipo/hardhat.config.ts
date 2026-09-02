@@ -11,7 +11,15 @@ const config: HardhatUserConfig = {
     },
   },
   networks: {
-    hardhat: {},
+    hardhat: {
+      // Set FORK_BLOCK to pin a block; forking is opt-in so the unit suite stays offline.
+      forking: process.env.FORK_BLOCK
+        ? {
+            url: process.env.RPC_URL ?? "https://rpc.mainnet.chain.robinhood.com",
+            blockNumber: Number(process.env.FORK_BLOCK),
+          }
+        : undefined,
+    },
     robinhood: {
       url: process.env.RPC_URL ?? "https://rpc.mainnet.chain.robinhood.com",
       chainId: 4663,

@@ -200,7 +200,8 @@ bot/
 script/deploy.ts          launches IPO on Pons and wires everything up
 script/verify.ts          re-checks every Pons assumption against the live chain
 config/addresses.ts       chain + Pons v2 deployment addresses
-test/ipo.test.ts          42 tests
+test/ipo.test.ts          42 unit tests against a mock pool manager
+test/fork.test.ts         buys a real coin on the real v4 pool (opt-in)
 ```
 
 ## Build
@@ -212,6 +213,19 @@ npm test
 npm run typecheck
 npm run verify     # checks the integration against live Robinhood Chain
 ```
+
+The unit suite runs offline against a mock pool manager. There is also a **fork test** that buys a
+real graduated Pons coin on the real Uniswap v4 pool through the real Pons hook — the one thing a
+mock cannot prove:
+
+```bash
+FORK_BLOCK=52202800 npx hardhat test test/fork.test.ts
+```
+
+It confirms the pool key reconstructed from a launch record actually identifies the pool, that the
+swap direction is right, and that settle/take balances against v4's flash accounting with a hook in
+the path. Last run bought 169,369.96 tokens for 0.02 ETH and left the treasury's ETH exactly
+reconciled. Takes ~3 minutes against the public RPC.
 
 ## Deploy
 
