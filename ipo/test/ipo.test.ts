@@ -1,12 +1,16 @@
 import { expect } from "chai";
 import { ethers } from "hardhat";
 import { loadFixture, time } from "@nomicfoundation/hardhat-network-helpers";
+import { CumulativeMerkleTree, accrue, type Entitlement } from "../bot/merkle";
+import type { Address } from "viem";
 
 const ETH = (n: string) => ethers.parseEther(n);
 const IPO_SUPPLY = ETH("1000000000"); // 1B, Pons fixed supply
+const HOUR = 3600;
+const RATE = 1000n; // mock pool: tokens out per wei in
 
 /** Build a Pons `LaunchedToken` record as the factory would report it. */
-async function record(token: string, over: Partial<Record<string, any>> = {}) {
+async function record(token: string, over: Record<string, any> = {}) {
   const now = await time.latest();
   return {
     token,
@@ -28,9 +32,13 @@ async function record(token: string, over: Partial<Record<string, any>> = {}) {
   };
 }
 
+/** Orders must be strictly ascending by token address. */
+const sortOrders = (orders: { token: string; minTokensOut: bigint }[]) =>
+  [...orders].sort((a, b) => (a.token.toLowerCase() < b.token.toLowerCase() ? -1 : 1));
+
 describe("IPO — Initial Pons Offering", () => {
   async function deployFixture() {
-    const [owner, keeper, alice, bob, curve] = await ethers.getSigners();
+    const [owner, keeper, alice, bob, carol, curve] = await ethers.getSigners();
 
     const ERC20 = await ethers.getContractFactory("MockERC20");
     const ipo = await ERC20.deploy("Initial Pons Offering", "IPO", IPO_SUPPLY);
@@ -40,29 +48,47 @@ describe("IPO — Initial Pons Offering", () => {
     const pm = await (await ethers.getContractFactory("MockPoolManager")).deploy();
     const memeHook = "0xE5e702641Ea86F4ae6cC3cDaeD2B886f976Be044";
 
-    const vault = await (await ethers.getContractFactory("IPOVault")).deploy(
-      await ipo.getAddress(),
-      owner.address
-    );
-    const treasury = await (await ethers.getContractFactory("IPOTreasury")).deploy(
+    const ipoAddr = await ipo.getAddress();
+    const vault = await (await ethers.getContractFactory("IPOVault")).deploy(ipoAddr, owner.address);
+    const distributor = await (
+      await ethers.getContractFactory("IPODistributor")
+    ).deploy(owner.address);
+    const treasury = await (
+      await ethers.getContractFactory("IPOTreasury")
+    ).deploy(
       await factory.getAddress(),
       await escrow.getAddress(),
       await pm.getAddress(),
       memeHook,
-      await ipo.getAddress(),
+      ipoAddr,
       owner.address
     );
 
-    await vault.setTreasury(await treasury.getAddress());
+    const treasuryAddr = await treasury.getAddress();
+    await vault.setTreasury(treasuryAddr);
+    await distributor.setTreasury(treasuryAddr);
+    await distributor.setPublisher(keeper.address);
+    await treasury.setDistributor(await distributor.getAddress());
     await treasury.setVault(await vault.getAddress());
     await treasury.setKeeper(keeper.address, true);
 
-    // A graduated Pons project the treasury can buy, with liquidity sitting in the pool manager.
-    const proj = await ERC20.deploy("Bonded Project", "BOND", ETH("1000000"));
-    await proj.transfer(await pm.getAddress(), ETH("1000000"));
-    await factory.setRecord(await proj.getAddress(), await record(await proj.getAddress()));
+    /** Register a graduated Pons coin with liquidity sitting in the pool manager. */
+    async function addCoin(symbol: string, over: Record<string, any> = {}) {
+      const coin = await ERC20.deploy(symbol, symbol, ETH("100000000"));
+      await coin.transfer(await pm.getAddress(), ETH("100000000"));
+      const addr = await coin.getAddress();
+      await factory.setRecord(addr, await record(addr, over));
+      return coin;
+    }
 
-    return { owner, keeper, alice, bob, curve, ipo, factory, escrow, pm, vault, treasury, proj };
+    const coinA = await addCoin("AAA");
+    const coinB = await addCoin("BBB");
+
+    return {
+      owner, keeper, alice, bob, carol, curve,
+      ipo, factory, escrow, pm, vault, distributor, treasury,
+      coinA, coinB, addCoin,
+    };
   }
 
   /** Fund the treasury the way Pons does: tax accrues in the escrow, treasury claims it. */
@@ -71,17 +97,28 @@ describe("IPO — Initial Pons Offering", () => {
     await f.treasury.claimTax();
   }
 
+  /** Run one hourly epoch buying the given coins. */
+  async function runEpoch(f: any, coins: any[], minOuts?: bigint[]) {
+    const orders = sortOrders(
+      await Promise.all(
+        coins.map(async (c, i) => ({
+          token: await c.getAddress(),
+          minTokensOut: minOuts?.[i] ?? 0n,
+        }))
+      )
+    );
+    const deadline = (await time.latest()) + 600;
+    return f.treasury.connect(f.keeper).runEpoch(orders, deadline);
+  }
+
+  // =====================================================================
   describe("tax collection", () => {
     it("claims the creator tax out of the Pons fee escrow as ETH", async () => {
       const f = await loadFixture(deployFixture);
       const treasuryAddr = await f.treasury.getAddress();
 
       await f.escrow.credit(treasuryAddr, { value: ETH("3") });
-      expect(await f.escrow.balanceOf(treasuryAddr)).to.equal(ETH("3"));
-
-      await expect(f.treasury.claimTax())
-        .to.emit(f.treasury, "TaxClaimed")
-        .withArgs(ETH("3"));
+      await expect(f.treasury.claimTax()).to.emit(f.treasury, "TaxClaimed").withArgs(ETH("3"));
 
       expect(await ethers.provider.getBalance(treasuryAddr)).to.equal(ETH("3"));
       expect(await f.treasury.totalTaxClaimed()).to.equal(ETH("3"));
@@ -91,186 +128,171 @@ describe("IPO — Initial Pons Offering", () => {
       const f = await loadFixture(deployFixture);
       await expect(f.treasury.claimTax()).to.be.revertedWithCustomError(f.treasury, "NothingToClaim");
     });
+
+    it("sweeps tax accrued since the last epoch as part of running one", async () => {
+      const f = await loadFixture(deployFixture);
+      // Nothing claimed up front; the tax is sitting in the escrow.
+      await f.escrow.credit(await f.treasury.getAddress(), { value: ETH("1") });
+
+      await expect(runEpoch(f, [f.coinA])).to.emit(f.treasury, "TaxClaimed").withArgs(ETH("1"));
+      expect(await f.treasury.totalEthSpent()).to.equal(ETH("1"));
+    });
   });
 
-  describe("buying newly bonded projects", () => {
-    it("buys a graduated project and deposits it into the vault", async () => {
+  // =====================================================================
+  describe("the hourly epoch", () => {
+    it("buys the trending coins the keeper selected and splits the budget equally", async () => {
       const f = await loadFixture(deployFixture);
       await fundTreasury(f, ETH("1"));
-      const proj = await f.proj.getAddress();
-      const deadline = (await time.latest()) + 600;
 
-      const expectedOut = ETH("0.05") * 1000n; // buySize * mock rate
+      await expect(runEpoch(f, [f.coinA, f.coinB]))
+        .to.emit(f.treasury, "EpochRun")
+        .withArgs(1, 2, ETH("1"));
 
-      await expect(f.treasury.connect(f.keeper).buy(proj, expectedOut, deadline))
-        .to.emit(f.treasury, "Purchased")
-        .withArgs(proj, ETH("0.05"), expectedOut);
-
-      expect(await f.proj.balanceOf(await f.vault.getAddress())).to.equal(expectedOut);
-      expect(await f.vault.isAsset(proj)).to.equal(true);
-      expect(await f.vault.assetCount()).to.equal(1n);
-      expect(await f.treasury.totalPurchases()).to.equal(1n);
+      const perToken = ETH("0.5");
+      const expectedOut = perToken * RATE;
+      const distAddr = await f.distributor.getAddress();
+      expect(await f.coinA.balanceOf(distAddr)).to.equal(expectedOut);
+      expect(await f.coinB.balanceOf(distAddr)).to.equal(expectedOut);
+      expect(await f.treasury.epoch()).to.equal(1n);
+      expect(await f.treasury.totalPurchases()).to.equal(2n);
     });
 
-    it("only keepers can buy", async () => {
+    it("will not run again inside the hour", async () => {
       const f = await loadFixture(deployFixture);
-      await fundTreasury(f, ETH("1"));
-      const deadline = (await time.latest()) + 600;
-      await expect(
-        f.treasury.connect(f.alice).buy(await f.proj.getAddress(), 0, deadline)
-      ).to.be.revertedWithCustomError(f.treasury, "NotKeeper");
-    });
+      await fundTreasury(f, ETH("2"));
+      await runEpoch(f, [f.coinA]);
 
-    it("refuses a project that has not bonded yet", async () => {
-      const f = await loadFixture(deployFixture);
-      await fundTreasury(f, ETH("1"));
-      const proj = await f.proj.getAddress();
-      await f.factory.setPhase(proj, 0); // NotGraduated
-      const deadline = (await time.latest()) + 600;
-
-      await expect(f.treasury.connect(f.keeper).buy(proj, 0, deadline))
-        .to.be.revertedWithCustomError(f.treasury, "NotGraduated")
-        .withArgs(proj, 0);
-    });
-
-    it("refuses a launch that used the rescue path", async () => {
-      const f = await loadFixture(deployFixture);
-      await fundTreasury(f, ETH("1"));
-      const proj = await f.proj.getAddress();
-      await f.factory.setPhase(proj, 3); // Rescued
-      const deadline = (await time.latest()) + 600;
-      await expect(f.treasury.connect(f.keeper).buy(proj, 0, deadline))
-        .to.be.revertedWithCustomError(f.treasury, "NotGraduated")
-        .withArgs(proj, 3);
-    });
-
-    it("refuses a token that is not a Pons launch at all", async () => {
-      const f = await loadFixture(deployFixture);
-      await fundTreasury(f, ETH("1"));
-      const deadline = (await time.latest()) + 600;
-      await expect(f.treasury.connect(f.keeper).buy(f.alice.address, 0, deadline))
-        .to.be.revertedWithCustomError(f.treasury, "NotAPonsLaunch");
-    });
-
-    it("refuses a project paired against something other than ETH", async () => {
-      const f = await loadFixture(deployFixture);
-      await fundTreasury(f, ETH("1"));
-      const proj = await f.proj.getAddress();
-      await f.factory.setRecord(proj, await record(proj, { pairToken: f.alice.address }));
-      const deadline = (await time.latest()) + 600;
-      await expect(f.treasury.connect(f.keeper).buy(proj, 0, deadline))
-        .to.be.revertedWithCustomError(f.treasury, "NotEthPaired");
-    });
-
-    it("refuses a project that bonded too long ago", async () => {
-      const f = await loadFixture(deployFixture);
-      await fundTreasury(f, ETH("1"));
-      const proj = await f.proj.getAddress();
-      await time.increase(25 * 60 * 60); // past the 24h window
-      const deadline = (await time.latest()) + 600;
-      await expect(f.treasury.connect(f.keeper).buy(proj, 0, deadline))
-        .to.be.revertedWithCustomError(f.treasury, "TooOld");
-    });
-
-    it("refuses a launch whose graduation threshold was below the floor", async () => {
-      const f = await loadFixture(deployFixture);
-      await fundTreasury(f, ETH("1"));
-      const proj = await f.proj.getAddress();
-      await f.factory.setRecord(proj, await record(proj, { graduationThreshold: ETH("0.1") }));
-      const deadline = (await time.latest()) + 600;
-      await expect(f.treasury.connect(f.keeper).buy(proj, 0, deadline))
-        .to.be.revertedWithCustomError(f.treasury, "ThresholdTooLow");
-    });
-
-    it("never buys the same project twice", async () => {
-      const f = await loadFixture(deployFixture);
-      await fundTreasury(f, ETH("1"));
-      const proj = await f.proj.getAddress();
-      let deadline = (await time.latest()) + 600;
-      await f.treasury.connect(f.keeper).buy(proj, 0, deadline);
-
-      await time.increase(600); // clear the cooldown
-      deadline = (await time.latest()) + 600;
-      await expect(f.treasury.connect(f.keeper).buy(proj, 0, deadline))
-        .to.be.revertedWithCustomError(f.treasury, "AlreadyPurchased");
-    });
-
-    it("enforces the cooldown between purchases", async () => {
-      const f = await loadFixture(deployFixture);
-      await fundTreasury(f, ETH("1"));
-      const ERC20 = await ethers.getContractFactory("MockERC20");
-      const second = await ERC20.deploy("Second", "TWO", ETH("1000000"));
-      await second.transfer(await f.pm.getAddress(), ETH("1000000"));
-      await f.factory.setRecord(await second.getAddress(), await record(await second.getAddress()));
-
-      let deadline = (await time.latest()) + 600;
-      await f.treasury.connect(f.keeper).buy(await f.proj.getAddress(), 0, deadline);
-
-      deadline = (await time.latest()) + 600;
-      await expect(f.treasury.connect(f.keeper).buy(await second.getAddress(), 0, deadline))
-        .to.be.revertedWithCustomError(f.treasury, "CooldownActive");
-
-      await time.increase(301);
-      deadline = (await time.latest()) + 600;
-      await expect(f.treasury.connect(f.keeper).buy(await second.getAddress(), 0, deadline)).to.emit(
+      await time.increase(HOUR - 60);
+      await expect(runEpoch(f, [f.coinB])).to.be.revertedWithCustomError(
         f.treasury,
-        "Purchased"
+        "EpochNotElapsed"
+      );
+
+      // The first epoch deployed the whole balance, so top up before the next one.
+      await time.increase(120);
+      await fundTreasury(f, ETH("1"));
+      await expect(runEpoch(f, [f.coinB])).to.emit(f.treasury, "EpochRun");
+    });
+
+    it("buys the same coin again only after its own cooldown", async () => {
+      const f = await loadFixture(deployFixture);
+      await fundTreasury(f, ETH("3"));
+      await runEpoch(f, [f.coinA]);
+
+      await time.increase(HOUR + 1);
+      await expect(runEpoch(f, [f.coinA])).to.be.revertedWithCustomError(
+        f.treasury,
+        "TokenOnCooldown"
+      );
+
+      await time.increase(12 * HOUR);
+      await fundTreasury(f, ETH("1"));
+      await expect(runEpoch(f, [f.coinA])).to.emit(f.treasury, "EpochRun");
+    });
+
+    it("rejects duplicate or unsorted orders that would take several slices of the budget", async () => {
+      const f = await loadFixture(deployFixture);
+      await fundTreasury(f, ETH("1"));
+      const a = await f.coinA.getAddress();
+      const deadline = (await time.latest()) + 600;
+
+      await expect(
+        f.treasury.connect(f.keeper).runEpoch(
+          [
+            { token: a, minTokensOut: 0n },
+            { token: a, minTokensOut: 0n },
+          ],
+          deadline
+        )
+      ).to.be.revertedWithCustomError(f.treasury, "DuplicateOrUnsorted");
+
+      const b = await f.coinB.getAddress();
+      const descending = sortOrders([
+        { token: a, minTokensOut: 0n },
+        { token: b, minTokensOut: 0n },
+      ]).reverse();
+      await expect(
+        f.treasury.connect(f.keeper).runEpoch(descending, deadline)
+      ).to.be.revertedWithCustomError(f.treasury, "DuplicateOrUnsorted");
+    });
+
+    it("caps how many coins one epoch may buy", async () => {
+      const f = await loadFixture(deployFixture);
+      await fundTreasury(f, ETH("1"));
+      await f.treasury.setPolicy(HOUR, 10_000, ETH("5"), 1, 0, 12 * HOUR, ETH("4.2"), 0);
+
+      await expect(runEpoch(f, [f.coinA, f.coinB]))
+        .to.be.revertedWithCustomError(f.treasury, "TooManyOrders")
+        .withArgs(2, 1);
+    });
+
+    it("deploys only the configured share of the balance", async () => {
+      const f = await loadFixture(deployFixture);
+      await fundTreasury(f, ETH("1"));
+      // 25% per epoch.
+      await f.treasury.setPolicy(HOUR, 2_500, ETH("5"), 10, 0, 12 * HOUR, ETH("4.2"), 0);
+
+      expect(await f.treasury.epochBudget()).to.equal(ETH("0.25"));
+      await expect(runEpoch(f, [f.coinA])).to.emit(f.treasury, "EpochRun").withArgs(1, 1, ETH("0.25"));
+    });
+
+    it("never spends past the per-epoch ceiling", async () => {
+      const f = await loadFixture(deployFixture);
+      await fundTreasury(f, ETH("100"));
+      expect(await f.treasury.epochBudget()).to.equal(ETH("5")); // maxEpochSpend
+      await expect(runEpoch(f, [f.coinA])).to.emit(f.treasury, "EpochRun").withArgs(1, 1, ETH("5"));
+    });
+
+    it("never spends the reserve", async () => {
+      const f = await loadFixture(deployFixture);
+      await fundTreasury(f, ETH("1"));
+      await f.treasury.setPolicy(HOUR, 10_000, ETH("5"), 10, ETH("1"), 12 * HOUR, ETH("4.2"), 0);
+
+      expect(await f.treasury.spendable()).to.equal(0n);
+      await expect(runEpoch(f, [f.coinA])).to.be.revertedWithCustomError(
+        f.treasury,
+        "NothingToSpend"
       );
     });
 
-    it("respects the reserve floor", async () => {
-      const f = await loadFixture(deployFixture);
-      await fundTreasury(f, ETH("0.06"));
-      await f.treasury.setPolicy(ETH("0.05"), ETH("0.05"), 0, 24 * 3600, ETH("4.2"));
-      const deadline = (await time.latest()) + 600;
-      await expect(f.treasury.connect(f.keeper).buy(await f.proj.getAddress(), 0, deadline))
-        .to.be.revertedWithCustomError(f.treasury, "InsufficientFunds");
-    });
-
-    it("enforces the slippage bound", async () => {
+    it("enforces the slippage bound per coin", async () => {
       const f = await loadFixture(deployFixture);
       await fundTreasury(f, ETH("1"));
-      const deadline = (await time.latest()) + 600;
-      const tooMuch = ETH("0.05") * 2000n;
-      await expect(f.treasury.connect(f.keeper).buy(await f.proj.getAddress(), tooMuch, deadline))
-        .to.be.revertedWithCustomError(f.treasury, "SlippageExceeded");
+      const tooMuch = ETH("1") * RATE * 2n;
+      await expect(runEpoch(f, [f.coinA], [tooMuch])).to.be.revertedWithCustomError(
+        f.treasury,
+        "SlippageExceeded"
+      );
     });
 
     it("honours the deadline", async () => {
       const f = await loadFixture(deployFixture);
       await fundTreasury(f, ETH("1"));
       const past = (await time.latest()) - 1;
-      await expect(f.treasury.connect(f.keeper).buy(await f.proj.getAddress(), 0, past))
-        .to.be.revertedWithCustomError(f.treasury, "DeadlinePassed");
+      await expect(
+        f.treasury
+          .connect(f.keeper)
+          .runEpoch([{ token: await f.coinA.getAddress(), minTokensOut: 0n }], past)
+      ).to.be.revertedWithCustomError(f.treasury, "DeadlinePassed");
     });
 
-    it("stops buying when paused", async () => {
+    it("only keepers can run an epoch", async () => {
+      const f = await loadFixture(deployFixture);
+      await fundTreasury(f, ETH("1"));
+      const deadline = (await time.latest()) + 600;
+      await expect(
+        f.treasury
+          .connect(f.alice)
+          .runEpoch([{ token: await f.coinA.getAddress(), minTokensOut: 0n }], deadline)
+      ).to.be.revertedWithCustomError(f.treasury, "NotKeeper");
+    });
+
+    it("stops when paused", async () => {
       const f = await loadFixture(deployFixture);
       await fundTreasury(f, ETH("1"));
       await f.treasury.pause();
-      const deadline = (await time.latest()) + 600;
-      await expect(
-        f.treasury.connect(f.keeper).buy(await f.proj.getAddress(), 0, deadline)
-      ).to.be.revertedWithCustomError(f.treasury, "EnforcedPause");
-    });
-
-    it("reports eligibility off-chain the same way it enforces it on-chain", async () => {
-      const f = await loadFixture(deployFixture);
-      const proj = await f.proj.getAddress();
-
-      let [ok, reason] = await f.treasury.eligibility(proj);
-      expect(ok).to.equal(false);
-      expect(reason).to.equal("insufficient funds");
-
-      await fundTreasury(f, ETH("1"));
-      [ok, reason] = await f.treasury.eligibility(proj);
-      expect(ok).to.equal(true);
-      expect(reason).to.equal("");
-
-      await f.factory.setPhase(proj, 0);
-      [ok, reason] = await f.treasury.eligibility(proj);
-      expect(ok).to.equal(false);
-      expect(reason).to.equal("not graduated");
+      await expect(runEpoch(f, [f.coinA])).to.be.revertedWithCustomError(f.treasury, "EnforcedPause");
     });
 
     it("rejects an unlockCallback from anyone but the pool manager", async () => {
@@ -281,172 +303,406 @@ describe("IPO — Initial Pons Offering", () => {
     });
   });
 
-  describe("redemption", () => {
-    /** Buy one project and hand IPO to alice and bob so they hold a claim on it. */
-    async function withBasket() {
+  // =====================================================================
+  describe("what it will and will not buy", () => {
+    it("refuses a coin that has not bonded yet", async () => {
+      const f = await loadFixture(deployFixture);
+      await fundTreasury(f, ETH("1"));
+      await f.factory.setPhase(await f.coinA.getAddress(), 0);
+      await expect(runEpoch(f, [f.coinA]))
+        .to.be.revertedWithCustomError(f.treasury, "NotGraduated")
+        .withArgs(await f.coinA.getAddress(), 0);
+    });
+
+    it("refuses a launch that used the rescue path", async () => {
+      const f = await loadFixture(deployFixture);
+      await fundTreasury(f, ETH("1"));
+      await f.factory.setPhase(await f.coinA.getAddress(), 3);
+      await expect(runEpoch(f, [f.coinA])).to.be.revertedWithCustomError(f.treasury, "NotGraduated");
+    });
+
+    it("refuses a token that is not a Pons launch at all", async () => {
       const f = await loadFixture(deployFixture);
       await fundTreasury(f, ETH("1"));
       const deadline = (await time.latest()) + 600;
-      await f.treasury.connect(f.keeper).buy(await f.proj.getAddress(), 0, deadline);
+      await expect(
+        f.treasury.connect(f.keeper).runEpoch([{ token: f.alice.address, minTokensOut: 0n }], deadline)
+      ).to.be.revertedWithCustomError(f.treasury, "NotAPonsLaunch");
+    });
 
-      // Owner keeps 800M; alice and bob hold 100M each.
-      await f.ipo.transfer(f.alice.address, ETH("100000000"));
-      await f.ipo.transfer(f.bob.address, ETH("100000000"));
+    it("refuses a coin paired against something other than ETH", async () => {
+      const f = await loadFixture(deployFixture);
+      await fundTreasury(f, ETH("1"));
+      const addr = await f.coinA.getAddress();
+      await f.factory.setRecord(addr, await record(addr, { pairToken: f.alice.address }));
+      await expect(runEpoch(f, [f.coinA])).to.be.revertedWithCustomError(f.treasury, "NotEthPaired");
+    });
+
+    it("refuses a launch whose graduation threshold was below the floor", async () => {
+      const f = await loadFixture(deployFixture);
+      await fundTreasury(f, ETH("1"));
+      const addr = await f.coinA.getAddress();
+      await f.factory.setRecord(addr, await record(addr, { graduationThreshold: ETH("0.1") }));
+      await expect(runEpoch(f, [f.coinA])).to.be.revertedWithCustomError(f.treasury, "ThresholdTooLow");
+    });
+
+    it("buys a coin that trends long after it bonded, since recency is off by default", async () => {
+      const f = await loadFixture(deployFixture);
+      await fundTreasury(f, ETH("1"));
+      expect(await f.treasury.maxGraduationAge()).to.equal(0n);
+      await time.increase(30 * 24 * HOUR);
+      await expect(runEpoch(f, [f.coinA])).to.emit(f.treasury, "EpochRun");
+    });
+
+    it("honours a recency window once one is configured", async () => {
+      const f = await loadFixture(deployFixture);
+      await fundTreasury(f, ETH("1"));
+      await f.treasury.setPolicy(HOUR, 10_000, ETH("5"), 10, 0, 12 * HOUR, ETH("4.2"), 24 * HOUR);
+      await time.increase(25 * HOUR);
+      await expect(runEpoch(f, [f.coinA])).to.be.revertedWithCustomError(f.treasury, "TooOld");
+    });
+
+    it("reports eligibility off-chain the same way it enforces it on-chain", async () => {
+      const f = await loadFixture(deployFixture);
+      const addr = await f.coinA.getAddress();
+
+      let [ok, reason] = await f.treasury.eligibility(addr);
+      expect(ok).to.equal(true);
+
+      await f.factory.setPhase(addr, 0);
+      [ok, reason] = await f.treasury.eligibility(addr);
+      expect(ok).to.equal(false);
+      expect(reason).to.equal("not graduated");
+    });
+
+    it("reports when an epoch is ready to run", async () => {
+      const f = await loadFixture(deployFixture);
+
+      let [ok, reason] = await f.treasury.epochReady();
+      expect(ok).to.equal(false);
+      expect(reason).to.equal("nothing to spend");
+
+      await fundTreasury(f, ETH("1"));
+      [ok] = await f.treasury.epochReady();
+      expect(ok).to.equal(true);
+
+      await runEpoch(f, [f.coinA]);
+      [ok, reason] = await f.treasury.epochReady();
+      expect(ok).to.equal(false);
+      expect(reason).to.equal("epoch not elapsed");
+    });
+
+    it("counts tax still sitting in the escrow as spendable", async () => {
+      const f = await loadFixture(deployFixture);
+      await f.escrow.credit(await f.treasury.getAddress(), { value: ETH("1") });
+      const [ok] = await f.treasury.epochReady();
+      expect(ok).to.equal(true);
+    });
+  });
+
+  // =====================================================================
+  describe("routing purchases", () => {
+    it("sends everything to holders by default", async () => {
+      const f = await loadFixture(deployFixture);
+      await fundTreasury(f, ETH("1"));
+      expect(await f.treasury.vaultBps()).to.equal(0n);
+
+      await runEpoch(f, [f.coinA]);
+      const bought = ETH("1") * RATE;
+      expect(await f.coinA.balanceOf(await f.distributor.getAddress())).to.equal(bought);
+      expect(await f.coinA.balanceOf(await f.vault.getAddress())).to.equal(0n);
+      expect(await f.distributor.totalFunded(await f.coinA.getAddress())).to.equal(bought);
+    });
+
+    it("splits between holders and permanent backing when configured", async () => {
+      const f = await loadFixture(deployFixture);
+      await fundTreasury(f, ETH("1"));
+      await f.treasury.setVaultBps(2_500); // 25% retained
+
+      const bought = ETH("1") * RATE;
+      await expect(runEpoch(f, [f.coinA]))
+        .to.emit(f.treasury, "Bought")
+        .withArgs(await f.coinA.getAddress(), ETH("1"), bought, (bought * 75n) / 100n, (bought * 25n) / 100n);
+
+      expect(await f.coinA.balanceOf(await f.vault.getAddress())).to.equal((bought * 25n) / 100n);
+      expect(await f.coinA.balanceOf(await f.distributor.getAddress())).to.equal((bought * 75n) / 100n);
+    });
+
+    it("rejects a split above 100%", async () => {
+      const f = await loadFixture(deployFixture);
+      await expect(f.treasury.setVaultBps(10_001)).to.be.revertedWithCustomError(
+        f.treasury,
+        "InvalidBps"
+      );
+    });
+  });
+
+  // =====================================================================
+  describe("distribution to holders", () => {
+    /** Run an epoch, then publish a root paying out pro rata to the IPO holders. */
+    async function distribute(f: any, prior: Entitlement[] = []): Promise<Entitlement[]> {
+      const holders: [Address, bigint][] = [
+        [f.alice.address as Address, await f.ipo.balanceOf(f.alice.address)],
+        [f.bob.address as Address, await f.ipo.balanceOf(f.bob.address)],
+        [f.carol.address as Address, await f.ipo.balanceOf(f.carol.address)],
+      ];
+      const balances = new Map(holders.filter(([, b]) => b > 0n));
+
+      const coinAddr = (await f.coinA.getAddress()) as Address;
+      const funded = await f.distributor.totalFunded(coinAddr);
+      const alreadyOwed = prior
+        .filter((e) => e.token.toLowerCase() === coinAddr.toLowerCase())
+        .reduce((a, e) => a + e.cumulativeAmount, 0n);
+
+      const purchases = new Map<Address, bigint>([[coinAddr, funded - alreadyOwed]]);
+      const next = accrue(prior, balances, purchases);
+      const tree = new CumulativeMerkleTree(next);
+      await f.distributor.connect(f.keeper).publishRoot(tree.root);
+      return next;
+    }
+
+    async function withHolders() {
+      const f = await loadFixture(deployFixture);
+      // 60/30/10 split of a tenth of supply; the rest stays with the deployer and is not entitled.
+      await f.ipo.transfer(f.alice.address, ETH("60000000"));
+      await f.ipo.transfer(f.bob.address, ETH("30000000"));
+      await f.ipo.transfer(f.carol.address, ETH("10000000"));
+      await fundTreasury(f, ETH("1"));
+      await runEpoch(f, [f.coinA]);
       return f;
     }
 
-    it("excludes the vault's own locked IPO from the redeemable supply", async () => {
-      const f = await withBasket();
-      expect(await f.vault.redeemableSupply()).to.equal(IPO_SUPPLY);
+    it("pays each holder their pro-rata share of the hour's buys", async () => {
+      const f = await withHolders();
+      const entitlements = await distribute(f);
+      const coin = (await f.coinA.getAddress()) as Address;
+      const tree = new CumulativeMerkleTree(entitlements);
 
-      const amount = ETH("100000000");
-      await f.ipo.connect(f.alice).approve(await f.vault.getAddress(), amount);
-      await f.vault.connect(f.alice).redeem(amount, [await f.proj.getAddress()], f.alice.address);
+      const aliceE = entitlements.find(
+        (e) => e.account.toLowerCase() === f.alice.address.toLowerCase()
+      )!;
+      await f.distributor.claim(f.alice.address, coin, aliceE.cumulativeAmount, tree.proof(aliceE));
 
-      // Alice's IPO is now locked in the vault and no longer backs a claim.
-      expect(await f.vault.redeemableSupply()).to.equal(IPO_SUPPLY - amount);
+      const bought = ETH("1") * RATE;
+      expect(await f.coinA.balanceOf(f.alice.address)).to.equal((bought * 60n) / 100n);
+      expect(aliceE.cumulativeAmount).to.equal((bought * 60n) / 100n);
     });
 
+    it("accumulates across hours so one proof collects everything owed", async () => {
+      const f = await withHolders();
+      let entitlements = await distribute(f);
+
+      // A second hour, a second purchase of the same coin.
+      await time.increase(13 * HOUR);
+      await f.escrow.credit(await f.treasury.getAddress(), { value: ETH("1") });
+      await runEpoch(f, [f.coinA]);
+      entitlements = await distribute(f, entitlements);
+
+      const coin = (await f.coinA.getAddress()) as Address;
+      const tree = new CumulativeMerkleTree(entitlements);
+      const bobE = entitlements.find(
+        (e) => e.account.toLowerCase() === f.bob.address.toLowerCase()
+      )!;
+
+      // Bob never claimed the first hour; one claim now settles both.
+      await f.distributor.claim(f.bob.address, coin, bobE.cumulativeAmount, tree.proof(bobE));
+      const boughtTwice = ETH("2") * RATE;
+      expect(await f.coinA.balanceOf(f.bob.address)).to.equal((boughtTwice * 30n) / 100n);
+    });
+
+    it("pays only the difference when a holder claims twice", async () => {
+      const f = await withHolders();
+      let entitlements = await distribute(f);
+      const coin = (await f.coinA.getAddress()) as Address;
+      let tree = new CumulativeMerkleTree(entitlements);
+      let aliceE = entitlements.find(
+        (e) => e.account.toLowerCase() === f.alice.address.toLowerCase()
+      )!;
+
+      await f.distributor.claim(f.alice.address, coin, aliceE.cumulativeAmount, tree.proof(aliceE));
+      const afterFirst = await f.coinA.balanceOf(f.alice.address);
+
+      await expect(
+        f.distributor.claim(f.alice.address, coin, aliceE.cumulativeAmount, tree.proof(aliceE))
+      ).to.be.revertedWithCustomError(f.distributor, "NothingToClaim");
+
+      await time.increase(13 * HOUR);
+      await f.escrow.credit(await f.treasury.getAddress(), { value: ETH("1") });
+      await runEpoch(f, [f.coinA]);
+      entitlements = await distribute(f, entitlements);
+      tree = new CumulativeMerkleTree(entitlements);
+      aliceE = entitlements.find(
+        (e) => e.account.toLowerCase() === f.alice.address.toLowerCase()
+      )!;
+
+      await f.distributor.claim(f.alice.address, coin, aliceE.cumulativeAmount, tree.proof(aliceE));
+      // The second claim paid only the new hour, not the whole cumulative total again.
+      expect(await f.coinA.balanceOf(f.alice.address)).to.equal(afterFirst * 2n);
+    });
+
+    it("rejects a forged proof", async () => {
+      const f = await withHolders();
+      const entitlements = await distribute(f);
+      const coin = (await f.coinA.getAddress()) as Address;
+      const tree = new CumulativeMerkleTree(entitlements);
+      const aliceE = entitlements.find(
+        (e) => e.account.toLowerCase() === f.alice.address.toLowerCase()
+      )!;
+
+      // Alice's proof, inflated amount.
+      await expect(
+        f.distributor.claim(
+          f.alice.address,
+          coin,
+          aliceE.cumulativeAmount * 2n,
+          tree.proof(aliceE)
+        )
+      ).to.be.revertedWithCustomError(f.distributor, "InvalidProof");
+
+      // Carol claiming against Alice's leaf.
+      await expect(
+        f.distributor.claim(f.carol.address, coin, aliceE.cumulativeAmount, tree.proof(aliceE))
+      ).to.be.revertedWithCustomError(f.distributor, "InvalidProof");
+    });
+
+    it("cannot pay out more of a coin than the treasury funded", async () => {
+      const f = await withHolders();
+      const coin = (await f.coinA.getAddress()) as Address;
+      const funded = await f.distributor.totalFunded(coin);
+
+      // A root that over-allocates: every holder credited the entire balance.
+      const bad: Entitlement[] = [
+        { account: f.alice.address as Address, token: coin, cumulativeAmount: funded },
+        { account: f.bob.address as Address, token: coin, cumulativeAmount: funded },
+      ];
+      const tree = new CumulativeMerkleTree(bad);
+      await f.distributor.connect(f.keeper).publishRoot(tree.root);
+
+      await f.distributor.claim(f.alice.address, coin, funded, tree.proof(bad[0]));
+      await expect(
+        f.distributor.claim(f.bob.address, coin, funded, tree.proof(bad[1]))
+      ).to.be.revertedWithCustomError(f.distributor, "ExceedsFunded");
+    });
+
+    it("claims several coins in one transaction", async () => {
+      const f = await withHolders();
+      await time.increase(HOUR + 1);
+      await f.escrow.credit(await f.treasury.getAddress(), { value: ETH("1") });
+      await runEpoch(f, [f.coinB]);
+
+      const coinA = (await f.coinA.getAddress()) as Address;
+      const coinB = (await f.coinB.getAddress()) as Address;
+      const alice = f.alice.address as Address;
+
+      const entitlements: Entitlement[] = [
+        { account: alice, token: coinA, cumulativeAmount: ETH("1") },
+        { account: alice, token: coinB, cumulativeAmount: ETH("2") },
+        { account: f.bob.address as Address, token: coinA, cumulativeAmount: ETH("3") },
+      ];
+      const tree = new CumulativeMerkleTree(entitlements);
+      await f.distributor.connect(f.keeper).publishRoot(tree.root);
+
+      await f.distributor.claimMany(
+        alice,
+        [coinA, coinB],
+        [ETH("1"), ETH("2")],
+        [tree.proof(entitlements[0]), tree.proof(entitlements[1])]
+      );
+
+      expect(await f.coinA.balanceOf(alice)).to.equal(ETH("1"));
+      expect(await f.coinB.balanceOf(alice)).to.equal(ETH("2"));
+    });
+
+    it("refuses claims before any root is published", async () => {
+      const f = await withHolders();
+      await expect(
+        f.distributor.claim(f.alice.address, await f.coinA.getAddress(), 1n, [])
+      ).to.be.revertedWithCustomError(f.distributor, "NoRoot");
+    });
+
+    it("only the publisher or owner may publish a root", async () => {
+      const f = await withHolders();
+      await expect(
+        f.distributor.connect(f.alice).publishRoot(ethers.ZeroHash)
+      ).to.be.revertedWithCustomError(f.distributor, "NotPublisher");
+
+      await expect(f.distributor.connect(f.keeper).publishRoot(ethers.id("x"))).to.emit(
+        f.distributor,
+        "RootPublished"
+      );
+      await expect(f.distributor.connect(f.owner).publishRoot(ethers.id("y"))).to.emit(
+        f.distributor,
+        "RootPublished"
+      );
+    });
+
+    it("only the treasury can fund a distribution", async () => {
+      const f = await withHolders();
+      await expect(
+        f.distributor.connect(f.alice).fund(await f.coinA.getAddress(), 1n)
+      ).to.be.revertedWithCustomError(f.distributor, "NotTreasury");
+    });
+  });
+
+  // =====================================================================
+  describe("the vault's permanent backing", () => {
+    async function withBacking() {
+      const f = await loadFixture(deployFixture);
+      await f.treasury.setVaultBps(10_000); // everything retained
+      await fundTreasury(f, ETH("1"));
+      await runEpoch(f, [f.coinA]);
+      await f.ipo.transfer(f.alice.address, ETH("100000000"));
+      return f;
+    }
+
     it("pays a redeemer their pro-rata slice of the basket", async () => {
-      const f = await withBasket();
-      const proj = await f.proj.getAddress();
-      const basket = await f.proj.balanceOf(await f.vault.getAddress());
+      const f = await withBacking();
+      const vaultAddr = await f.vault.getAddress();
+      const coin = await f.coinA.getAddress();
+      const basket = await f.coinA.balanceOf(vaultAddr);
 
       const amount = ETH("100000000"); // 10% of supply
       const expected = (basket * amount) / IPO_SUPPLY;
 
-      const preview = await f.vault.previewRedeem(amount, [proj]);
-      expect(preview[0]).to.equal(expected);
-
-      await f.ipo.connect(f.alice).approve(await f.vault.getAddress(), amount);
-      await expect(f.vault.connect(f.alice).redeem(amount, [proj], f.alice.address))
-        .to.emit(f.vault, "Redeemed")
-        .withArgs(f.alice.address, f.alice.address, amount, 1);
-
-      expect(await f.proj.balanceOf(f.alice.address)).to.equal(expected);
-      expect(await f.proj.balanceOf(await f.vault.getAddress())).to.equal(basket - expected);
+      await f.ipo.connect(f.alice).approve(vaultAddr, amount);
+      await f.vault.connect(f.alice).redeem(amount, [coin], f.alice.address);
+      expect(await f.coinA.balanceOf(f.alice.address)).to.equal(expected);
     });
 
     it("leaves per-token backing unchanged for holders who do not redeem", async () => {
-      const f = await withBasket();
-      const proj = await f.proj.getAddress();
+      const f = await withBacking();
       const vaultAddr = await f.vault.getAddress();
-
-      const backingBefore =
-        (await f.proj.balanceOf(vaultAddr)) * ETH("1") / (await f.vault.redeemableSupply());
+      const before =
+        ((await f.coinA.balanceOf(vaultAddr)) * ETH("1")) / (await f.vault.redeemableSupply());
 
       const amount = ETH("100000000");
       await f.ipo.connect(f.alice).approve(vaultAddr, amount);
-      await f.vault.connect(f.alice).redeem(amount, [proj], f.alice.address);
+      await f.vault.connect(f.alice).redeem(amount, [await f.coinA.getAddress()], f.alice.address);
 
-      const backingAfter =
-        (await f.proj.balanceOf(vaultAddr)) * ETH("1") / (await f.vault.redeemableSupply());
-
-      // Redeeming is neutral for everyone else: it removes exactly its own claim.
-      expect(backingAfter).to.equal(backingBefore);
+      const after =
+        ((await f.coinA.balanceOf(vaultAddr)) * ETH("1")) / (await f.vault.redeemableSupply());
+      expect(after).to.equal(before);
     });
 
-    it("raises backing for remaining holders when a redeemer skips an asset", async () => {
-      const f = await withBasket();
-      const vaultAddr = await f.vault.getAddress();
-
-      // Add a second asset to the basket via a second purchase.
-      const ERC20 = await ethers.getContractFactory("MockERC20");
-      const second = await ERC20.deploy("Second", "TWO", ETH("1000000"));
-      await second.transfer(await f.pm.getAddress(), ETH("1000000"));
-      await f.factory.setRecord(await second.getAddress(), await record(await second.getAddress()));
-      await time.increase(301);
-      await f.treasury
-        .connect(f.keeper)
-        .buy(await second.getAddress(), 0, (await time.latest()) + 600);
-
-      const secondBal = await second.balanceOf(vaultAddr);
-      const backingBefore = (secondBal * ETH("1")) / (await f.vault.redeemableSupply());
-
-      // Alice redeems taking only the first asset, forfeiting her claim on the second.
-      const amount = ETH("100000000");
-      await f.ipo.connect(f.alice).approve(vaultAddr, amount);
-      await f.vault.connect(f.alice).redeem(amount, [await f.proj.getAddress()], f.alice.address);
-
-      expect(await second.balanceOf(f.alice.address)).to.equal(0n);
-      const backingAfter =
-        ((await second.balanceOf(vaultAddr)) * ETH("1")) / (await f.vault.redeemableSupply());
-      expect(backingAfter).to.be.greaterThan(backingBefore);
-    });
-
-    it("redeems several assets at once", async () => {
-      const f = await withBasket();
-      const vaultAddr = await f.vault.getAddress();
-
-      const ERC20 = await ethers.getContractFactory("MockERC20");
-      const second = await ERC20.deploy("Second", "TWO", ETH("1000000"));
-      await second.transfer(await f.pm.getAddress(), ETH("1000000"));
-      await f.factory.setRecord(await second.getAddress(), await record(await second.getAddress()));
-      await time.increase(301);
-      await f.treasury
-        .connect(f.keeper)
-        .buy(await second.getAddress(), 0, (await time.latest()) + 600);
-
-      const sorted = [await f.proj.getAddress(), await second.getAddress()].sort((a, b) =>
-        a.toLowerCase() < b.toLowerCase() ? -1 : 1
-      );
-
-      const amount = ETH("100000000");
-      await f.ipo.connect(f.alice).approve(vaultAddr, amount);
-      await f.vault.connect(f.alice).redeem(amount, sorted, f.alice.address);
-
-      expect(await f.proj.balanceOf(f.alice.address)).to.be.greaterThan(0n);
-      expect(await second.balanceOf(f.alice.address)).to.be.greaterThan(0n);
-    });
-
-    it("rejects duplicate or unsorted assets, which would otherwise pay twice", async () => {
-      const f = await withBasket();
-      const proj = await f.proj.getAddress();
+    it("rejects duplicate assets, which would otherwise pay twice", async () => {
+      const f = await withBacking();
+      const coin = await f.coinA.getAddress();
       const amount = ETH("100000000");
       await f.ipo.connect(f.alice).approve(await f.vault.getAddress(), amount);
-
       await expect(
-        f.vault.connect(f.alice).redeem(amount, [proj, proj], f.alice.address)
+        f.vault.connect(f.alice).redeem(amount, [coin, coin], f.alice.address)
       ).to.be.revertedWithCustomError(f.vault, "AssetsNotSorted");
     });
 
-    it("rejects an asset that is not in the basket", async () => {
-      const f = await withBasket();
-      const amount = ETH("100000000");
-      await f.ipo.connect(f.alice).approve(await f.vault.getAddress(), amount);
-      await expect(
-        f.vault.connect(f.alice).redeem(amount, [await f.ipo.getAddress()], f.alice.address)
-      ).to.be.revertedWithCustomError(f.vault, "NotRegistered");
-    });
-
-    it("lets the owner exclude the bonding curve from the redeemable supply", async () => {
-      const f = await withBasket();
-      await f.ipo.transfer(f.curve.address, ETH("500000000"));
-
-      expect(await f.vault.redeemableSupply()).to.equal(IPO_SUPPLY);
-      await f.vault.setExcluded(f.curve.address, true);
-      expect(await f.vault.redeemableSupply()).to.equal(IPO_SUPPLY - ETH("500000000"));
-
-      await f.vault.setExcluded(f.curve.address, false);
-      expect(await f.vault.redeemableSupply()).to.equal(IPO_SUPPLY);
-    });
-
-    it("only the treasury can deposit into the basket", async () => {
-      const f = await withBasket();
-      await expect(
-        f.vault.connect(f.alice).deposit(await f.proj.getAddress(), 1)
-      ).to.be.revertedWithCustomError(f.vault, "NotTreasury");
-    });
-
-    it("exposes no way for the owner to take assets out of the vault", async () => {
-      const f = await withBasket();
-      const fns = f.vault.interface.fragments
-        .filter((x: any) => x.type === "function")
-        .map((x: any) => x.name.toLowerCase());
-      for (const name of ["withdraw", "sweep", "rescue", "emergency", "recover", "skim"]) {
-        expect(fns.some((fn: string) => fn.includes(name)), `vault must not expose ${name}`).to.equal(
-          false
-        );
+    it("exposes no way for the owner to take assets out", async () => {
+      const f = await withBacking();
+      for (const c of [f.vault, f.distributor, f.treasury]) {
+        const fns = c.interface.fragments
+          .filter((x: any) => x.type === "function")
+          .map((x: any) => x.name.toLowerCase());
+        for (const name of ["withdraw", "sweep", "rescue", "emergency", "recover", "skim"]) {
+          expect(fns.some((fn: string) => fn.includes(name)), `must not expose ${name}`).to.equal(false);
+        }
       }
     });
   });

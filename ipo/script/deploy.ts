@@ -38,9 +38,9 @@ async function main() {
     throw new Error(`creator tax ${CREATOR_TAX_BPS}bps exceeds the Pons cap of ${maxTax}bps`);
   }
 
-  // Nonce n: launchToken, n+1: vault, n+2: treasury.
+  // Nonce n: launchToken, n+1: vault, n+2: distributor, n+3: treasury.
   const nonce = await ethers.provider.getTransactionCount(deployer.address);
-  const predictedTreasury = ethers.getCreateAddress({ from: deployer.address, nonce: nonce + 2 });
+  const predictedTreasury = ethers.getCreateAddress({ from: deployer.address, nonce: nonce + 3 });
   console.log(`treasury will be ${predictedTreasury}`);
 
   const economics = await factory.previewLaunchEconomics(launchConfigId, IPO_LAUNCH.pairToken);
@@ -89,6 +89,12 @@ async function main() {
   await vault.waitForDeployment();
   console.log(`vault ${await vault.getAddress()}`);
 
+  const distributor = await (
+    await ethers.getContractFactory("IPODistributor")
+  ).deploy(deployer.address);
+  await distributor.waitForDeployment();
+  console.log(`distributor ${await distributor.getAddress()}`);
+
   const treasury = await (
     await ethers.getContractFactory("IPOTreasury")
   ).deploy(PONS.factory, PONS.feeEscrow, poolManager, PONS.memeHook, ipo, deployer.address);
@@ -105,18 +111,36 @@ async function main() {
 
   console.log("wiring...");
   await (await vault.setTreasury(treasuryAddr)).wait();
+  await (await distributor.setTreasury(treasuryAddr)).wait();
+  await (await distributor.setPublisher(keeper)).wait();
+  await (await treasury.setDistributor(await distributor.getAddress())).wait();
   await (await treasury.setVault(await vault.getAddress())).wait();
   await (await treasury.setKeeper(keeper, true)).wait();
   // Unsold supply sitting on the bonding curve must not dilute redeemers' claims.
   await (await vault.setExcluded(curve, true)).wait();
 
+  const launchBlock = launchReceipt!.blockNumber;
+
   console.log("\n--- deployed ---");
-  console.log(`IPO       ${ipo}`);
-  console.log(`curve     ${curve}`);
-  console.log(`vault     ${await vault.getAddress()}`);
-  console.log(`treasury  ${treasuryAddr}`);
-  console.log(`keeper    ${keeper}`);
-  console.log(`\nTREASURY_ADDRESS=${treasuryAddr} npm run watch`);
+  console.log(`IPO         ${ipo}`);
+  console.log(`curve       ${curve}`);
+  console.log(`vault       ${await vault.getAddress()}`);
+  console.log(`distributor ${await distributor.getAddress()}`);
+  console.log(`treasury    ${treasuryAddr}`);
+  console.log(`keeper      ${keeper}`);
+  console.log("\n--- run the hourly keeper ---");
+  console.log(
+    [
+      `TREASURY_ADDRESS=${treasuryAddr}`,
+      `DISTRIBUTOR_ADDRESS=${await distributor.getAddress()}`,
+      `VAULT_ADDRESS=${await vault.getAddress()}`,
+      `IPO_ADDRESS=${ipo}`,
+      `POOL_MANAGER=${poolManager}`,
+      `IPO_DEPLOY_BLOCK=${launchBlock}`,
+      `PONS_FROM_BLOCK=${launchBlock}`,
+      "npm start",
+    ].join(" \\\n  ")
+  );
 }
 
 main().catch((err) => {

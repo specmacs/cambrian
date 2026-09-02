@@ -2,11 +2,13 @@
   "name": "@cambrian/ipo",
   "version": "0.1.0",
   "private": true,
-  "description": "IPO - Initial Pons Offering. A 4% swap tax on Robinhood Chain that buys newly bonded Pons projects and distributes them to holders.",
+  "description": "IPO - Initial Pons Offering. A 4% tax on Robinhood Chain that buys trending Pons coins every hour and distributes them to holders.",
   "scripts": {
     "build": "hardhat compile",
     "test": "hardhat test",
-    "watch": "tsx bot/watcher.ts"
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "start": "tsx bot/runner.ts",
+    "deploy": "hardhat run script/deploy.ts --network robinhood"
   },
   "devDependencies": {
     "@nomicfoundation/hardhat-toolbox": "^5.0.0",

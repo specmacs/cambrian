@@ -1,17 +1,22 @@
 # IPO — Initial Pons Offering
 
-A token on [Robinhood Chain](https://docs.robinhood.com/chain/) whose 4% tax buys **newly bonded
-Pons projects** and hands them to IPO holders.
+A token on [Robinhood Chain](https://docs.robinhood.com/chain/) that taxes itself 4%, and every
+hour spends the proceeds buying whatever is trending on Pons and hands it to holders.
 
-Every trade in IPO pays 4%. That 4% arrives as ETH. The treasury spends it buying projects the
-moment they graduate off the Pons bonding curve, and every project it buys lands in a vault that
-IPO holders can redeem against, pro rata, forever.
+```
+  every IPO trade                   once an hour
+  ──────────────                    ────────────
+  4% tax ──► IPOTreasury ──► buy the top trending Pons coins
+             (holds ETH)           │
+                                   ├──► IPODistributor ──► holders claim, pro rata
+                                   └──► IPOVault (optional) ──► permanent backing
+```
 
-Hold IPO, own a slice of everything that bonds on Pons.
+Hold IPO, get paid in whatever is hot on Pons this hour.
 
 ---
 
-## How the 4% works
+## The 4%
 
 Pons levies it, not us.
 
@@ -39,97 +44,160 @@ Being paid in ETH is the part that matters. A conventional tax token accumulates
 must sell it to do anything useful, so the treasury becomes a permanent sell-side flow against its
 own holders. Here the treasury never touches IPO. It receives ETH and spends ETH.
 
-`buybackEnabled` is off deliberately: Pons buybacks would route the creator's fee share back into
-buying IPO and lock it for five years. We want that ETH buying *other people's* newly bonded
-projects, which is the entire thesis.
+`buybackEnabled` is off deliberately: Pons buybacks would route the creator's fee share into buying
+IPO and lock it for five years. We want that ETH buying *other people's* coins.
 
-## What it buys
+## The hourly cycle
 
-The Pons factory emits `PoolGraduated` when a launch completes its curve and its liquidity is
-migrated into a permanently locked Uniswap v4 position. That event is the buy signal.
+One `runEpoch` call per hour does the whole thing:
 
-Before spending anything, `IPOTreasury.buy` re-reads the launch record from the Pons factory and
-requires all of:
+1. **Sweep** any tax accrued in the Pons escrow since the last epoch, so it is deployed this hour
+   rather than next.
+2. **Buy** the trending coins the keeper selected, splitting the epoch budget equally between them.
+3. **Route** each purchase to the distributor (and optionally the vault).
 
-| Check | Why |
-| --- | --- |
-| `exists` | It is a real Pons launch, not an arbitrary address. |
-| `phase == PoolCreated` | It has actually bonded. Rejects `NotGraduated`, `Swept`, and `Rescued`. |
-| `pairToken == address(0)` | ETH-paired, so treasury ETH can buy it directly. |
-| `!purchased[token]` | One buy per project, ever. |
-| `graduationThreshold >= minGraduationThreshold` | The launch had to raise a real amount to bond. |
-| `sweptAt + maxGraduationAge > now` | *Newly* bonded. Default 24h. |
-| `now >= lastBuyAt + buyCooldown` | Rate-limits the treasury. Default 5 min. |
-| `balance >= buySize + minReserve` | Never spends the reserve. |
+The entire basket is bought under a **single pool-manager unlock**: the swaps accumulate one net
+ETH debt that is settled once. That is cheaper than unlocking per coin, and it makes the hour
+atomic — either the whole basket lands or none of it does, so there is never a half-filled epoch
+with an unresolved delta.
 
-`eligibility(token)` exposes the same checks as a view returning `(bool, string reason)`, so the
-keeper filters off-chain without burning gas and cannot disagree with the contract.
+The budget is `min(balance − minReserve × epochSpendBps, maxEpochSpend)`, divided equally across
+the orders. **Equal weighting is deliberate**: it removes the keeper's discretion over position
+sizing, so the only judgement they exercise is *which* coins are trending.
+
+## What "trending" means
+
+Trending has no on-chain definition, so `bot/trending.ts` computes it from Uniswap v4 `Swap` events
+over a trailing window. Four signals, each normalised against the best coin in the window:
+
+| Signal | Weight | What it catches |
+| --- | --- | --- |
+| `volume` | 0.40 | ETH traded — the baseline "is anything happening here" |
+| `traders` | 0.25 | Unique addresses — breadth, because one whale is not a trend |
+| `buyRatio` | 0.20 | Share of swaps that are buys — accumulation vs distribution |
+| `momentum` | 0.15 | Price change across the window, clamped to ±100% |
+
+Volume alone is trivially wash-traded by one address cycling a balance. Requiring breadth and
+direction alongside it makes that meaningfully more expensive. Weights are a parameter, not a
+constant — tune them against real data.
+
+v4 emits one `Swap` per *pool id*, not per token, so the bot rebuilds each Pons pool's id
+(`keccak256(abi.encode(PoolKey))`, native ETH always `currency0`) and matches events against that
+set.
 
 ## How holders get paid
 
-`IPOVault` holds every project the treasury has bought. Any holder can redeem IPO for a pro-rata
-slice of it at any time:
+`IPODistributor` uses a **cumulative** merkle tree. Each published root encodes, for every holder
+and every coin, the total that holder has *ever* been owed; a claim pays the difference against
+what they have already taken.
+
+That matters at an hourly cadence. A per-epoch design would publish 24 roots a day and force a
+holder to submit 24 proofs per coin to collect a day's worth. Here **one proof collects everything
+owed since the last claim**, whenever the holder gets round to it, and someone who never claims
+just keeps accruing.
 
 ```solidity
-vault.redeem(ipoAmount, [assetA, assetB, ...], recipient);
+distributor.claim(account, token, cumulativeAmount, proof);
+distributor.claimMany(account, tokens, cumulativeAmounts, proofs);
 ```
 
-Distribution is **pull-based and continuous** rather than a periodic push. Each purchase raises the
-per-token backing of IPO immediately, for every holder, at zero gas cost to the protocol — no
-snapshots, no merkle roots, no unclaimed dust, and no airdrop loop that gets more expensive with
-every holder and every asset.
+Leaves are `keccak256(keccak256(abi.encode(account, token, cumulativeAmount)))` — the inner hash is
+doubled so a leaf can never be reinterpreted as an internal node.
 
-Redeemed IPO is never released again. IPO is a Pons token, so it has no `burn` and cannot be sent
-to `address(0)`; locking it in the vault is the equivalent, which is why the vault's own balance is
-excluded from `redeemableSupply()`.
+### Optional permanent backing
 
-**Redeemers pick their assets.** The basket grows without bound, and redeeming all of it in one
-transaction would eventually exceed the block gas limit. Taking a subset is strictly favourable to
-the holders who remain — the redeemer forfeits their claim on everything they skipped:
+`vaultBps` splits each purchase between the distributor and `IPOVault`, which holds its share
+forever and lets holders redeem a pro-rata slice by locking IPO. It defaults to **0** — everything
+goes to holders. Raising it trades current yield for a hard NAV floor under IPO.
 
-> Supply `S`, asset balances `a` and `b`. A holder redeems `r` taking only asset A.
+Redeemers choose which assets to take, since the basket grows without bound and redeeming all of it
+would eventually exceed the block gas limit. Skipping an asset forfeits that claim and *raises*
+per-token backing for everyone who stays:
+
+> Supply `S`, balances `a` and `b`. A holder redeems `r` taking only asset A.
 > Claim per token on A: `a/S` before, `a(S−r)/S ÷ (S−r) = a/S` after — unchanged.
 > Claim per token on B: `b/S` before, `b/(S−r)` after — **increased**.
 
-Both properties are asserted in the test suite. The asset array must be strictly ascending, which
-cheaply rules out the duplicate entries that would otherwise pay a redeemer twice.
+Both properties are asserted in the tests.
 
 ## Trust model
 
-**The vault has no withdrawal path for the owner.** Assets enter through the treasury and leave
-only through `redeem`. There is no `sweep`, `rescue`, or `emergencyWithdraw` — a test asserts the
-ABI contains no such function. The cost is that a token sent here by mistake is stuck unless the
-owner registers it as a basket asset, which can only ever hand it to holders.
+**No contract has an owner withdrawal path.** Not the treasury, not the vault, not the distributor.
+ETH that reaches the treasury can only leave as a purchase; coins can only leave as a claim or a
+redemption. A test asserts none of the three ABIs contains `withdraw`, `sweep`, `rescue`,
+`emergency`, `recover`, or `skim`.
 
-**The treasury has no withdrawal path either.** ETH that lands there can only leave as a purchase
-destined for the vault.
+**Keepers cannot redirect funds.** A keeper submits a list of tokens. The treasury reads each one's
+launch record from the Pons factory, rebuilds the v4 pool key itself, and swaps through the pool
+manager directly. There is no arbitrary-calldata path. The contract independently enforces:
 
-**Keepers cannot redirect funds.** A keeper names a token; the treasury reads that token's launch
-record from Pons, rebuilds the pool key itself, and swaps through the pool manager directly. There
-is no arbitrary-calldata path. A compromised keeper key can waste `buySize` on a bad launch that
-still passes every on-chain filter, and nothing more.
+| Check | Why |
+| --- | --- |
+| `exists` | A real Pons launch, not an arbitrary address. |
+| `phase == PoolCreated` | Actually bonded. Rejects `NotGraduated`, `Swept`, and `Rescued`. |
+| `pairToken == address(0)` | ETH-paired, so treasury ETH can buy it directly. |
+| `graduationThreshold >= minGraduationThreshold` | The launch had to raise a real amount to bond. |
+| `now >= lastBoughtAt[token] + tokenCooldown` | One coin cannot be bought hour after hour. |
+| strictly ascending orders | Rules out duplicates taking several slices of the budget. |
+| `orders.length <= maxTokensPerEpoch` | Bounds the gas of one epoch. |
+| `epochBudget()` | Caps ETH at risk in any single hour. |
 
-**Known residual risk.** Keepers are allowlisted rather than permissionless, because a newly
-graduated pool has no price history to bound slippage against, so `minTokensOut` has to be quoted
-off-chain. Opening `buy` to anyone would let a caller pass `minTokensOut = 0` and sandwich the
-treasury. Related: anyone willing to fund a launch to graduation could get the treasury to buy
-their own project. `buySize`, `buyCooldown`, one-buy-per-token, and `minGraduationThreshold` bound
-that loss to a single `buySize`; they do not eliminate it. A permissionless keeper set needs a
-TWAP or an oracle first.
+### What is actually trusted
+
+Two things, and both are worth stating plainly.
+
+**Coin selection.** "Trending" is off-chain by nature, so the keeper decides which coins the
+treasury buys. The contract bounds *what* it will accept and *how much* it will spend, but not
+which coin trends. A compromised keeper can waste an hour's budget on coins that pass every filter
+— including ones it launched and funded to graduation itself. `maxEpochSpend`, `tokenCooldown`, and
+`minGraduationThreshold` bound that loss per hour; they do not eliminate it. This is a strictly
+larger trust surface than the newly-bonded-only rule it replaced, where the buy set was fully
+determined on-chain.
+
+**Root publication.** No on-chain check can verify a merkle root sums to what was deposited, so the
+publisher is trusted to compute entitlements honestly. What the contract *does* enforce is that
+claims for a coin can never exceed `totalFunded[coin]` — so a bad root can misallocate one coin, but
+cannot drain a coin that was never bought, and cannot touch another coin's balance.
+
+Both roles should be a hardened keyed service, and ownership should sit behind a multisig.
+
+**Proofs live off-chain.** `data/proofs.json` is what holders need to claim, and it cannot be
+derived from chain state. If it is lost, entitlements are unclaimable until the tree is rebuilt
+from the entitlement history. Serve it publicly and back it up.
+
+## Parameters
+
+| Parameter | Default | Meaning |
+| --- | --- | --- |
+| `epochDuration` | 1 hour | Minimum gap between epochs. |
+| `epochSpendBps` | 10000 | Share of spendable ETH deployed per epoch. |
+| `maxEpochSpend` | 5 ETH | Hard ceiling on one epoch's spend. |
+| `maxTokensPerEpoch` | 10 | Coins bought per epoch. |
+| `minReserve` | 0 | ETH never spent. |
+| `tokenCooldown` | 12 hours | Gap before the same coin can be bought again. |
+| `minGraduationThreshold` | 4.2 ETH | Curve raise a launch needed to qualify. |
+| `maxGraduationAge` | 0 (off) | Optional recency window. Off, because a coin can trend well after it bonds. |
+| `vaultBps` | 0 | Share retained as permanent backing instead of distributed. |
 
 ## Layout
 
 ```
 contracts/
-  IPOTreasury.sol         claims the tax, buys graduated projects, funds the vault
-  IPOVault.sol            basket custody + pro-rata redemption
+  IPOTreasury.sol         the hourly epoch: claim tax, buy trending coins, route them
+  IPODistributor.sol      cumulative merkle claims
+  IPOVault.sol            optional permanent backing + pro-rata redemption
   interfaces/IPons.sol        factory, fee escrow, launch records, phases
   interfaces/IUniswapV4.sol   pool manager, pool key, balance delta
   mocks/Mocks.sol         test doubles for Pons and the v4 pool manager
-bot/watcher.ts            watches PoolGraduated, quotes, submits buys
+bot/
+  runner.ts               the hourly cycle
+  trending.ts             scores coins from v4 swap activity
+  snapshot.ts             IPO holder balances, rebuilt incrementally from Transfers
+  merkle.ts               cumulative tree + proofs
+  pons.ts                 launch registry and pool-id derivation
 script/deploy.ts          launches IPO on Pons and wires everything up
 config/addresses.ts       chain + Pons v2 deployment addresses
-test/ipo.test.ts          28 tests
+test/ipo.test.ts          42 tests
 ```
 
 ## Build
@@ -138,6 +206,7 @@ test/ipo.test.ts          28 tests
 npm install
 npm run build
 npm test
+npm run typecheck
 ```
 
 ## Deploy
@@ -145,56 +214,39 @@ npm test
 The treasury must be the creator-fee recipient from the first trade, so `deploy.ts` predicts its
 address from the deployer's nonce, passes that into the launch, and asserts the treasury landed
 there. If it does not, the script prints the `transferCreatorFeeRecipient` call to repoint it.
+Nothing is broadcast without `CONFIRM_LAUNCH=yes`.
 
 ```bash
-CONFIRM_LAUNCH=yes \
-POOL_MANAGER=0x...        \
-KEEPER_ADDRESS=0x...      \
-PRIVATE_KEY=0x...         \
-npx hardhat run script/deploy.ts --network robinhood
+CONFIRM_LAUNCH=yes POOL_MANAGER=0x... KEEPER_ADDRESS=0x... PRIVATE_KEY=0x... npm run deploy
 ```
 
-Then run the keeper:
+It prints the fully populated keeper command on success:
 
 ```bash
-TREASURY_ADDRESS=0x... KEEPER_PRIVATE_KEY=0x... npm run watch
+TREASURY_ADDRESS=0x... DISTRIBUTOR_ADDRESS=0x... VAULT_ADDRESS=0x... \
+IPO_ADDRESS=0x... POOL_MANAGER=0x... IPO_DEPLOY_BLOCK=... PONS_FROM_BLOCK=... \
+KEEPER_PRIVATE_KEY=0x... npm start
 ```
+
+The runner polls `epochReady()` every 5 minutes rather than sleeping for exactly an hour, so a
+restart or an RPC outage costs one poll interval instead of skipping the hour.
 
 ## Before mainnet
 
 - [ ] **Fill in `UNISWAP_V4.poolManager`** in `config/addresses.ts`. It is the one address I could
       not verify for Robinhood Chain; `deploy.ts` refuses to run without it.
-- [ ] **Confirm the `PoolGraduated` signature.** The Pons docs name the event but not its
-      parameters. `bot/watcher.ts` and `interfaces/IPons.sol` assume
-      `(address indexed token, address indexed curve, address pairToken)`. Verify against the
-      deployed factory ABI — a mismatch means the bot silently sees nothing.
-- [ ] **Confirm the `LaunchedToken` field order** in `interfaces/IPons.sol` against the deployed
-      factory. It is decoded from the docs, and a reordered struct would misread `phase`.
+- [ ] **Confirm the `PoolGraduated` and v4 `Swap` event signatures.** The Pons docs name
+      `PoolGraduated` but not its parameters. `bot/pons.ts` assumes
+      `(address indexed token, address indexed curve, address pairToken)` and the standard v4
+      `Swap`. A mismatch means the bot silently sees nothing — verify against the deployed ABIs.
+- [ ] **Confirm the `LaunchedToken` field order** in `interfaces/IPons.sol`. It is decoded from the
+      docs, and a reordered struct would misread `phase`.
 - [ ] Check `maxCreatorTaxBps()` on-chain. `deploy.ts` asserts 400 clears it, but knowing the
       number in advance is worth a single `eth_call`.
 - [ ] Decide the launch config id (`LAUNCH_CONFIG_ID`), which fixes supply, curve fee, phantom
       quote, graduation threshold, and tick spacing.
-- [ ] Tune `setPolicy(buySize, minReserve, buyCooldown, maxGraduationAge, minGraduationThreshold)`
-      against real graduation volume. Defaults are 0.05 ETH / 0 / 5 min / 24 h / 4.2 ETH.
-- [ ] Move ownership to a multisig and run a keeper on redundant infrastructure.
+- [ ] Calibrate `TREND_WINDOW_BLOCKS` to a real hour of Robinhood Chain blocks, and tune the
+      trending weights against real graduation data.
+- [ ] Back up `data/` and serve `proofs.json` publicly. Holders cannot claim without it.
+- [ ] Move ownership to a multisig; run the keeper on redundant infrastructure.
 - [ ] External audit. None of this has been audited.
-
-## Assumptions I made
-
-You dismissed the design questionnaire, so I picked defaults. Each of these is a real fork and
-cheap to change now:
-
-1. **Pons-native creator tax over a custom tax token.** IPO is a Pons launch, which fits "Initial
-   Pons Offering" literally and gets the tax in ETH. The alternative — deploying IPO ourselves with
-   a transfer tax and our own v4 hook — gives more control over the fee split but means bootstrapping
-   liquidity and selling IPO to fund every purchase.
-2. **Redeemable vault over merkle-epoch airdrops.** Reasoning above. If you specifically want
-   visible periodic dividends, a merkle distributor is roughly 100 lines and can sit alongside this;
-   the treasury would split purchases between the two.
-3. **Filtered auto-buy over buy-everything.** ~250k tokens have launched on Pons; spreading the
-   treasury across every graduation buys a lot of dead projects. The filters are all parameters —
-   set `minGraduationThreshold` to 0 and `maxGraduationAge` high to approach buy-everything.
-4. **Allowlisted keepers.** See the trust model. This is the assumption I'd revisit first.
-5. **ETH-paired launches only.** Pons supports pairing against approved ERC-20s including tokenized
-   stocks. Buying those needs the treasury to hold the quote asset; `claimTaxToken` handles tax that
-   arrives in an ERC-20 by passing it straight to the vault, but the buy path is ETH-only.
