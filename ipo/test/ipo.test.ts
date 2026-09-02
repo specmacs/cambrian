@@ -1,7 +1,7 @@
 import { expect } from "chai";
 import { ethers } from "hardhat";
 import { loadFixture, time } from "@nomicfoundation/hardhat-network-helpers";
-import { CumulativeMerkleTree, accrue, type Entitlement } from "../bot/merkle";
+import { planAirdrop, toBatches } from "../bot/airdrop";
 import type { Address } from "viem";
 
 const ETH = (n: string) => ethers.parseEther(n);
@@ -52,8 +52,8 @@ describe("IPO — Initial Pons Offering", () => {
 
     const ipoAddr = await ipo.getAddress();
     const vault = await (await ethers.getContractFactory("IPOVault")).deploy(ipoAddr, owner.address);
-    const distributor = await (
-      await ethers.getContractFactory("IPODistributor")
+    const airdropper = await (
+      await ethers.getContractFactory("IPOAirdropper")
     ).deploy(owner.address);
     const treasury = await (
       await ethers.getContractFactory("IPOTreasury")
@@ -68,9 +68,9 @@ describe("IPO — Initial Pons Offering", () => {
 
     const treasuryAddr = await treasury.getAddress();
     await vault.setTreasury(treasuryAddr);
-    await distributor.setTreasury(treasuryAddr);
-    await distributor.setPublisher(keeper.address);
-    await treasury.setDistributor(await distributor.getAddress());
+    await airdropper.setTreasury(treasuryAddr);
+    await airdropper.setKeeper(keeper.address, true);
+    await treasury.setAirdropper(await airdropper.getAddress());
     await treasury.setVault(await vault.getAddress());
     await treasury.setKeeper(keeper.address, true);
 
@@ -88,7 +88,7 @@ describe("IPO — Initial Pons Offering", () => {
 
     return {
       owner, keeper, alice, bob, carol, curve,
-      ipo, factory, escrow, pm, vault, distributor, treasury,
+      ipo, factory, escrow, pm, vault, airdropper, treasury,
       coinA, coinB, addCoin,
     };
   }
@@ -153,7 +153,7 @@ describe("IPO — Initial Pons Offering", () => {
 
       const perToken = ETH("0.5");
       const expectedOut = perToken * RATE;
-      const distAddr = await f.distributor.getAddress();
+      const distAddr = await f.airdropper.getAddress();
       expect(await f.coinA.balanceOf(distAddr)).to.equal(expectedOut);
       expect(await f.coinB.balanceOf(distAddr)).to.equal(expectedOut);
       expect(await f.treasury.epoch()).to.equal(1n);
@@ -418,9 +418,9 @@ describe("IPO — Initial Pons Offering", () => {
 
       await runEpoch(f, [f.coinA]);
       const bought = ETH("1") * RATE;
-      expect(await f.coinA.balanceOf(await f.distributor.getAddress())).to.equal(bought);
+      expect(await f.coinA.balanceOf(await f.airdropper.getAddress())).to.equal(bought);
       expect(await f.coinA.balanceOf(await f.vault.getAddress())).to.equal(0n);
-      expect(await f.distributor.totalFunded(await f.coinA.getAddress())).to.equal(bought);
+      expect(await f.airdropper.totalFunded(await f.coinA.getAddress())).to.equal(bought);
     });
 
     it("splits between holders and permanent backing when configured", async () => {
@@ -434,7 +434,7 @@ describe("IPO — Initial Pons Offering", () => {
         .withArgs(await f.coinA.getAddress(), ETH("1"), bought, (bought * 75n) / 100n, (bought * 25n) / 100n);
 
       expect(await f.coinA.balanceOf(await f.vault.getAddress())).to.equal((bought * 25n) / 100n);
-      expect(await f.coinA.balanceOf(await f.distributor.getAddress())).to.equal((bought * 75n) / 100n);
+      expect(await f.coinA.balanceOf(await f.airdropper.getAddress())).to.equal((bought * 75n) / 100n);
     });
 
     it("rejects a split above 100%", async () => {
@@ -447,32 +447,9 @@ describe("IPO — Initial Pons Offering", () => {
   });
 
   // =====================================================================
-  describe("distribution to holders", () => {
-    /** Run an epoch, then publish a root paying out pro rata to the IPO holders. */
-    async function distribute(f: any, prior: Entitlement[] = []): Promise<Entitlement[]> {
-      const holders: [Address, bigint][] = [
-        [f.alice.address as Address, await f.ipo.balanceOf(f.alice.address)],
-        [f.bob.address as Address, await f.ipo.balanceOf(f.bob.address)],
-        [f.carol.address as Address, await f.ipo.balanceOf(f.carol.address)],
-      ];
-      const balances = new Map(holders.filter(([, b]) => b > 0n));
-
-      const coinAddr = (await f.coinA.getAddress()) as Address;
-      const funded = await f.distributor.totalFunded(coinAddr);
-      const alreadyOwed = prior
-        .filter((e) => e.token.toLowerCase() === coinAddr.toLowerCase())
-        .reduce((a, e) => a + e.cumulativeAmount, 0n);
-
-      const purchases = new Map<Address, bigint>([[coinAddr, funded - alreadyOwed]]);
-      const next = accrue(prior, balances, purchases);
-      const tree = new CumulativeMerkleTree(next);
-      await f.distributor.connect(f.keeper).publishRoot(tree.root);
-      return next;
-    }
-
+  describe("airdropping to holders", () => {
     async function withHolders() {
       const f = await loadFixture(deployFixture);
-      // 60/30/10 split of a tenth of supply; the rest stays with the deployer and is not entitled.
       await f.ipo.transfer(f.alice.address, ETH("60000000"));
       await f.ipo.transfer(f.bob.address, ETH("30000000"));
       await f.ipo.transfer(f.carol.address, ETH("10000000"));
@@ -481,175 +458,188 @@ describe("IPO — Initial Pons Offering", () => {
       return f;
     }
 
-    it("pays each holder their pro-rata share of the hour's buys", async () => {
+    /** The split the keeper computes: everything undistributed, over every IPO holder. */
+    async function plan(f: any, coin: any, minPayout = 0n) {
+      const token = (await coin.getAddress()) as Address;
+      const available = new Map<Address, bigint>([[token, await f.airdropper.undistributed(token)]]);
+      const holders: [Address, bigint][] = [];
+      for (const who of [f.owner, f.alice, f.bob, f.carol]) {
+        holders.push([who.address as Address, await f.ipo.balanceOf(who.address)]);
+      }
+      const balances = new Map(holders.filter(([, b]) => b > 0n));
+      const [p] = planAirdrop(available, balances, minPayout);
+      return { p, token, balances };
+    }
+
+    async function send(f: any, p: any, epochId = 1n, batchIndex = 0n) {
+      return f.airdropper
+        .connect(f.keeper)
+        .airdrop(epochId, batchIndex, p.token, p.recipients, p.amounts);
+    }
+
+    it("sends each holder their pro-rata share straight to their wallet", async () => {
       const f = await withHolders();
-      const entitlements = await distribute(f);
-      const coin = (await f.coinA.getAddress()) as Address;
-      const tree = new CumulativeMerkleTree(entitlements);
+      const { p, token, balances } = await plan(f, f.coinA);
+      const funded = await f.airdropper.totalFunded(token);
+      const totalIpo = [...balances.values()].reduce((a, b) => a + b, 0n);
 
-      const aliceE = entitlements.find(
-        (e) => e.account.toLowerCase() === f.alice.address.toLowerCase()
-      )!;
-      await f.distributor.claim(f.alice.address, coin, aliceE.cumulativeAmount, tree.proof(aliceE));
+      expect(await f.coinA.balanceOf(f.alice.address)).to.equal(0n);
+      await send(f, p);
 
-      const bought = ETH("1") * RATE;
-      expect(await f.coinA.balanceOf(f.alice.address)).to.equal((bought * 60n) / 100n);
-      expect(aliceE.cumulativeAmount).to.equal((bought * 60n) / 100n);
+      // Holders did nothing: no claim, no approval, no gas.
+      for (const who of [f.alice, f.bob, f.carol]) {
+        const expected = (funded * (await f.ipo.balanceOf(who.address))) / totalIpo;
+        expect(await f.coinA.balanceOf(who.address)).to.equal(expected);
+      }
+      expect(await f.airdropper.totalSent(token)).to.equal(p.total);
+      expect(await f.airdropper.totalTransfers()).to.equal(BigInt(p.recipients.length));
     });
 
-    it("accumulates across hours so one proof collects everything owed", async () => {
+    it("rolls rounding dust into the next hour instead of stranding it", async () => {
       const f = await withHolders();
-      let entitlements = await distribute(f);
+      const { p, token } = await plan(f, f.coinA);
+      await send(f, p);
 
-      // A second hour, a second purchase of the same coin.
+      const left = await f.airdropper.undistributed(token);
+      expect(left).to.equal(p.remainder);
+      expect(left).to.be.lessThan(4n); // at most one wei per holder
+
+      // Next hour's purchase adds to the leftover rather than replacing it.
       await time.increase(13 * HOUR);
       await f.escrow.credit(await f.treasury.getAddress(), { value: ETH("1") });
       await runEpoch(f, [f.coinA]);
-      entitlements = await distribute(f, entitlements);
-
-      const coin = (await f.coinA.getAddress()) as Address;
-      const tree = new CumulativeMerkleTree(entitlements);
-      const bobE = entitlements.find(
-        (e) => e.account.toLowerCase() === f.bob.address.toLowerCase()
-      )!;
-
-      // Bob never claimed the first hour; one claim now settles both.
-      await f.distributor.claim(f.bob.address, coin, bobE.cumulativeAmount, tree.proof(bobE));
-      const boughtTwice = ETH("2") * RATE;
-      expect(await f.coinA.balanceOf(f.bob.address)).to.equal((boughtTwice * 30n) / 100n);
+      expect(await f.airdropper.undistributed(token)).to.equal(left + ETH("1") * RATE);
     });
 
-    it("pays only the difference when a holder claims twice", async () => {
+    it("leaves out holders whose share rounds below the dust floor", async () => {
       const f = await withHolders();
-      let entitlements = await distribute(f);
-      const coin = (await f.coinA.getAddress()) as Address;
-      let tree = new CumulativeMerkleTree(entitlements);
-      let aliceE = entitlements.find(
-        (e) => e.account.toLowerCase() === f.alice.address.toLowerCase()
-      )!;
+      // Carol holds 10M of 1B, so a 1 ETH buy pays her ~1% of the coins.
+      const funded = await f.airdropper.totalFunded(await f.coinA.getAddress());
+      const carolShare = (funded * ETH("10000000")) / IPO_SUPPLY;
 
-      await f.distributor.claim(f.alice.address, coin, aliceE.cumulativeAmount, tree.proof(aliceE));
-      const afterFirst = await f.coinA.balanceOf(f.alice.address);
+      const { p } = await plan(f, f.coinA, carolShare + 1n);
+      expect(p.recipients.map((r: string) => r.toLowerCase())).to.not.include(
+        f.carol.address.toLowerCase()
+      );
+      expect(p.dusted).to.be.greaterThan(0);
 
-      await expect(
-        f.distributor.claim(f.alice.address, coin, aliceE.cumulativeAmount, tree.proof(aliceE))
-      ).to.be.revertedWithCustomError(f.distributor, "NothingToClaim");
+      await send(f, p);
+      expect(await f.coinA.balanceOf(f.carol.address)).to.equal(0n);
+      // Her share is not lost, it is still sitting undistributed.
+      expect(await f.airdropper.undistributed(await f.coinA.getAddress())).to.be.gte(carolShare);
+    });
+
+    it("refuses to send the same batch twice", async () => {
+      const f = await withHolders();
+      const { p } = await plan(f, f.coinA);
+      await send(f, p);
+      await expect(send(f, p)).to.be.revertedWithCustomError(f.airdropper, "BatchAlreadySent");
+    });
+
+    it("treats the same batch index under a different epoch as new work", async () => {
+      const f = await withHolders();
+      const { p } = await plan(f, f.coinA);
+      await send(f, p, 1n, 0n);
 
       await time.increase(13 * HOUR);
       await f.escrow.credit(await f.treasury.getAddress(), { value: ETH("1") });
       await runEpoch(f, [f.coinA]);
-      entitlements = await distribute(f, entitlements);
-      tree = new CumulativeMerkleTree(entitlements);
-      aliceE = entitlements.find(
-        (e) => e.account.toLowerCase() === f.alice.address.toLowerCase()
-      )!;
 
-      await f.distributor.claim(f.alice.address, coin, aliceE.cumulativeAmount, tree.proof(aliceE));
-      // The second claim paid only the new hour, not the whole cumulative total again.
-      expect(await f.coinA.balanceOf(f.alice.address)).to.equal(afterFirst * 2n);
+      const next = await plan(f, f.coinA);
+      await expect(send(f, next.p, 2n, 0n)).to.emit(f.airdropper, "AirdropSent");
     });
 
-    it("rejects a forged proof", async () => {
+    it("cannot send more of a coin than the treasury funded", async () => {
       const f = await withHolders();
-      const entitlements = await distribute(f);
-      const coin = (await f.coinA.getAddress()) as Address;
-      const tree = new CumulativeMerkleTree(entitlements);
-      const aliceE = entitlements.find(
-        (e) => e.account.toLowerCase() === f.alice.address.toLowerCase()
-      )!;
+      const token = await f.coinA.getAddress();
+      const funded = await f.airdropper.totalFunded(token);
 
-      // Alice's proof, inflated amount.
       await expect(
-        f.distributor.claim(
-          f.alice.address,
-          coin,
-          aliceE.cumulativeAmount * 2n,
-          tree.proof(aliceE)
-        )
-      ).to.be.revertedWithCustomError(f.distributor, "InvalidProof");
-
-      // Carol claiming against Alice's leaf.
-      await expect(
-        f.distributor.claim(f.carol.address, coin, aliceE.cumulativeAmount, tree.proof(aliceE))
-      ).to.be.revertedWithCustomError(f.distributor, "InvalidProof");
+        f.airdropper
+          .connect(f.keeper)
+          .airdrop(1, 0, token, [f.alice.address, f.bob.address], [funded, funded])
+      ).to.be.revertedWithCustomError(f.airdropper, "ExceedsFunded");
     });
 
-    it("cannot pay out more of a coin than the treasury funded", async () => {
+    it("splits into batches and delivers them all", async () => {
       const f = await withHolders();
-      const coin = (await f.coinA.getAddress()) as Address;
-      const funded = await f.distributor.totalFunded(coin);
+      const { p } = await plan(f, f.coinA);
+      const batches = toBatches(p, 2);
+      expect(batches.length).to.equal(2); // 4 holders, 2 per batch
 
-      // A root that over-allocates: every holder credited the entire balance.
-      const bad: Entitlement[] = [
-        { account: f.alice.address as Address, token: coin, cumulativeAmount: funded },
-        { account: f.bob.address as Address, token: coin, cumulativeAmount: funded },
-      ];
-      const tree = new CumulativeMerkleTree(bad);
-      await f.distributor.connect(f.keeper).publishRoot(tree.root);
-
-      await f.distributor.claim(f.alice.address, coin, funded, tree.proof(bad[0]));
-      await expect(
-        f.distributor.claim(f.bob.address, coin, funded, tree.proof(bad[1]))
-      ).to.be.revertedWithCustomError(f.distributor, "ExceedsFunded");
+      for (const b of batches) {
+        await f.airdropper
+          .connect(f.keeper)
+          .airdrop(1, b.batchIndex, b.token, b.recipients, b.amounts);
+      }
+      expect(await f.airdropper.totalSent(await f.coinA.getAddress())).to.equal(p.total);
+      expect(await f.coinA.balanceOf(f.alice.address)).to.be.greaterThan(0n);
+      expect(await f.coinA.balanceOf(f.carol.address)).to.be.greaterThan(0n);
     });
 
-    it("claims several coins in one transaction", async () => {
+    it("skips zero amounts rather than reverting on them", async () => {
       const f = await withHolders();
-      await time.increase(HOUR + 1);
-      await f.escrow.credit(await f.treasury.getAddress(), { value: ETH("1") });
-      await runEpoch(f, [f.coinB]);
+      const token = await f.coinA.getAddress();
+      await f.airdropper
+        .connect(f.keeper)
+        .airdrop(1, 0, token, [f.alice.address, f.bob.address], [0n, 100n]);
+      expect(await f.coinA.balanceOf(f.alice.address)).to.equal(0n);
+      expect(await f.coinA.balanceOf(f.bob.address)).to.equal(100n);
+      expect(await f.airdropper.totalTransfers()).to.equal(1n);
+    });
 
-      const coinA = (await f.coinA.getAddress()) as Address;
-      const coinB = (await f.coinB.getAddress()) as Address;
-      const alice = f.alice.address as Address;
+    it("rejects malformed batches", async () => {
+      const f = await withHolders();
+      const token = await f.coinA.getAddress();
+      await expect(
+        f.airdropper.connect(f.keeper).airdrop(1, 0, token, [f.alice.address], [1n, 2n])
+      ).to.be.revertedWithCustomError(f.airdropper, "LengthMismatch");
+      await expect(
+        f.airdropper.connect(f.keeper).airdrop(1, 0, token, [], [])
+      ).to.be.revertedWithCustomError(f.airdropper, "EmptyBatch");
+    });
 
-      const entitlements: Entitlement[] = [
-        { account: alice, token: coinA, cumulativeAmount: ETH("1") },
-        { account: alice, token: coinB, cumulativeAmount: ETH("2") },
-        { account: f.bob.address as Address, token: coinA, cumulativeAmount: ETH("3") },
-      ];
-      const tree = new CumulativeMerkleTree(entitlements);
-      await f.distributor.connect(f.keeper).publishRoot(tree.root);
+    it("only keepers can airdrop, and only the treasury can fund", async () => {
+      const f = await withHolders();
+      const { p } = await plan(f, f.coinA);
+      await expect(
+        f.airdropper.connect(f.alice).airdrop(1, 0, p.token, p.recipients, p.amounts)
+      ).to.be.revertedWithCustomError(f.airdropper, "NotKeeper");
+      await expect(
+        f.airdropper.connect(f.alice).fund(p.token, 1n)
+      ).to.be.revertedWithCustomError(f.airdropper, "NotTreasury");
+    });
 
-      await f.distributor.claimMany(
-        alice,
-        [coinA, coinB],
-        [ETH("1"), ETH("2")],
-        [tree.proof(entitlements[0]), tree.proof(entitlements[1])]
+    it("costs a predictable amount of gas per recipient", async () => {
+      const f = await withHolders();
+      const token = await f.coinA.getAddress();
+      const funded = await f.airdropper.totalFunded(token);
+
+      // 100 fresh addresses, which is the expensive case: every transfer writes a new balance slot.
+      const n = 100;
+      const recipients = Array.from(
+        { length: n },
+        (_, i) => ethers.getAddress("0x" + (i + 1).toString(16).padStart(40, "0"))
       );
+      const each = funded / BigInt(n * 2);
+      const amounts = Array(n).fill(each);
 
-      expect(await f.coinA.balanceOf(alice)).to.equal(ETH("1"));
-      expect(await f.coinB.balanceOf(alice)).to.equal(ETH("2"));
-    });
-
-    it("refuses claims before any root is published", async () => {
-      const f = await withHolders();
-      await expect(
-        f.distributor.claim(f.alice.address, await f.coinA.getAddress(), 1n, [])
-      ).to.be.revertedWithCustomError(f.distributor, "NoRoot");
-    });
-
-    it("only the publisher or owner may publish a root", async () => {
-      const f = await withHolders();
-      await expect(
-        f.distributor.connect(f.alice).publishRoot(ethers.ZeroHash)
-      ).to.be.revertedWithCustomError(f.distributor, "NotPublisher");
-
-      await expect(f.distributor.connect(f.keeper).publishRoot(ethers.id("x"))).to.emit(
-        f.distributor,
-        "RootPublished"
+      const tx = await f.airdropper.connect(f.keeper).airdrop(1, 0, token, recipients, amounts);
+      const receipt = await tx.wait();
+      const perRecipient = Number(receipt!.gasUsed) / n;
+      console.log(
+        `      ${n} fresh recipients: ${receipt!.gasUsed} gas total, ` +
+          `~${Math.round(perRecipient)} per recipient`
       );
-      await expect(f.distributor.connect(f.owner).publishRoot(ethers.id("y"))).to.emit(
-        f.distributor,
-        "RootPublished"
-      );
+      // Guards against a refactor that quietly makes the hot loop much more expensive.
+      expect(perRecipient).to.be.lessThan(40_000);
     });
 
-    it("only the treasury can fund a distribution", async () => {
+    it("stops airdropping when paused", async () => {
       const f = await withHolders();
-      await expect(
-        f.distributor.connect(f.alice).fund(await f.coinA.getAddress(), 1n)
-      ).to.be.revertedWithCustomError(f.distributor, "NotTreasury");
+      const { p } = await plan(f, f.coinA);
+      await f.airdropper.pause();
+      await expect(send(f, p)).to.be.revertedWithCustomError(f.airdropper, "EnforcedPause");
     });
   });
 
@@ -705,7 +695,9 @@ describe("IPO — Initial Pons Offering", () => {
 
     it("exposes no way for the owner to take assets out", async () => {
       const f = await withBacking();
-      for (const c of [f.vault, f.distributor, f.treasury]) {
+      // The airdropper is excluded on purpose: sending coins out is its entire job. Its bound is
+      // the totalFunded cap, tested separately, not the absence of a transfer path.
+      for (const c of [f.vault, f.treasury]) {
         const fns = c.interface.fragments
           .filter((x: any) => x.type === "function")
           .map((x: any) => x.name.toLowerCase());

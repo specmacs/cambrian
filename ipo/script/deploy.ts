@@ -39,7 +39,7 @@ async function main() {
     throw new Error(`creator tax ${CREATOR_TAX_BPS}bps exceeds the Pons cap of ${maxTax}bps`);
   }
 
-  // Nonce n: launchToken, n+1: vault, n+2: distributor, n+3: treasury.
+  // Nonce n: launchToken, n+1: vault, n+2: airdropper, n+3: treasury.
   const nonce = await ethers.provider.getTransactionCount(deployer.address);
   const predictedTreasury = ethers.getCreateAddress({ from: deployer.address, nonce: nonce + 3 });
   console.log(`treasury will be ${predictedTreasury}`);
@@ -90,11 +90,11 @@ async function main() {
   await vault.waitForDeployment();
   console.log(`vault ${await vault.getAddress()}`);
 
-  const distributor = await (
-    await ethers.getContractFactory("IPODistributor")
+  const airdropper = await (
+    await ethers.getContractFactory("IPOAirdropper")
   ).deploy(deployer.address);
-  await distributor.waitForDeployment();
-  console.log(`distributor ${await distributor.getAddress()}`);
+  await airdropper.waitForDeployment();
+  console.log(`airdropper ${await airdropper.getAddress()}`);
 
   const treasury = await (
     await ethers.getContractFactory("IPOTreasury")
@@ -112,9 +112,9 @@ async function main() {
 
   console.log("wiring...");
   await (await vault.setTreasury(treasuryAddr)).wait();
-  await (await distributor.setTreasury(treasuryAddr)).wait();
-  await (await distributor.setPublisher(keeper)).wait();
-  await (await treasury.setDistributor(await distributor.getAddress())).wait();
+  await (await airdropper.setTreasury(treasuryAddr)).wait();
+  await (await airdropper.setKeeper(keeper, true)).wait();
+  await (await treasury.setAirdropper(await airdropper.getAddress())).wait();
   await (await treasury.setVault(await vault.getAddress())).wait();
   await (await treasury.setKeeper(keeper, true)).wait();
   // Unsold supply sitting on the bonding curve must not dilute redeemers' claims.
@@ -126,14 +126,14 @@ async function main() {
   console.log(`IPO         ${ipo}`);
   console.log(`curve       ${curve}`);
   console.log(`vault       ${await vault.getAddress()}`);
-  console.log(`distributor ${await distributor.getAddress()}`);
+  console.log(`airdropper  ${await airdropper.getAddress()}`);
   console.log(`treasury    ${treasuryAddr}`);
   console.log(`keeper      ${keeper}`);
   console.log("\n--- run the hourly keeper ---");
   console.log(
     [
       `TREASURY_ADDRESS=${treasuryAddr}`,
-      `DISTRIBUTOR_ADDRESS=${await distributor.getAddress()}`,
+      `AIRDROPPER_ADDRESS=${await airdropper.getAddress()}`,
       `VAULT_ADDRESS=${await vault.getAddress()}`,
       `IPO_ADDRESS=${ipo}`,
       `POOL_MANAGER=${poolManager}`,

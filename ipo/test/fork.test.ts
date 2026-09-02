@@ -34,8 +34,8 @@ const forking = !!process.env.FORK_BLOCK;
     const vault = await (
       await ethers.getContractFactory("IPOVault")
     ).deploy(await ipo.getAddress(), owner.address);
-    const distributor = await (
-      await ethers.getContractFactory("IPODistributor")
+    const airdropper = await (
+      await ethers.getContractFactory("IPOAirdropper")
     ).deploy(owner.address);
     const treasury = await (
       await ethers.getContractFactory("IPOTreasury")
@@ -50,8 +50,9 @@ const forking = !!process.env.FORK_BLOCK;
 
     const treasuryAddr = await treasury.getAddress();
     await vault.setTreasury(treasuryAddr);
-    await distributor.setTreasury(treasuryAddr);
-    await treasury.setDistributor(await distributor.getAddress());
+    await airdropper.setTreasury(treasuryAddr);
+    await airdropper.setKeeper(keeper.address, true);
+    await treasury.setAirdropper(await airdropper.getAddress());
     await treasury.setVault(await vault.getAddress());
     await treasury.setKeeper(keeper.address, true);
 
@@ -75,8 +76,8 @@ const forking = !!process.env.FORK_BLOCK;
     expect(eligible, `real coin not eligible: ${reason}`).to.equal(true);
 
     const coin = await ethers.getContractAt("MockERC20", REAL_COIN);
-    const distAddr = await distributor.getAddress();
-    expect(await coin.balanceOf(distAddr)).to.equal(0n);
+    const dropAddr = await airdropper.getAddress();
+    expect(await coin.balanceOf(dropAddr)).to.equal(0n);
 
     const deadline = (await ethers.provider.getBlock("latest"))!.timestamp + 600;
     const tx = await treasury
@@ -84,11 +85,11 @@ const forking = !!process.env.FORK_BLOCK;
       .runEpoch([{ token: REAL_COIN, minTokensOut: 0n }], deadline);
     await tx.wait();
 
-    // The real pool paid out, the accounting balanced, and the coins reached holders' contract.
-    const received = await coin.balanceOf(distAddr);
+    // The real pool paid out, the accounting balanced, and the coins reached the airdropper.
+    const received = await coin.balanceOf(dropAddr);
     console.log(`      received ${ethers.formatUnits(received, 18)} tokens for 0.02 ETH`);
     expect(received, "no tokens received from the real pool").to.be.greaterThan(0n);
-    expect(await distributor.totalFunded(REAL_COIN)).to.equal(received);
+    expect(await airdropper.totalFunded(REAL_COIN)).to.equal(received);
 
     // The treasury kept nothing back and spent exactly the budget.
     expect(await coin.balanceOf(treasuryAddr)).to.equal(0n);

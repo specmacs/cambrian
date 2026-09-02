@@ -1,7 +1,7 @@
 /**
  * The hourly cycle.
  *
- *   claim the tax  ->  pick the trending coins  ->  buy them  ->  publish who is owed what
+ *   claim the tax  ->  pick the trending coins  ->  buy them  ->  airdrop them to holders
  *
  * Polls rather than sleeping for exactly an hour: the treasury is the authority on when an epoch
  * may run, so the runner asks it (`epochReady`) every few minutes and acts when the answer is yes.
@@ -9,7 +9,7 @@
  * skipping the hour entirely.
  *
  *   RPC_URL=... KEEPER_PRIVATE_KEY=0x... TREASURY_ADDRESS=0x... \
- *   DISTRIBUTOR_ADDRESS=0x... IPO_ADDRESS=0x... POOL_MANAGER=0x... npm run start
+ *   AIRDROPPER_ADDRESS=0x... IPO_ADDRESS=0x... POOL_MANAGER=0x... npm start
  */
 import {
   createPublicClient,
@@ -22,13 +22,12 @@ import {
   type PublicClient,
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
-import { mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 
 import { robinhoodChain, PONS } from "../config/addresses";
 import { topTrending } from "./trending";
 import { snapshotHolders } from "./snapshot";
-import { CumulativeMerkleTree, accrue, type Entitlement } from "./merkle";
+import { planAirdrop, toBatches } from "./airdrop";
 import { factoryAbi } from "./pons";
 
 // --- configuration -----------------------------------------------------
@@ -41,7 +40,7 @@ const env = (k: string, fallback?: string) => {
 
 const RPC_URL = process.env.RPC_URL ?? robinhoodChain.rpcUrls.default.http[0];
 const TREASURY = env("TREASURY_ADDRESS") as Address;
-const DISTRIBUTOR = env("DISTRIBUTOR_ADDRESS") as Address;
+const AIRDROPPER = env("AIRDROPPER_ADDRESS") as Address;
 const IPO = env("IPO_ADDRESS") as Address;
 const POOL_MANAGER = env("POOL_MANAGER") as Address;
 const KEEPER_KEY = env("KEEPER_PRIVATE_KEY") as Hex;
@@ -57,6 +56,10 @@ const IPO_DEPLOY_BLOCK = BigInt(process.env.IPO_DEPLOY_BLOCK ?? PONS_FROM_BLOCK)
 const SLIPPAGE_BPS = BigInt(process.env.SLIPPAGE_BPS ?? 500);
 const POLL_MS = Number(process.env.POLL_MS ?? 5 * 60 * 1000);
 const DATA_DIR = process.env.DATA_DIR ?? "data";
+/** Transfers per airdrop transaction. Sized to stay well inside a block. */
+const AIRDROP_BATCH_SIZE = Number(process.env.AIRDROP_BATCH_SIZE ?? 250);
+/** Shares below this are skipped and roll into the next hour rather than burning gas. */
+const MIN_PAYOUT = BigInt(process.env.MIN_PAYOUT ?? 0);
 
 const treasuryAbi = parseAbi([
   "struct BuyOrder { address token; uint256 minTokensOut; }",
@@ -66,11 +69,14 @@ const treasuryAbi = parseAbi([
   "function maxTokensPerEpoch() view returns (uint256)",
   "function epoch() view returns (uint256)",
   "event Bought(address indexed token, uint256 ethIn, uint256 tokensOut, uint256 toHolders, uint256 toVault)",
+  "event EpochRun(uint256 indexed epoch, uint256 tokenCount, uint256 ethSpent)",
 ]);
 
-const distributorAbi = parseAbi([
-  "function publishRoot(bytes32 root)",
-  "function epoch() view returns (uint256)",
+const airdropperAbi = parseAbi([
+  "function airdrop(uint256 epochId, uint256 batchIndex, address token, address[] recipients, uint256[] amounts) returns (uint256 sent, uint256 paidCount)",
+  "function tokens() view returns (address[])",
+  "function undistributed(address token) view returns (uint256)",
+  "function isBatchSent(uint256 epochId, uint256 batchIndex, address token) view returns (bool)",
 ]);
 
 const account = privateKeyToAccount(KEEPER_KEY);
@@ -81,52 +87,6 @@ const publicClient = createPublicClient({
 const walletClient = createWalletClient({ account, chain: robinhoodChain, transport: http(RPC_URL) });
 
 const log = (...args: unknown[]) => console.log(new Date().toISOString(), ...args);
-
-// --- persistence -------------------------------------------------------
-
-const entitlementsPath = join(DATA_DIR, "entitlements.json");
-const proofsPath = join(DATA_DIR, "proofs.json");
-const snapshotPath = join(DATA_DIR, "ipo-holders.json");
-
-function loadEntitlements(): Entitlement[] {
-  if (!existsSync(entitlementsPath)) return [];
-  const raw = JSON.parse(readFileSync(entitlementsPath, "utf8")) as any[];
-  return raw.map((e) => ({
-    account: e.account as Address,
-    token: e.token as Address,
-    cumulativeAmount: BigInt(e.cumulativeAmount),
-  }));
-}
-
-/**
- * Write the tree out alongside a per-holder proof index.
- *
- * Claiming needs a proof, and a proof cannot be derived from on-chain state — so if this file is
- * lost, every holder's entitlement is unclaimable until the tree is rebuilt. Serve it publicly and
- * keep backups.
- */
-function saveEntitlements(entitlements: Entitlement[], tree: CumulativeMerkleTree) {
-  mkdirSync(DATA_DIR, { recursive: true });
-  writeFileSync(
-    entitlementsPath,
-    JSON.stringify(
-      entitlements.map((e) => ({ ...e, cumulativeAmount: e.cumulativeAmount.toString() })),
-      null,
-      2
-    )
-  );
-
-  const byAccount: Record<string, Record<string, { cumulativeAmount: string; proof: Hex[] }>> = {};
-  for (const e of entitlements) {
-    const a = e.account.toLowerCase();
-    byAccount[a] ??= {};
-    byAccount[a][e.token.toLowerCase()] = {
-      cumulativeAmount: e.cumulativeAmount.toString(),
-      proof: tree.proof(e),
-    };
-  }
-  writeFileSync(proofsPath, JSON.stringify({ root: tree.root, accounts: byAccount }, null, 2));
-}
 
 // --- the cycle ---------------------------------------------------------
 
@@ -166,7 +126,7 @@ async function selectCoins(limit: number): Promise<Address[]> {
 }
 
 /** Buy the selected coins under one epoch, returning what each purchase handed to holders. */
-async function buy(tokens: Address[]): Promise<Map<Address, bigint>> {
+async function buy(tokens: Address[]): Promise<{ purchases: Map<Address, bigint>; epochId: bigint }> {
   const deadline = BigInt(Math.floor(Date.now() / 1000) + 600);
 
   // Simulate with no bound to obtain a quote, then re-simulate with the real bound so the
@@ -204,24 +164,22 @@ async function buy(tokens: Address[]): Promise<Map<Address, bigint>> {
     const { token, toHolders } = e.args as { token: Address; toHolders: bigint };
     purchases.set(token, (purchases.get(token) ?? 0n) + toHolders);
   }
-  log(`bought ${purchases.size} coins in block ${receipt.blockNumber}`);
-  return purchases;
+  const [epochRun] = parseEventLogs({ abi: treasuryAbi, eventName: "EpochRun", logs: receipt.logs });
+  const epochId = (epochRun?.args as { epoch: bigint } | undefined)?.epoch ?? 0n;
+  log(`epoch ${epochId}: bought ${purchases.size} coins in block ${receipt.blockNumber}`);
+  return { purchases, epochId };
 }
 
-/** Fold the hour's purchases into cumulative entitlements and publish the new root. */
-async function distribute(purchases: Map<Address, bigint>) {
-  if (purchases.size === 0) return;
-
+/** IPO balances of everyone entitled to a share, excluding protocol-owned and curve supply. */
+async function entitledHolders(): Promise<Map<Address, bigint>> {
   const head = await publicClient.getBlockNumber();
-
-  // The bonding curve's unsold supply, and protocol-owned balances, are not entitled to anything.
   const launch = await publicClient.readContract({
     address: PONS.factory as Address,
     abi: factoryAbi,
     functionName: "getLaunchedToken",
     args: [IPO],
   });
-  const excluded: Address[] = [launch.curve, TREASURY, DISTRIBUTOR];
+  const excluded: Address[] = [launch.curve, TREASURY, AIRDROPPER];
   if (process.env.VAULT_ADDRESS) excluded.push(process.env.VAULT_ADDRESS as Address);
 
   const balances = await snapshotHolders(
@@ -230,29 +188,90 @@ async function distribute(purchases: Map<Address, bigint>) {
     IPO_DEPLOY_BLOCK,
     head,
     excluded,
-    snapshotPath
+    join(DATA_DIR, "ipo-holders.json")
   );
   log(`snapshot: ${balances.size} entitled holders at block ${head}`);
-  if (balances.size === 0) {
-    log("no entitled holders; skipping root publication");
+  return balances;
+}
+
+/**
+ * Push every coin the airdropper is holding out to IPO holders.
+ *
+ * Works from `undistributed(token)` rather than this epoch's purchase alone, so rounding dust and
+ * anything a previous run failed to deliver is picked up here instead of being stranded.
+ */
+async function airdropAll(epochId: bigint) {
+  const tokens = await publicClient.readContract({
+    address: AIRDROPPER,
+    abi: airdropperAbi,
+    functionName: "tokens",
+  });
+  if (tokens.length === 0) return;
+
+  const available = new Map<Address, bigint>();
+  for (const token of tokens) {
+    const amount = await publicClient.readContract({
+      address: AIRDROPPER,
+      abi: airdropperAbi,
+      functionName: "undistributed",
+      args: [token],
+    });
+    if (amount > 0n) available.set(token, amount);
+  }
+  if (available.size === 0) {
+    log("nothing undistributed");
     return;
   }
 
-  const next = accrue(loadEntitlements(), balances, purchases);
-  const tree = new CumulativeMerkleTree(next);
+  const balances = await entitledHolders();
+  if (balances.size === 0) {
+    log("no entitled holders; coins roll into the next hour");
+    return;
+  }
 
-  const { request } = await publicClient.simulateContract({
-    account,
-    address: DISTRIBUTOR,
-    abi: distributorAbi,
-    functionName: "publishRoot",
-    args: [tree.root],
-  });
-  const hash = await walletClient.writeContract(request);
-  await publicClient.waitForTransactionReceipt({ hash });
+  const plans = planAirdrop(available, balances, MIN_PAYOUT);
+  log(`airdropping ${plans.length} coins to ${balances.size} holders`);
 
-  saveEntitlements(next, tree);
-  log(`published root ${tree.root} covering ${next.length} entitlements: ${hash}`);
+  for (const plan of plans) {
+    const batches = toBatches(plan, AIRDROP_BATCH_SIZE);
+    log(
+      `  ${plan.token}: ${plan.recipients.length} recipients in ${batches.length} batch(es), ` +
+        `${plan.dusted} dusted, ${plan.remainder} rolling forward`
+    );
+
+    for (const batch of batches) {
+      try {
+        // Defensive: a retry inside the same epoch would revert on-chain anyway.
+        const already = await publicClient.readContract({
+          address: AIRDROPPER,
+          abi: airdropperAbi,
+          functionName: "isBatchSent",
+          args: [epochId, BigInt(batch.batchIndex), batch.token],
+        });
+        if (already) {
+          log(`    batch ${batch.batchIndex} already sent, skipping`);
+          continue;
+        }
+
+        const { request } = await publicClient.simulateContract({
+          account,
+          address: AIRDROPPER,
+          abi: airdropperAbi,
+          functionName: "airdrop",
+          args: [epochId, BigInt(batch.batchIndex), batch.token, batch.recipients, batch.amounts],
+        });
+        const hash = await walletClient.writeContract(request);
+        const receipt = await publicClient.waitForTransactionReceipt({ hash });
+        log(
+          `    batch ${batch.batchIndex}: ${batch.recipients.length} transfers, ` +
+            `${receipt.status}, gas ${receipt.gasUsed}`
+        );
+      } catch (err) {
+        // One failed batch must not abandon the rest; the remainder rolls into the next hour.
+        log(`    batch ${batch.batchIndex} FAILED: ${(err as Error).message.split("\n")[0]}`);
+      }
+    }
+  }
 }
 
 async function tick() {
@@ -280,14 +299,14 @@ async function tick() {
     return;
   }
 
-  const purchases = await buy(tokens);
-  await distribute(purchases);
+  const { epochId } = await buy(tokens);
+  await airdropAll(epochId);
 }
 
 async function main() {
   log(`keeper     ${account.address}`);
   log(`treasury   ${TREASURY}`);
-  log(`distributor ${DISTRIBUTOR}`);
+  log(`airdropper ${AIRDROPPER}`);
   log(`polling every ${POLL_MS / 1000}s`);
 
   const run = () => tick().catch((err) => log("cycle failed:", (err as Error).message));

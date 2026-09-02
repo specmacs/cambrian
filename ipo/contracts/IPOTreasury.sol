@@ -10,7 +10,7 @@ import {Pausable} from "@openzeppelin/contracts/utils/Pausable.sol";
 import {IPonsFactory, IPonsFeeEscrow, LaunchedToken, PonsPhase} from "./interfaces/IPons.sol";
 import {IPoolManager, IUnlockCallback, PoolKey, SwapParams, V4Constants} from "./interfaces/IUniswapV4.sol";
 import {IPOVault} from "./IPOVault.sol";
-import {IPODistributor} from "./IPODistributor.sol";
+import {IPOAirdropper} from "./IPOAirdropper.sol";
 
 /// @notice One trending coin to buy this epoch.
 struct BuyOrder {
@@ -20,8 +20,12 @@ struct BuyOrder {
 }
 
 /// @title IPOTreasury
-/// @notice Collects the IPO tax and, once an hour, spends it on trending Pons coins which it hands
-///         to holders.
+/// @notice Collects the IPO tax and, once an hour, spends it on trending Pons coins which are then
+///         airdropped to holders.
+///
+/// @dev IPO is launched at `creatorTaxBps = 400`. Pons charges the creator tax on the quote side of
+///      both directions, so that single value is a 4/4 — 4% taken on every buy and 4% on every
+///      sell — and it lands here as ETH.
 ///
 /// @dev The 4% is levied by Pons, not by a transfer tax. IPO launches with `creatorTaxBps = 400`
 ///      and `creatorFeeRecipient = address(this)`, so the tax is charged on the quote side of every
@@ -57,8 +61,8 @@ contract IPOTreasury is Ownable2Step, ReentrancyGuard, Pausable, IUnlockCallback
     /// @notice The IPO token whose creator tax funds this treasury.
     address public immutable IPO;
 
-    /// @notice Receives the share of each purchase that is handed to holders.
-    IPODistributor public distributor;
+    /// @notice Receives the share of each purchase that is pushed out to holders.
+    IPOAirdropper public airdropper;
     /// @notice Receives the share of each purchase that is retained as permanent backing.
     IPOVault public vault;
 
@@ -96,7 +100,7 @@ contract IPOTreasury is Ownable2Step, ReentrancyGuard, Pausable, IUnlockCallback
     uint256 public totalEthSpent;
     uint256 public totalTaxClaimed;
 
-    event DistributorSet(address indexed distributor);
+    event AirdropperSet(address indexed airdropper);
     event VaultSet(address indexed vault);
     event KeeperSet(address indexed keeper, bool allowed);
     event PolicySet(
@@ -116,7 +120,7 @@ contract IPOTreasury is Ownable2Step, ReentrancyGuard, Pausable, IUnlockCallback
 
     error NotKeeper();
     error ZeroAddress();
-    error DistributorNotSet();
+    error AirdropperNotSet();
     error VaultNotSet();
     error NotAPonsLaunch(address token);
     error NotGraduated(address token, uint8 phase);
@@ -165,10 +169,10 @@ contract IPOTreasury is Ownable2Step, ReentrancyGuard, Pausable, IUnlockCallback
     // Configuration
     // ---------------------------------------------------------------------
 
-    function setDistributor(address distributor_) external onlyOwner {
-        if (distributor_ == address(0)) revert ZeroAddress();
-        distributor = IPODistributor(distributor_);
-        emit DistributorSet(distributor_);
+    function setAirdropper(address airdropper_) external onlyOwner {
+        if (airdropper_ == address(0)) revert ZeroAddress();
+        airdropper = IPOAirdropper(airdropper_);
+        emit AirdropperSet(airdropper_);
     }
 
     function setVault(address vault_) external onlyOwner {
@@ -249,14 +253,14 @@ contract IPOTreasury is Ownable2Step, ReentrancyGuard, Pausable, IUnlockCallback
     /// @dev Only reachable if IPO is ever paired against an approved ERC-20 rather than native ETH.
     ///      Such a balance cannot fund an ETH-denominated purchase, so it is distributed as-is.
     function claimTaxToken(address token) external returns (uint256 claimed) {
-        if (address(distributor) == address(0)) revert DistributorNotSet();
+        if (address(airdropper) == address(0)) revert AirdropperNotSet();
         uint256 before = IERC20(token).balanceOf(address(this));
         if (PONS_FEE_ESCROW.balanceOfToken(address(this), token) == 0) revert NothingToClaim();
         PONS_FEE_ESCROW.claimToken(token);
         claimed = IERC20(token).balanceOf(address(this)) - before;
         if (claimed != 0) {
-            IERC20(token).safeTransfer(address(distributor), claimed);
-            distributor.fund(token, claimed);
+            IERC20(token).safeTransfer(address(airdropper), claimed);
+            airdropper.fund(token, claimed);
         }
         emit TaxTokenClaimed(token, claimed);
     }
@@ -298,7 +302,7 @@ contract IPOTreasury is Ownable2Step, ReentrancyGuard, Pausable, IUnlockCallback
     /// @notice Whether an epoch can run right now, and if not, why not.
     function epochReady() external view returns (bool ok, string memory reason) {
         if (paused()) return (false, "paused");
-        if (address(distributor) == address(0)) return (false, "distributor not set");
+        if (address(airdropper) == address(0)) return (false, "airdropper not set");
         if (block.timestamp < nextEpochAt()) return (false, "epoch not elapsed");
         // The keeper claims accrued tax as part of the epoch, so count it as spendable.
         uint256 accrued = PONS_FEE_ESCROW.balanceOf(address(this));
@@ -338,7 +342,7 @@ contract IPOTreasury is Ownable2Step, ReentrancyGuard, Pausable, IUnlockCallback
         returns (uint256[] memory received)
     {
         if (block.timestamp > deadline) revert DeadlinePassed();
-        if (address(distributor) == address(0)) revert DistributorNotSet();
+        if (address(airdropper) == address(0)) revert AirdropperNotSet();
         if (block.timestamp < nextEpochAt()) revert EpochNotElapsed(nextEpochAt());
 
         uint256 n = orders.length;
@@ -405,8 +409,8 @@ contract IPOTreasury is Ownable2Step, ReentrancyGuard, Pausable, IUnlockCallback
         uint256 toHolders = amount - toVault;
 
         if (toHolders != 0) {
-            IERC20(token).safeTransfer(address(distributor), toHolders);
-            distributor.fund(token, toHolders);
+            IERC20(token).safeTransfer(address(airdropper), toHolders);
+            airdropper.fund(token, toHolders);
         }
         if (toVault != 0) {
             IERC20(token).safeTransfer(address(vault), toVault);
