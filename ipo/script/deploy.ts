@@ -5,8 +5,11 @@
  * predicted from the deployer's nonce and passed into the launch. Deployment then asserts the
  * treasury actually landed there. Nothing is broadcast without CONFIRM_LAUNCH=yes.
  *
- *   CONFIRM_LAUNCH=yes POOL_MANAGER=0x... KEEPER_ADDRESS=0x... \
+ *   CONFIRM_LAUNCH=yes KEEPER_ADDRESS=0x... OWNER_ADDRESS=0x... \
  *     npx hardhat run script/deploy.ts --network robinhood
+ *
+ * KEEPER_ADDRESS is the hot key the bot signs with; OWNER_ADDRESS is the cold key that ends up
+ * owning the contracts. They must differ — see the check below for why.
  */
 import { ethers } from "hardhat";
 import { PONS, IPO_LAUNCH, UNISWAP_V4, LAUNCH_CONFIG_ID } from "../config/addresses";
@@ -17,6 +20,7 @@ async function main() {
   const [deployer] = await ethers.getSigners();
   const poolManager = process.env.POOL_MANAGER ?? UNISWAP_V4.poolManager;
   const keeper = process.env.KEEPER_ADDRESS ?? deployer.address;
+  const finalOwner = process.env.OWNER_ADDRESS;
   const launchConfigId = BigInt(process.env.LAUNCH_CONFIG_ID ?? LAUNCH_CONFIG_ID);
 
   if (!poolManager || poolManager === ethers.ZeroAddress) {
@@ -25,6 +29,17 @@ async function main() {
   console.log("run `npm run verify` first if you have not — it re-checks every Pons assumption");
   if (process.env.CONFIRM_LAUNCH !== "yes") {
     throw new Error("refusing to launch: set CONFIRM_LAUNCH=yes to broadcast");
+  }
+
+  // The keeper key is hot: it signs unattended every hour from a server. If it is also the owner,
+  // that server can setKeeper/setPolicy/setAirdropper and drain the treasury. Owner should be a
+  // cold key that never touches the machine running the bot.
+  if (keeper.toLowerCase() === deployer.address.toLowerCase() && process.env.ALLOW_SHARED_KEY !== "yes") {
+    throw new Error(
+      "keeper must not be the owner key — a compromised keeper would then own every contract.\n" +
+        "Set KEEPER_ADDRESS to a separate hot wallet (and OWNER_ADDRESS to a cold one),\n" +
+        "or pass ALLOW_SHARED_KEY=yes if you really mean to share a single key."
+    );
   }
 
   console.log(`deployer   ${deployer.address}`);
@@ -122,6 +137,15 @@ async function main() {
 
   const launchBlock = launchReceipt!.blockNumber;
 
+  // Hand ownership to a cold key. Ownable2Step means it is not owner until it accepts, so a
+  // mistyped address cannot strand the contracts.
+  if (finalOwner) {
+    console.log(`\ntransferring ownership to ${finalOwner} (pending until accepted)...`);
+    await (await vault.transferOwnership(finalOwner)).wait();
+    await (await airdropper.transferOwnership(finalOwner)).wait();
+    await (await treasury.transferOwnership(finalOwner)).wait();
+  }
+
   console.log("\n--- deployed ---");
   console.log(`IPO         ${ipo}`);
   console.log(`curve       ${curve}`);
@@ -129,6 +153,21 @@ async function main() {
   console.log(`airdropper  ${await airdropper.getAddress()}`);
   console.log(`treasury    ${treasuryAddr}`);
   console.log(`keeper      ${keeper}`);
+  if (finalOwner) {
+    console.log(
+      `\nownership transfer PENDING. From ${finalOwner}, call acceptOwnership() on all three:\n` +
+        `  vault      ${await vault.getAddress()}\n` +
+        `  airdropper ${await airdropper.getAddress()}\n` +
+        `  treasury   ${treasuryAddr}\n` +
+        `Until then ${deployer.address} is still owner.`
+    );
+  } else {
+    console.log(
+      `\nWARNING: ${deployer.address} owns all three contracts and is the deploying key.\n` +
+        `Move ownership to a cold wallet with OWNER_ADDRESS, or transferOwnership() manually.`
+    );
+  }
+
   console.log("\n--- run the hourly keeper ---");
   console.log(
     [

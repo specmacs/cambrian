@@ -171,8 +171,30 @@ or touch another coin's balance. This is the same exposure a merkle-claim design
 attacker publishing a root allocating everything to themselves — so pushing rather than pulling costs
 nothing in trust; it costs gas.
 
-Both roles should be a hardened keyed service, and ownership should sit behind a multisig. The
-treasury and airdropper both have `pause()`.
+### Keys
+
+A multisig is about single-key loss and single-key compromise, not headcount — but for a solo
+operator the thing that matters more is that **the owner key is not the keeper key**.
+
+The keeper is hot: it signs unattended, every hour, from a server. The owner is not, and should be a
+hardware wallet that never touches that machine. `deploy.ts` refuses to wire the same address into
+both unless you pass `ALLOW_SHARED_KEY=yes`.
+
+| If this leaks | Blast radius |
+| --- | --- |
+| **Keeper** | One epoch's ETH budget, plus coins currently sitting undistributed. Owner can `pause()` both contracts and `setKeeper(false)`. Roughly an hour of flow. |
+| **Owner** | Everything. `setKeeper` + `setPolicy` + `setAirdropper` drains the treasury and all undistributed coins. |
+| **Owner, for vault assets** | Nothing. The vault has no withdrawal path, so backed assets survive even a fully compromised owner. |
+
+Two more things worth knowing:
+
+- **Losing the owner key is unrecoverable.** No pause, no keeper rotation, no policy change, ever —
+  while the treasury keeps accruing tax with no way to spend or stop it. That is the real argument
+  for 2-of-3 even when the multisig is only you: a hardware wallet, a phone, and a paper backup is
+  still one person, but survives losing any one of them.
+- All three contracts use `Ownable2Step`, so ownership only moves once the new owner calls
+  `acceptOwnership()`. A mistyped address cannot strand them. Pass `OWNER_ADDRESS` at deploy to hand
+  ownership to a cold key, and the script prints the accept steps.
 
 ## Parameters
 
@@ -244,7 +266,10 @@ there. If it does not, the script prints the `transferCreatorFeeRecipient` call 
 Nothing is broadcast without `CONFIRM_LAUNCH=yes`.
 
 ```bash
-CONFIRM_LAUNCH=yes KEEPER_ADDRESS=0x... PRIVATE_KEY=0x... npm run deploy
+CONFIRM_LAUNCH=yes \
+KEEPER_ADDRESS=0x...   # hot key the bot signs with
+OWNER_ADDRESS=0x...    # cold key that ends up owning the contracts
+PRIVATE_KEY=0x... npm run deploy
 ```
 
 `POOL_MANAGER` and `LAUNCH_CONFIG_ID` default to the verified mainnet values, and the script asserts
@@ -298,11 +323,12 @@ cheaper configs Pons may add later.
 
 - [ ] `npm run verify` — should print **all checks passed**.
 - [ ] Token metadata for the launch: logo URI, description, socials. Baked into the Pons record.
-- [ ] Keeper address and the multisig that should own all three contracts.
+- [ ] A keeper address (hot) and an owner address (cold). They must differ — see **Keys** above.
 - [ ] Set `MIN_PAYOUT` from the gas table above once you have a sense of holder count.
 - [ ] Calibrate `TREND_WINDOW_BLOCKS` to a real hour of Robinhood Chain blocks, and tune the trending
       weights against real data.
 - [ ] Tune `setPolicy(...)` against expected tax revenue — the defaults are a starting point.
 - [ ] Fund the keeper with enough ETH for ~40 airdrop transactions an hour at target scale.
-- [ ] Run the keeper on redundant infrastructure.
+- [ ] Run the keeper on redundant infrastructure, and back up the owner key so losing it cannot
+      strand the contracts.
 - [ ] External audit. None of this has been audited.
