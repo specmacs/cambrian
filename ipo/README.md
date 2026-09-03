@@ -234,7 +234,7 @@ script/deploy.ts          launches IPO on Pons and wires everything up
 script/verify.ts          re-checks every Pons assumption against the live chain
 config/addresses.ts       chain + verified Pons v2 / Uniswap v4 addresses
 test/ipo.test.ts          45 unit tests against a mock pool manager
-test/fork.test.ts         buys a real coin on the real v4 pool (opt-in)
+test/fork.test.ts         buys real coins and airdrops them, against live state (opt-in)
 ```
 
 ## Build
@@ -247,16 +247,23 @@ npm run typecheck
 npm run verify     # checks the integration against live Robinhood Chain
 ```
 
-The unit suite runs offline against a mock pool manager. The **fork test** buys a real graduated
-Pons coin on the real Uniswap v4 pool through the real Pons hook — the one thing a mock cannot prove:
+The unit suite runs offline against a mock pool manager. The **fork tests** run the whole pipeline
+against real Robinhood Chain state — the part a mock cannot prove:
 
 ```bash
-FORK_BLOCK=52202800 npx hardhat test test/fork.test.ts
+FORK=1 npx hardhat test test/fork.test.ts
 ```
 
-It confirms the pool key reconstructed from a launch record actually identifies the pool, that the
-swap direction is right, and that settle/take balances against v4's flash accounting with a hook in
-the path. Last run bought 169,369.96 tokens for 0.02 ETH with the treasury's ETH exactly reconciled.
+1. **One coin.** Buys a real graduated launch on its real Uniswap v4 pool through the real Pons
+   hook. Confirms the pool key reconstructed from a launch record actually identifies the pool, the
+   swap direction is right, and settle/take balances against v4's flash accounting with a hook in
+   the path taking its cut.
+2. **A basket, then the airdrop.** Buys three real coins under a single unlock in one transaction
+   (~974k gas), then splits and pushes them to holder wallets exactly as the keeper would, leaving
+   only rounding dust.
+
+No block is pinned: the public RPC prunes state, so any hard-coded block stops being serveable
+within days. Each test re-forks the chain head, which is also why exact amounts vary between runs.
 
 ## Deploy
 
@@ -299,7 +306,7 @@ re-runs all of it — read-only, no keys — and exits non-zero on any mismatch.
 | v4 `Swap` | `(bytes32,address,int128,int128,uint160,uint128,int24,uint24)` — topic `0x40e9cecb…` |
 | `LaunchedToken` field order | Decodes to itself on real graduated launches, all reporting `phase == 2` |
 | Launch config | `launchConfigCount() == 1`; config 0 is supply 1e27, curve fee 1%, phantom quote 1.68 ETH, threshold 4.2 ETH, tickSpacing 200, poolFee 0 |
-| The swap itself | Fork test buys a real coin on the real pool through the real hook |
+| The swap itself | Fork tests buy real coins on real pools through the real hook, then airdrop them |
 
 Two findings changed the code:
 
